@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.4
+
+- Add a disk image with a drag-to-Applications installer window, alongside the ZIP used by built-in updates.
+- Verify that the DMG and ZIP contain the same signed app and publish checksums for both formats.
+
 ## 0.5.3
 
 - Add menu-driven GitHub update checks, verified downloads, and Install and Restart with atomic app replacement and recovery copies.

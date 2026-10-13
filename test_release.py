@@ -67,12 +67,18 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.manifest = self.archive.with_suffix(".json")
         self.metadata = {"version": "1.2.3", "source_commit": "abc123", "architecture": "arm64",
                          "archive": self.archive.name, "bytes": 15, "sha256": self.digest}
+        self.image = self.archive.with_suffix(".dmg")
+        self.image.write_bytes(b"disk image fixture")
+        image_digest = hashlib.sha256(self.image.read_bytes()).hexdigest()
+        self.image.with_suffix(".dmg.sha256").write_text(f"{image_digest}  {self.image.name}\n")
+        self.metadata["disk_image"] = {"file": self.image.name, "bytes": 18, "sha256": image_digest}
         self.manifest.write_text(json.dumps(self.metadata))
 
     def test_matching_artifacts_are_returned_without_modification(self):
         paths = check_assets(self.root, self.release, "abc123")
         self.assertEqual([path.name for path in paths], ["Carrie-On-1.2.3-macos-arm64.zip",
-                         "Carrie-On-1.2.3-macos-arm64.zip.sha256", "Carrie-On-1.2.3-macos-arm64.json"])
+                         "Carrie-On-1.2.3-macos-arm64.zip.sha256", "Carrie-On-1.2.3-macos-arm64.json",
+                         "Carrie-On-1.2.3-macos-arm64.dmg", "Carrie-On-1.2.3-macos-arm64.dmg.sha256"])
         self.assertEqual(self.archive.read_bytes(), b"archive fixture")
 
     def test_stale_source_and_uncommitted_builds_cannot_be_released(self):
@@ -100,6 +106,21 @@ class ReleaseArtifactTests(unittest.TestCase):
             self.assertEqual(source_commit(self.root), "abc123")
         with patch("release.subprocess.check_output", return_value=" M file.py\n"):
             self.assertIsNone(source_commit(self.root))
+
+    def test_missing_or_mismatched_disk_image_metadata_is_rejected(self):
+        for value in (None, {}, {"file": "other.dmg"}):
+            self.metadata["disk_image"] = value
+            self.manifest.write_text(json.dumps(self.metadata))
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "matching disk image"):
+                check_assets(self.root, self.release, "abc123")
+
+    def test_corrupted_disk_image_and_checksum_are_rejected(self):
+        self.image.with_suffix(".dmg.sha256").write_text("wrong checksum")
+        with self.assertRaisesRegex(ValueError, "Disk image checksum"):
+            check_assets(self.root, self.release, "abc123")
+        self.image.write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError, "Disk image checksum"):
+            check_assets(self.root, self.release, "abc123")
 
     def test_published_release_and_wrong_tag_are_rejected(self):
         with patch("release.subprocess.check_output", return_value='{"isDraft": false}'):

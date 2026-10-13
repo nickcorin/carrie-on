@@ -64,7 +64,8 @@ def check_assets(directory, release, commit):
     """Reject stale or corrupted Apple Silicon artifacts before uploading them.
 
     Require the current version, clean source commit, byte count, checksum file,
-    and manifest hash to agree. Return the three paths; do not modify artifacts.
+    and manifest hashes to agree for the ZIP and DMG. Return all five paths;
+    do not modify artifacts. The updater's existing ZIP metadata stays unchanged.
     """
     name = f"Carrie-On-{release.version}-macos-arm64"
     archive = directory / f"{name}.zip"
@@ -82,7 +83,16 @@ def check_assets(directory, release, commit):
     if (metadata.get("sha256") != digest or metadata.get("bytes") != archive.stat().st_size
             or checksum.read_text().strip() != f"{digest}  {archive.name}"):
         raise ValueError("Release checksum or size mismatch; rebuild with just ci")
-    return archive, checksum, manifest
+    image = directory / f"{name}.dmg"
+    image_checksum = image.with_suffix(".dmg.sha256")
+    image_metadata = metadata.get("disk_image")
+    if not isinstance(image_metadata, dict) or image_metadata.get("file") != image.name:
+        raise ValueError("Release manifest is missing the matching disk image; rebuild with just ci")
+    image_digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    if (image_metadata.get("sha256") != image_digest or image_metadata.get("bytes") != image.stat().st_size
+            or image_checksum.read_text().strip() != f"{image_digest}  {image.name}"):
+        raise ValueError("Disk image checksum or size mismatch; rebuild with just ci")
+    return archive, checksum, manifest, image, image_checksum
 
 
 def check_tag(tag, commit):

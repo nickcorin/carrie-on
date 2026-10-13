@@ -5,6 +5,7 @@ version := trim(read('VERSION'))
 tag := 'v' + version
 artifact := 'Carrie-On-' + version + '-macos-arm64'
 archive := 'dist/' + artifact + '.zip'
+image := 'dist/' + artifact + '.dmg'
 manifest := 'dist/' + artifact + '.json'
 notes := 'dist/release-notes.md'
 
@@ -85,18 +86,18 @@ release: release-ready ci release-notes
     {{ python }} release.py --check-assets dist
     git tag -s {{ quote(tag) }} -m {{ quote('Carrie On ' + version) }}
     git push origin {{ quote(tag) }}
-    gh release create {{ quote(tag) }} {{ quote(archive) }} {{ quote(archive + '.sha256') }} {{ quote(manifest) }} --verify-tag --draft --title {{ quote('Carrie On ' + version) }} --notes-file {{ quote(notes) }}
+    gh release create {{ quote(tag) }} {{ quote(archive) }} {{ quote(archive + '.sha256') }} {{ quote(image) }} {{ quote(image + '.sha256') }} {{ quote(manifest) }} --verify-tag --draft --title {{ quote('Carrie On ' + version) }} --notes-file {{ quote(notes) }}
 
 # Retry a failed tag push or draft creation without rebuilding or retagging.
 release-retry: release-ready release-notes
     {{ python }} release.py --check-assets dist --check-tag
     git push origin {{ quote(tag) }}
-    gh release create {{ quote(tag) }} {{ quote(archive) }} {{ quote(archive + '.sha256') }} {{ quote(manifest) }} --verify-tag --draft --title {{ quote('Carrie On ' + version) }} --notes-file {{ quote(notes) }}
+    gh release create {{ quote(tag) }} {{ quote(archive) }} {{ quote(archive + '.sha256') }} {{ quote(image) }} {{ quote(image + '.sha256') }} {{ quote(manifest) }} --verify-tag --draft --title {{ quote('Carrie On ' + version) }} --notes-file {{ quote(notes) }}
 
 # Replace assets only on an existing draft after an interrupted upload.
 upload: release-ready
     {{ python }} release.py --check-assets dist --check-draft --check-tag
-    gh release upload {{ quote(tag) }} {{ quote(archive) }} {{ quote(archive + '.sha256') }} {{ quote(manifest) }} --clobber
+    gh release upload {{ quote(tag) }} {{ quote(archive) }} {{ quote(archive + '.sha256') }} {{ quote(image) }} {{ quote(image + '.sha256') }} {{ quote(manifest) }} --clobber
 
 # Publish an existing draft after manual acceptance testing.
 publish: release-ready

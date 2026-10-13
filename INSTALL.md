@@ -4,8 +4,8 @@ Carrie On ships as a single **Carrie On.app** containing its native menu interfa
 
 ## Install
 
-1. Extract the release ZIP. The `arm64` release targets **Apple Silicon and macOS 13 or later**. Runtime testing on macOS 13 is still outstanding; the current release has been exercised on macOS 27.0.1.
-2. Drag **Carrie On.app** into `/Applications` or your home folder's `Applications` folder. It must be directly inside either folder. Replace an older Carrie On.app when updating.
+1. Download and open the release DMG. The `arm64` release targets **Apple Silicon and macOS 13 or later**. Runtime testing on macOS 13 is still outstanding; the current release has been exercised on macOS 27.0.1.
+2. Drag **Carrie On** onto the **Applications** shortcut in the installer window, then eject the disk image. If you cannot write to `/Applications`, drag the app into your home folder's `Applications` folder instead. It must be directly inside either folder. Quit an older Carrie On before replacing it. The ZIP remains available as an alternative: extract it and drag the app into Applications.
 3. Open **Carrie On**. First launch checks for the Codex CLI, saves its location, and sets up the worker, dashboard, and menu login services. If Codex cannot be found, choose its executable in the setup dialog. `command -v codex` in Terminal shows the path on a configured Mac.
 4. Open the menu bar item and queue a local chat. The browser dashboard is also available at [localhost:8766](http://127.0.0.1:8766).
 

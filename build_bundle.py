@@ -21,6 +21,7 @@ from install_menubar import build_menu
 from macos_compatibility import audit
 from verify_bundle import verify
 from release import Release, source_commit
+from disk_image import build_disk_image
 
 ROOT = Path(__file__).resolve().parent
 
@@ -41,7 +42,8 @@ def build(output, replace=False):
     architecture = platform.machine()
     name = f"Carrie-On-{release.version}-macos-{architecture}"
     archive = output / f"{name}.zip"
-    if not replace and any((output / f"{name}{suffix}").exists() for suffix in (".zip", ".zip.sha256", ".json")):
+    suffixes = (".zip", ".zip.sha256", ".json", ".dmg", ".dmg.sha256")
+    if not replace and any((output / f"{name}{suffix}").exists() for suffix in suffixes):
         raise ValueError(f"Release {release.version} already exists. Bump VERSION, or use --replace for a development rebuild.")
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-v"], cwd=ROOT, check=True)
     with tempfile.TemporaryDirectory(prefix="tokenmaxxer-build-") as temporary:
@@ -99,12 +101,17 @@ def build(output, replace=False):
         digest = hashlib.sha256(staged.read_bytes()).hexdigest()
         staged.with_suffix(".zip.sha256").write_text(f"{digest}  {archive.name}\n")
         verify(staged)
+        image = work / f"{name}.dmg"
+        build_disk_image(app, image, release.version)
+        image_digest = hashlib.sha256(image.read_bytes()).hexdigest()
+        image.with_suffix(".dmg.sha256").write_text(f"{image_digest}  {image.name}\n")
         metadata.update({"archive": archive.name, "sha256": digest, "bytes": staged.stat().st_size})
+        metadata["disk_image"] = {"file": image.name, "sha256": image_digest, "bytes": image.stat().st_size}
         staged.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n")
         if source_commit(ROOT) != commit:
             raise ValueError("Source changed during the build; rebuild before releasing")
         output.mkdir(parents=True, exist_ok=True)
-        for suffix in (".zip", ".zip.sha256", ".json"):
+        for suffix in suffixes:
             shutil.move(str(work / f"{name}{suffix}"), output / f"{name}{suffix}")
         print(f"Built and verified {archive}\nRequires macOS {MINIMUM_MACOS}+ ({architecture}).")
         return archive

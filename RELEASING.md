@@ -36,7 +36,7 @@ just verify
 just verify '/tmp/Carrie On release/Carrie-On-0.5.1-macos-arm64.zip'
 ```
 
-Output is a versioned ZIP, `.zip.sha256` checksum, and JSON manifest in `dist/`. The manifest records the version, clean source commit (or null for dirty/exported source), build identity, architecture, Python version, compatibility audit, size, and checksum. Build identities and signing timestamps mean builds are not byte-reproducible. Generated files are ignored by Git.
+Output is a versioned DMG, ZIP, a `.sha256` checksum for each, and a JSON manifest in `dist/`. The DMG provides the drag-to-Applications installation flow; built-in updates continue to use the ZIP. Both packages contain the same signed app. The builder mounts the DMG read-only, checks the Applications shortcut, and verifies a copied-out app against the ZIP payload and its code signature. The manifest records the version, clean source commit (or null for dirty/exported source), build identity, architecture, Python version, compatibility audit, size, and checksum, plus a `disk_image` object with the DMG filename, size, and checksum. Build identities and signing timestamps mean builds are not byte-reproducible. Generated files are ignored by Git.
 
 The built-in updater reads the latest published stable release from GitHub. Keep the `vMAJOR.MINOR.PATCH` tag and generated asset names unchanged, and publish the ZIP and JSON manifest together. Drafts and prereleases are not offered; versions at or below the installed version are never installed. No additional update feed or credentials are required. The release manifest's hash and byte count must describe the final signed ZIP.
 
@@ -59,7 +59,7 @@ git push origin master
 just release
 ```
 
-`just release` requires a clean checkout, runs all local CI checks, and verifies that the new artifacts match the current commit and version. It then creates a signed `vMAJOR.MINOR.PATCH` tag, pushes that tag to `origin`, and creates a **draft** GitHub release with the changelog notes and all three assets. It does not publish the draft. GitHub CLI resolves the repository from the checkout's remote.
+`just release` requires a clean checkout, runs all local CI checks, and verifies that the new artifacts match the current commit and version. It then creates a signed `vMAJOR.MINOR.PATCH` tag, pushes that tag to `origin`, and creates a **draft** GitHub release with the changelog notes and all five assets. It does not publish the draft. GitHub CLI resolves the repository from the checkout's remote.
 
 An existing local tag stops `just release` instead of being moved. If the tag was created but its push or draft creation failed, retry without rebuilding or retagging:
 

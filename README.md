@@ -6,7 +6,7 @@ Carrie On keeps a queue of chats and continuation instructions. It checks quota 
 
 ## Install
 
-Download the ZIP and checksum from [Releases](https://github.com/nickcorin/carrie-on/releases), extract **Carrie On.app**, and drag it to Applications. Open it, then use the menu bar to find a chat and add it to the queue.
+Download the DMG from [Releases](https://github.com/nickcorin/carrie-on/releases), open it, and drag **Carrie On** onto **Applications**. Eject the disk image and open the installed app, then use the menu bar to find a chat and add it to the queue. A ZIP and checksums are also available.
 
 The bundle includes Python. You need an Apple Silicon Mac, the Codex desktop app, and a signed-in Codex CLI. Keep Codex open and your Mac awake and connected. The build targets macOS 13+, but runtime testing on macOS 13 is still outstanding. Releases are ad-hoc signed and are not notarized; macOS may require approval through Privacy & Security.
 
