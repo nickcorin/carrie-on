@@ -1,0 +1,25 @@
+__pycache__/
+.runtime/
+.playwright-mcp/
+resume-queue.json
+resume-queue.lock
+.build-venv/
+.build-python/
+.build-cache/
+.build-venv-compatible/
+build/
+dist/
+
+# Developer environments and local records
+.venv/
+.worktrees/
+.DS_Store
+*.py[cod]
+.env
+.env.*
+!.env.example
+verification.md
+.resume-queue-*
+
+# Local artwork explorations
+assets/directions/
