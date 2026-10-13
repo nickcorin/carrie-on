@@ -1,0 +1,7 @@
+{
+  "differing_edge_pixels" : 279,
+  "pixels_beyond_one_pixel_tolerance" : 0,
+  "reference_height" : 315,
+  "reference_width" : 380,
+  "silhouette_overlap" : 0.9922060507863788
+}

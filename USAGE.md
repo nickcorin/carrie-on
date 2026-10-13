@@ -1,6 +1,6 @@
 # Carrie On usage guide
 
-Carrie On is a deliberate spelling of “carry on.” Its coral app icon and monochrome menu-bar mark pair a C with a forward arrow. See [brand assets](assets/README.md) for artwork and regeneration instructions.
+Carrie On is a deliberate spelling of “carry on.” Its cobalt app icon and monochrome menu-bar mark pair a C with a forward arrow. See [brand assets](assets/README.md) for artwork and regeneration instructions.
 
 The app was previously named Tokenmaxxer. Existing service identifiers, command filenames, and the Application Support directory retain that name to preserve installations and saved queues.
 
