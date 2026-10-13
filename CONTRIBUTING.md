@@ -1,17 +1,17 @@
 # Contributing
 
-Use macOS with Apple's command-line tools (`xcode-select --install`) and Python 3.10 or newer. The application and Python tests use only the standard library. Building the standalone app additionally requires the pinned dependencies in `requirements-build.txt`; see [Releasing](RELEASING.md).
-
-Clone the repository and run the tests before changing behavior:
+Use an Apple Silicon Mac with Apple's command-line tools, just 1.58+, uv, Node.js, and Go. The application uses Python's standard library; build dependencies and lint tools are pinned. See [Releasing](RELEASING.md#toolchain) for setup.
 
 ```sh
 git clone https://github.com/nickcorin/carrie-on.git
 cd carrie-on
-python3 -m unittest discover -v
-node --check web/app.js
+just setup
+just ci
 ```
 
-Node is only needed for the JavaScript syntax check. Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix sockets. They do not enroll or dispatch real chats. Allow local sockets in a sandbox. Native self-tests run as part of `build_bundle.py`; that command also verifies the actual packaged app in an isolated home.
+`just ci` runs all release gates locally, including minimum-Python tests and a signed, verified app build. Pushes and pull requests do not run GitHub Actions; the optional hosted workflow is manual-only. Use `just lint` or `just test` for a shorter development loop, and `just --list` to discover the other commands.
+
+Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix sockets. They do not enroll or dispatch real chats. Allow local sockets in a sandbox. Native pagination tests compile a temporary Swift executable; the packaged acceptance check uses an isolated home.
 
 ## Component map
 
@@ -31,6 +31,6 @@ Keep queue mutations behind `locked_queue`. Persist sending state before dispatc
 
 Use focused branches and Conventional Commits, and sign commits. Add behavior tests for changed contracts and update the relevant guide in the same change. Avoid installing development builds over a working installation simply to run tests: source and bundled installations share login service labels.
 
-Open a pull request against `master` with the problem, resulting behavior, and verification performed. CI runs the Python suite, checks dashboard JavaScript syntax, and builds and verifies an Apple Silicon bundle. The release builder rejects incompatible Python runtimes through its Mach-O audit.
+Open a pull request against `master` with the problem, resulting behavior, and verification performed. Run `just ci` locally before pushing and include the result in the pull request; no hosted check runs automatically. The release builder rejects incompatible Python runtimes through its Mach-O audit.
 
 Never commit queue files, logs, settings, credentials, local verification records, or build environments. Use synthetic chat data in fixtures and screenshots. Bug reports should describe a minimal reproduction without private chat contents.

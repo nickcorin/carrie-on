@@ -2,7 +2,9 @@
 
 ## 0.5.1
 
-- Add GitHub CI and verified draft releases for Apple Silicon Macs.
+- Add a justfile for local CI, building, signing, packaging, and draft releases without hosted CI credits.
+- Keep GitHub CI manual-only and verify release artifacts against the current clean source commit.
+- Add pagination feedback and regression coverage for browsing large chat catalogs.
 - Validate release tags against the version and changelog before building.
 - Include the MIT license and complete user documentation in release bundles.
 - Report the current app version when connecting to Codex.

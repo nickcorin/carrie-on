@@ -20,15 +20,24 @@ from app_runtime import APP_BUNDLE_NAME, APP_IDENTIFIER, APP_NAME, MINIMUM_MACOS
 from install_menubar import build_menu
 from macos_compatibility import audit
 from verify_bundle import verify
-from release import Release
+from release import Release, source_commit
 
 ROOT = Path(__file__).resolve().parent
+
+
+def sign_app(app):
+    """Ad-hoc sign completed executables and their enclosing app, then verify it."""
+    contents = app / "Contents"
+    for target in (contents / "MacOS/tokenmaxxer", contents / "MacOS/TokenmaxxerMenu", app):
+        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(target)], check=True)
+    subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
 
 
 def build(output, replace=False):
     if sys.platform != "darwin":
         raise ValueError("Build on a Mac with Python 3.10+ and Apple's Swift command-line tools")
     release = Release.read(ROOT)
+    commit = source_commit(ROOT)
     architecture = platform.machine()
     name = f"Carrie-On-{release.version}-macos-{architecture}"
     archive = output / f"{name}.zip"
@@ -81,14 +90,10 @@ def build(output, replace=False):
         shutil.copy2(pyinstaller.locate_file(license_file), licenses / "PyInstaller.txt")
         metadata = {"version": release.version, "build_id": str(uuid.uuid4()), "architecture": architecture,
                     "minimum_macos": MINIMUM_MACOS, "built_on_macos": platform.mac_ver()[0],
-                    "python": platform.python_version(), "signing": "ad-hoc",
+                    "python": platform.python_version(), "signing": "ad-hoc", "source_commit": commit,
                     "binary_audit": audit(app, MINIMUM_MACOS)}
         (resources / "release.json").write_text(json.dumps(metadata, indent=2) + "\n")
-        # Sign inside out, after every resource and executable is in its final location.
-        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(contents / "MacOS/tokenmaxxer")], check=True)
-        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(native)], check=True)
-        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(app)], check=True)
-        subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
+        sign_app(app)
         staged = work / archive.name
         subprocess.run(["/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(staged)], check=True)
         digest = hashlib.sha256(staged.read_bytes()).hexdigest()
@@ -96,6 +101,8 @@ def build(output, replace=False):
         verify(staged)
         metadata.update({"archive": archive.name, "sha256": digest, "bytes": staged.stat().st_size})
         staged.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n")
+        if source_commit(ROOT) != commit:
+            raise ValueError("Source changed during the build; rebuild before releasing")
         output.mkdir(parents=True, exist_ok=True)
         for suffix in (".zip", ".zip.sha256", ".json"):
             shutil.move(str(work / f"{name}{suffix}"), output / f"{name}{suffix}")
@@ -107,9 +114,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "dist", help="Release directory")
     parser.add_argument("--replace", action="store_true", help="Overwrite this version's local release artifacts")
+    parser.add_argument("--sign-app", type=Path, metavar="APP", help="Ad-hoc sign and verify an existing app instead of building")
     args = parser.parse_args()
     try:
-        build(args.output.resolve(), args.replace)
+        if args.sign_app:
+            sign_app(args.sign_app.resolve())
+        else:
+            build(args.output.resolve(), args.replace)
         return 0
     except (OSError, ValueError, RuntimeError, AssertionError, subprocess.SubprocessError) as error:
         print(f"Carrie On build: {error}", file=sys.stderr)
