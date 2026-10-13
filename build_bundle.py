@@ -67,7 +67,7 @@ def build(output, replace=False):
         docs.mkdir()
         for filename in ("INSTALL.md", "README.md", "USAGE.md", "CHANGELOG.md",
                          "CONTRIBUTING.md", "RELEASING.md", "SECURITY.md", "LICENSE",
-                         "connection-api.openapi.json", "instruction-api.openapi.json"):
+                         "connection-api.openapi.json", "instruction-api.openapi.json", "chat-pages.openapi.json"):
             shutil.copy2(ROOT / filename, docs / filename)
         shutil.copytree(ROOT / "features", docs / "features")
         (docs / "assets").mkdir()
