@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.5.3
 
 - Add menu-driven GitHub update checks, verified downloads, and Install and Restart with atomic app replacement and recovery copies.
+- Simplify chat pagination feedback to subtle loading placeholders while preserving retry and search behavior.
 
 ## 0.5.2
 
