@@ -42,10 +42,6 @@ struct PickerChatPage: Decodable {
     let next_cursor: String?
 }
 
-enum ChatPageActivity: Hashable {
-    case idle, loading, loaded(Int), failed
-}
-
 struct PickerQueue: Decodable {
     struct Entry: Decodable, Identifiable {
         let enrollmentID: String
@@ -144,7 +140,6 @@ final class ChatPickerModel: ObservableObject {
             nextCursor = nil
             searching = false
             loadError = nil
-            pageActivity = .idle
         }
     }
     @Published var instructions: [String: String] = [:]
@@ -155,7 +150,6 @@ final class ChatPickerModel: ObservableObject {
     @Published var activities: [String: CardActivity] = [:]
     @Published var searching = false
     @Published private(set) var nextCursor: String?
-    @Published private(set) var pageActivity: ChatPageActivity = .idle
     @Published var checkingQueue = false
     @Published var loadError: String?
     @Published var paused = false
@@ -310,7 +304,6 @@ final class ChatPickerModel: ObservableObject {
         guard connection == .connected, !searching else { return }
         searchRevision += 1
         nextCursor = nil
-        pageActivity = .idle
         catalogQuery = search.trimmingCharacters(in: .whitespacesAndNewlines)
         await loadChatPage(cursor: nil)
     }
@@ -326,30 +319,21 @@ final class ChatPickerModel: ObservableObject {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         searching = true
         loadError = nil
-        if cursor != nil { pageActivity = .loading }
-        defer {
-            if revision == searchRevision {
-                searching = false
-                if pageActivity == .loading { pageActivity = .idle }
-            }
-        }
+        defer { if revision == searchRevision { searching = false } }
         do {
             let data = try await request("api/chat-page", query: query, cursor: cursor)
             let page = try JSONDecoder().decode(PickerChatPage.self, from: data)
             guard revision == searchRevision, !Task.isCancelled else { return }
-            let previousCount = availableChats.count
             var ids = Set<String>()
             chats = ((cursor == nil ? [] : chats) + page.chats).filter { ids.insert($0.id).inserted }
             for chat in page.chats { knownChats[chat.id] = chat }
             nextCursor = page.next_cursor
             ready = true
             loadError = nil
-            if cursor != nil { pageActivity = .loaded(max(0, availableChats.count - previousCount)) }
         } catch {
             guard !Task.isCancelled else { return }
             if revision == searchRevision, connection == .connected {
                 loadError = "Could not load chats: \(error.localizedDescription)"
-                if cursor != nil { pageActivity = .failed }
                 await updateConnection()
             }
         }
@@ -486,7 +470,6 @@ struct ChatPickerView: View {
     @ObservedObject var lifecycle: AppLifecycle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expandedQueued: Set<String> = []
-    @State private var pageFeedback: ChatPageActivity = .idle
     @AppStorage("queuedSectionExpanded") private var showQueued = true
     @AppStorage("chatsSectionExpanded") private var showChats = true
 
@@ -628,7 +611,6 @@ struct ChatPickerView: View {
                             }
                         }.padding(.bottom, 12)
                     }.accessibilityLabel("Available chats")
-                    paginationStatus
                 }.padding(.top, 8)
             } label: {
                 Label("Chats · \(model.availableChats.count)\(model.nextCursor == nil ? "" : "+")", systemImage: "bubble.left.and.bubble.right")
@@ -645,13 +627,6 @@ struct ChatPickerView: View {
                    value: model.queuedEntries.map(\.cardState))
         .disclosureGroupStyle(SectionDisclosureStyle())
         .frame(width: 440, height: 620, alignment: .top)
-        .task(id: model.pageActivity) {
-            pageFeedback = model.pageActivity
-            if case .loaded = model.pageActivity {
-                do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
-                pageFeedback = .idle
-            }
-        }
     }
 
     private var chatPlaceholders: some View {
@@ -668,40 +643,6 @@ struct ChatPickerView: View {
         }
         .accessibilityHidden(true)
         .transition(.opacity)
-    }
-
-    private var paginationStatus: some View {
-        HStack(spacing: 7) {
-            switch pageFeedback {
-            case .loading:
-                if reduceMotion {
-                    Image(systemName: "hourglass")
-                } else {
-                    ProgressView().controlSize(.mini)
-                }
-                Text("Loading more chats…")
-            case .loaded(let count):
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                Text(count == 0 ? "Chats updated" : "\(count) more \(count == 1 ? "chat" : "chats") added")
-            case .failed:
-                Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
-                Text("Couldn’t load more chats")
-                Button("Retry") { Task { await model.loadMoreChats() } }.buttonStyle(.borderless)
-            case .idle:
-                if model.nextCursor != nil {
-                    Image(systemName: "arrow.down")
-                    Text("Scroll down for more chats")
-                }
-            }
-        }
-        .font(.caption).foregroundStyle(.secondary)
-        .id(pageFeedback)
-        .transition(.opacity)
-        .frame(maxWidth: .infinity, minHeight: 28)
-        .background(pageFeedback == .loading ? Color.accentColor.opacity(0.06) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 8))
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: pageFeedback)
-        .accessibilityElement(children: .contain)
     }
 
     private func sectionMessage(_ message: String) -> some View {

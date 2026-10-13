@@ -61,7 +61,7 @@ func testChatPagination() async throws {
     let moreRequest = try await ChatPageProtocol.next()
     let parameters = URLComponents(url: moreRequest.request.url!, resolvingAgainstBaseURL: false)!.queryItems!
     guard parameters.first(where: { $0.name == "cursor" })?.value == "older+/=&",
-          model.pageActivity == .loading else {
+          model.searching else {
         fatalError("Opaque cursor was not preserved")
     }
     await model.loadMoreChats()
@@ -69,7 +69,7 @@ func testChatPagination() async throws {
     moreRequest.reply(#"{"error":"Try again"}"#, status: 503)
     await more.value
     guard model.availableChats.map(\.id) == ["b"], model.nextCursor == "older+/=&",
-          model.loadError != nil, !model.searching, model.pageActivity == .failed else {
+          model.loadError != nil, !model.searching else {
         fatalError("Page failure discarded results, retry cursor, or failure feedback")
     }
 
@@ -80,7 +80,7 @@ func testChatPagination() async throws {
     await model.loadMoreChats()
     guard model.availableChats.map(\.id) == ["b", "c"], model.nextCursor == nil,
           model.loadError == nil, ChatPageProtocol.requests == 3,
-          model.instructions["a"] == "Keep this draft.", model.queued == ["a"], model.pageActivity == .loaded(1) else {
+          model.instructions["a"] == "Keep this draft.", model.queued == ["a"] else {
         fatalError("Retry, deduplication, exhaustion, or draft retention failed")
     }
 
@@ -94,7 +94,7 @@ func testChatPagination() async throws {
     // A response arriving during the debounce must already be stale.
     staleRequest.reply(#"{"chats":[{"id":"wrong","title":"Gamma obsolete"}],"next_cursor":"wrong"}"#)
     await stalePage.value
-    guard model.nextCursor == nil, model.pageActivity == .idle,
+    guard model.nextCursor == nil, !model.searching,
           !model.chats.contains(where: { $0.id == "wrong" }) else {
         fatalError("Changing search accepted an old page during debounce")
     }
@@ -121,7 +121,7 @@ func testChatPagination() async throws {
     betaMoreRequest.reply(#"{"chats":[],"next_cursor":"beta-last"}"#)
     await betaMore.value
     guard model.nextCursor == "beta-last", model.availableChats.map(\.id) == ["b"],
-          model.pageActivity == .loaded(0) else {
+          !model.searching else {
         fatalError("Empty page was incorrectly treated as exhaustion")
     }
 
