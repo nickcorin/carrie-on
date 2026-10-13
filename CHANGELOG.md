@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2
+
+- Update the app and dashboard icons with a cobalt and porcelain C-arrow design.
+- Generate the app and monochrome tray icons from a shared vector silhouette, preserving the same shape across sizes.
+- Verify regenerated artwork against the reference silhouette to prevent shape drift.
+
 ## 0.5.1
 
 - Add a justfile for local CI, building, signing, packaging, and draft releases without hosted CI credits.
