@@ -498,6 +498,9 @@ struct ChatPickerView: View {
                             set: { lifecycle.setLaunchAtLogin($0) }))
                             .disabled(lifecycle.busy || !lifecycle.ready)
                         Divider()
+                        Button(lifecycle.updateStatus ?? "Check for Updates…") { lifecycle.checkForUpdates() }
+                            .disabled(lifecycle.busy || !lifecycle.ready)
+                        Divider()
                         Button("Quit Carrie On") { lifecycle.quit() }
                             .disabled(lifecycle.busy)
                     } label: {

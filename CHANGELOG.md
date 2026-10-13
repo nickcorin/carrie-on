@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add menu-driven GitHub update checks, verified downloads, and Install and Restart with atomic app replacement and recovery copies.
+
 ## 0.5.2
 
 - Update the app and dashboard icons with a cobalt and porcelain C-arrow design.

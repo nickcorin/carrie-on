@@ -5,6 +5,7 @@
 - Ship a single ad-hoc signed Carrie On.app containing Python, the dashboard, worker, native menu, and custom app icon.
 - Configure three per-user login services on first launch without development tools.
 - Detect app replacements and reconcile services while preserving connection settings, queue, and history.
+- Check published stable GitHub releases, verify a compatible download, and install it from the menu with explicit consent.
 - Build versioned releases with automated acceptance checks, checksums, and release manifests.
 - Remove login services while preserving personal data.
 
@@ -17,6 +18,8 @@ First launch discovers or asks for the CLI executable, saves settings in Applica
 ## Verification
 
 `build_bundle.py` runs unit tests, native self-tests, linkage audits, code-signature checks, and `verify_bundle.py` before publishing artifacts to `dist/`. The verifier exercises the native setup helper in an isolated home without loading login services. Tests cover interrupted setup, updates, stable reopening, settings and queue preservation, legacy connection migration, and invalid install locations. See the installation guide for real-Mac release acceptance checks.
+
+`python3 -m unittest test_app_update -v` exercises numeric version ordering, stable release eligibility, compatibility, exact-version download selection, corrupted and hostile archives, signed-bundle staging, and the real native atomic swap with launch-failure rollback and retry. These tests use temporary apps and never replace the installed app. Network checks contact GitHub only when the user chooses Check for Updates; installation requires a writable Applications folder. Recovery copies remain in hidden sibling directories. See [updates](../INSTALL.md#updates) for recovery and trust details.
 
 ## Gotchas
 

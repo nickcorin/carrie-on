@@ -23,6 +23,7 @@ Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix socket
 | `tokenmaxxer_ui.py`, `web/` | Loopback HTTP API and browser dashboard |
 | `menubar/` | Native AppKit menu, chat picker, setup, and lifecycle |
 | `app_runtime.py`, `app_lifecycle.py`, `bundle_install.py` | Runtime paths, login services, and installation |
+| `app_update.py`, `menubar/AppUpdate.swift` | GitHub release checks, verified staging, atomic replacement, and restart |
 | `build_bundle.py`, `release.py`, `verify_bundle.py` | Release metadata, packaging, and archive acceptance |
 
 Keep queue mutations behind `locked_queue`. Persist sending state before dispatch and never turn a missing reply into an automatic retry. The CLI, dashboard, and menu share that contract. Preserve installed service identities and data paths during branding changes. More detail is in the [feature contracts](features/index.md).

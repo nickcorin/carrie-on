@@ -141,6 +141,7 @@ func lifecycleSelfTest() throws {
 final class AppLifecycle: ObservableObject {
     @Published private(set) var launchAtLogin = true
     @Published private(set) var busy = false
+    @Published private(set) var updateStatus: String?
     @Published private(set) var ready = false
 
     func start() async {
@@ -188,6 +189,88 @@ final class AppLifecycle: ObservableObject {
         let alert = NSAlert()
         alert.messageText = "Carrie On couldn’t finish"
         alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+}
+
+extension AppLifecycle {
+    func checkForUpdates() {
+        guard !busy, ready else { return }
+        busy = true
+        Task {
+            defer { busy = false; updateStatus = nil }
+            do {
+                guard AppSetup.isStandalone else {
+                    throw UpdateFailure(message: "This is a source installation. Update its checkout with Git and rebuild the menu app.")
+                }
+                let metadataURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/release.json")
+                let originalMetadata = try Data(contentsOf: metadataURL)
+                updateStatus = "Checking for Updates…"
+                let reply = try await Task.detached { try AppUpdate.run(["check"]) }.value
+                guard let release = reply.release else {
+                    showUpdate(message: "No update available", detail: "You’re running Carrie On \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""). No newer published stable release is available.")
+                    return
+                }
+                let alert = NSAlert()
+                alert.messageText = "Carrie On \(release.version) is available"
+                alert.informativeText = "Download and install this update? Carrie On will restart. Your queue and settings will be preserved."
+                alert.addButton(withTitle: "Install and Restart")
+                alert.addButton(withTitle: "Not Now")
+                alert.addButton(withTitle: "Release Notes")
+                NSApp.activate(ignoringOtherApps: true)
+                let choice = alert.runModal()
+                if choice == .alertThirdButtonReturn {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/nickcorin/carrie-on/releases/tag/v\(release.version)")!)
+                    return
+                }
+                guard choice == .alertFirstButtonReturn else { return }
+                updateStatus = "Downloading Update…"
+                let prepared = try await Task.detached {
+                    try AppUpdate.run(["prepare", "--version", release.version])
+                }.value
+                guard let path = prepared.app else { throw UpdateFailure(message: "The update did not provide an app to install.") }
+                let candidate = URL(fileURLWithPath: path)
+                updateStatus = "Installing Update…"
+                do {
+                    try await Task.detached {
+                        let files = LifecycleFiles(home: FileManager.default.homeDirectoryForCurrentUser)
+                        let lockURL = FileManager.default.homeDirectoryForCurrentUser
+                            .appendingPathComponent("Library/Application Support/Tokenmaxxer/install.lock")
+                        let lock = Darwin.open(lockURL.path, O_CREAT | O_RDWR, 0o600)
+                        guard lock >= 0 else { throw UpdateFailure(message: "Could not lock the installation. Reopen Carrie On and retry.") }
+                        defer { Darwin.close(lock) }
+                        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else {
+                            throw UpdateFailure(message: "Another installation is in progress. Try again when it finishes.")
+                        }
+                        defer { flock(lock, LOCK_UN) }
+                        guard try Data(contentsOf: metadataURL) == originalMetadata else {
+                            throw UpdateFailure(message: "The installed app changed during the download. Reopen it and check for updates again.")
+                        }
+                        do {
+                            try LifecycleServices.setRunning(false, files: files)
+                            try AppUpdate.install(candidate: candidate, installed: Bundle.main.bundleURL,
+                                                  launch: AppUpdate.launchReplacement)
+                        } catch {
+                            // Reopening also repairs services if recovery itself fails.
+                            try? LifecycleServices.setRunning(true, files: files)
+                            throw error
+                        }
+                    }.value
+                } catch {
+                    // Retain staging on failure: it may hold the only recovery copy.
+                    throw UpdateFailure(message: "\(error.localizedDescription)\n\nStaged or recovery app: \(path)")
+                }
+                NSApp.terminate(nil)
+            } catch { showUpdate(message: "Carrie On couldn’t update", detail: error.localizedDescription) }
+        }
+    }
+
+    private func showUpdate(message: String, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = detail
         alert.addButton(withTitle: "OK")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()

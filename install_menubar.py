@@ -19,14 +19,15 @@ LABEL = "com.nickcorin.tokenmaxxer.menu"
 def build_menu(build):
     build.mkdir(parents=True, exist_ok=True)
     # Compile stable inputs even when the working copy is being edited.
-    for name in ("Brand.swift", "ChatPicker.swift", "AppSetup.swift", "AppLifecycle.swift", "main.swift"):
+    for name in ("Brand.swift", "ChatPicker.swift", "AppSetup.swift", "AppLifecycle.swift", "AppUpdate.swift", "main.swift"):
         shutil.copyfile(ROOT / "menubar" / name, build / name)
     executable = build / "TokenmaxxerMenu"
     target = f"{platform.machine()}-apple-macosx{MINIMUM_MACOS}"
     subprocess.run(["/usr/bin/swiftc", "-O", "-target", target,
                     "-module-cache-path", str(build / "cache"),
                     "-o", str(executable), str(build / "ChatPicker.swift"), str(build / "AppSetup.swift"),
-                    str(build / "AppLifecycle.swift"), str(build / "Brand.swift"), str(build / "main.swift")], check=True)
+                    str(build / "AppLifecycle.swift"), str(build / "AppUpdate.swift"),
+                    str(build / "Brand.swift"), str(build / "main.swift")], check=True)
     subprocess.run([str(executable), "--self-test"], check=True)
     return executable
 

@@ -12,6 +12,8 @@ The bundle includes Python. You need an Apple Silicon Mac, the Codex desktop app
 
 See the [installation guide](INSTALL.md) for first launch, updates, troubleshooting, and removal.
 
+Installed standalone apps offer **Settings → Check for Updates…** in the menu bar, with verified downloads and **Install and Restart**. Updates preserve your queue and settings.
+
 ## How it works
 
 Each enrollment authorizes a single continuation after a recorded reset. Carrie On waits for fresh quota headroom and checks that the chat still matches the enrolled work. Active chats and chats awaiting approval or input are deferred. Changed work, paused goals, and uncertain delivery require attention rather than automatic retries. You can pause the queue or remove an enrollment at any time.

@@ -38,6 +38,8 @@ just verify '/tmp/Carrie On release/Carrie-On-0.5.1-macos-arm64.zip'
 
 Output is a versioned ZIP, `.zip.sha256` checksum, and JSON manifest in `dist/`. The manifest records the version, clean source commit (or null for dirty/exported source), build identity, architecture, Python version, compatibility audit, size, and checksum. Build identities and signing timestamps mean builds are not byte-reproducible. Generated files are ignored by Git.
 
+The built-in updater reads the latest published stable release from GitHub. Keep the `vMAJOR.MINOR.PATCH` tag and generated asset names unchanged, and publish the ZIP and JSON manifest together. Drafts and prereleases are not offered; versions at or below the installed version are never installed. No additional update feed or credentials are required. The release manifest's hash and byte count must describe the final signed ZIP.
+
 For an extracted app, signing and signature checks are also available directly:
 
 ```sh

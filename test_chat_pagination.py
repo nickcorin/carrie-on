@@ -22,7 +22,7 @@ class NativeChatPagination(unittest.TestCase):
             main.write_text(declarations + (ROOT / "tests/ChatPagination.swift").read_text())
             executable = build / "ChatPaginationTests"
             sources = [ROOT / "menubar" / name for name in
-                       ("ChatPicker.swift", "AppSetup.swift", "AppLifecycle.swift", "Brand.swift")]
+                       ("ChatPicker.swift", "AppSetup.swift", "AppLifecycle.swift", "AppUpdate.swift", "Brand.swift")]
             compile_result = subprocess.run(
                 ["/usr/bin/swiftc", "-module-cache-path", str(build / "cache"),
                  "-o", str(executable), *map(str, sources), str(main)],

@@ -378,6 +378,7 @@ if CommandLine.arguments.contains("--self-test") {
         exit(1)
     }
 } else {
+    try AppUpdate.waitForPreviousInstance()
     let portText = Bundle.main.object(forInfoDictionaryKey: "TokenmaxxerPort") as? String ?? "8766"
     guard let port = Int(portText), (1024...65535).contains(port),
           let url = URL(string: "http://127.0.0.1:\(port)") else { fatalError("Invalid dashboard port") }
