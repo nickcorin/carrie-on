@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Carrie On · Continuation queue</title>
+  <link rel="icon" type="image/png" href="/app-icon.png">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23242a26'/%3E%3Ctext x='9' y='30' font-size='30' fill='%23d6e9b8'%3E↗%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div class="brand"><img class="mark" src="/app-icon.png" alt=""><span>Carrie On<small>CONTINUATION QUEUE</small></span></div>
+      <span class="local">ON THIS MAC</span>
+    </header>
+    <section class="intro">
+      <div><p class="eyebrow">PICK UP WHERE YOU LEFT OFF</p><h1>Your next reset,<br>already planned.</h1><p class="description">Choose the chats to continue when your usage resets.<br>Each chat resumes once, then leaves the queue.</p></div>
+      <aside class="monitor"><span class="eyebrow">BACKGROUND MONITOR</span><h2 id="monitor-state">Connecting…</h2><p id="last-check">Checking the worker</p><button id="pause" class="secondary" disabled>Pause queue</button></aside>
+    </section>
+    <div id="connection-error" class="notice error" role="alert" hidden></div>
+    <div id="action-message" class="notice" role="status" hidden></div>
+    <section class="usage-strip" aria-label="Usage"><div><span class="eyebrow">CODEX USAGE</span><div id="usage">Loading usage…</div></div><button id="refresh" class="text-button">Refresh</button></section>
+    <div class="workspace">
+      <section class="panel picker">
+        <div class="panel-title"><h2>Choose chats</h2><span id="chat-count" class="count">—</span></div>
+        <form id="search-form" class="search"><label class="sr-only" for="search">Search chats</label><input id="search" type="search" placeholder="Search your local chats…" autocomplete="off"><button class="secondary" type="submit">Search</button></form>
+        <p id="chat-hint" class="hint">Recent local chats. Search to find older work.</p>
+        <div id="chats" class="chat-list" aria-label="Available chats"><p class="empty">Loading chats…</p></div>
+        <div class="enrollment">
+          <label for="prompt">Continuation instruction <span class="optional">optional</span></label>
+          <textarea id="prompt" rows="2" maxlength="32000" placeholder="Continue the unfinished work already requested in this chat."></textarea>
+          <div id="bucket-field" hidden><label for="bucket">Usage bucket</label><select id="bucket"></select></div>
+          <div class="enroll-footer"><span id="selection-count">No chats selected</span><button id="enqueue" disabled>Queue selected <span aria-hidden="true">↗</span></button></div>
+          <p class="hint">Queueing may open the selected chat in Codex.</p>
+        </div>
+      </section>
+      <section class="panel queue-panel">
+        <div class="panel-title"><h2>Up next</h2><span id="queue-count" class="count">0</span></div>
+        <p class="hint">Waiting for reset confirmation and available usage.</p>
+        <div id="queue"><div class="empty-state"><span aria-hidden="true">↗</span><h3>A little planning. More progress.</h3><p>Select chats on the left to prepare your next session.</p></div></div>
+        <details class="history"><summary>Recent history <span id="history-count"></span></summary><div id="history"><p class="hint">Completed enrollments will appear here.</p></div></details>
+      </section>
+    </div>
+    <footer><span>Monitoring runs without model access. Keep this Mac awake and Codex open.</span><span>Queue status refreshes every 10 seconds.</span></footer>
+  </main>
+</body>
+</html>

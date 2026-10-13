@@ -1,0 +1,18 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Tokenmaxxer desktop connection", "version": "1.0.0"},
+  "servers": [{"url": "http://127.0.0.1:8766"}],
+  "paths": {
+    "/api/connection": {
+      "get": {
+        "summary": "Observe desktop connectivity without opening chats or running inference",
+        "description": "Performs a same-user desktop IPC handshake with a three-second timeout. Missing, refused, timed-out, or incompatible connections return connected=false. The observation does not guarantee availability for a later action and does not change the queue. Requires a loopback Host, no foreign Origin or cross-site request, and the local-client header. Responses are not cached.",
+        "parameters": [{"in": "header", "name": "X-Tokenmaxxer", "required": true, "schema": {"type": "string", "const": "1"}}],
+        "responses": {
+          "200": {"description": "Current handshake result", "content": {"application/json": {"schema": {"type": "object", "required": ["connected"], "properties": {"connected": {"type": "boolean"}}}}}},
+          "403": {"description": "Request is not from a trusted local client", "content": {"application/json": {"schema": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}}}}}
+        }
+      }
+    }
+  }
+}
