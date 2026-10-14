@@ -485,6 +485,8 @@ struct ChatPickerView: View {
     @ObservedObject var lifecycle: AppLifecycle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expandedQueued: Set<String> = []
+    @State private var hoveringQueued = false
+    @State private var hoveringChats = false
     @AppStorage("queuedSectionExpanded") private var showQueued = true
     @AppStorage("chatsSectionExpanded") private var showChats = true
 
@@ -573,8 +575,10 @@ struct ChatPickerView: View {
                                     .transition(cardTransition)
                             }
                         }.padding(.bottom, 6)
+                            .background(ChatListScrollbar(hovered: hoveringQueued))
                     }
                     .frame(height: queuedHeight)
+                    .onHover { hoveringQueued = $0 }
                     .padding(.top, 6)
                     .accessibilityLabel("Queued chats")
                 }
@@ -629,7 +633,9 @@ struct ChatPickerView: View {
                                     (model.searching ? "Finding chats…" : (model.ready ? "No matching chats" : "Loading chats…")))
                             }
                         }.padding(.bottom, 12)
-                    }.accessibilityLabel("Available chats")
+                            .background(ChatListScrollbar(hovered: hoveringChats))
+                    }.onHover { hoveringChats = $0 }
+                        .accessibilityLabel("Available chats")
                 }.padding(.top, 8)
             } label: {
                 Label("Chats · \(model.availableChats.count)\(model.nextCursor == nil ? "" : "+")", systemImage: "bubble.left.and.bubble.right")
@@ -907,6 +913,73 @@ struct CardActionStyle: ButtonStyle {
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovered)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: configuration.isPressed)
         }
+    }
+}
+
+/// Keep native scrolling controls unobtrusive without replacing their interactions.
+struct ChatListScrollbar: NSViewRepresentable {
+    let hovered: Bool
+
+    final class Scroller: NSScroller {
+        var hovered = false { didSet { needsDisplay = true } }
+        private var scrollDeadline = Date.distantPast
+        private var hideTimer: Timer?
+
+        override var doubleValue: Double {
+            didSet {
+                guard doubleValue != oldValue else { return }
+                scrollDeadline = Date().addingTimeInterval(0.8)
+                needsDisplay = true
+                hideTimer?.invalidate()
+                let timer = Timer(timeInterval: 0.8, repeats: false) { [weak self] _ in
+                    self?.needsDisplay = true
+                }
+                hideTimer = timer
+                RunLoop.main.add(timer, forMode: .common)
+            }
+        }
+
+        var showsThumb: Bool {
+            knobProportion < 1 && isEnabled && (hovered || Date() < scrollDeadline)
+        }
+
+        override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
+
+        override func drawKnob() {
+            guard showsThumb else { return }
+            let knob = rect(for: .knob)
+            let thumb = NSRect(x: knob.midX - 2, y: knob.minY + 2,
+                               width: 4, height: max(0, knob.height - 4))
+            NSColor.labelColor.withAlphaComponent(0.24).setFill()
+            NSBezierPath(roundedRect: thumb, xRadius: 2, yRadius: 2).fill()
+        }
+    }
+
+    final class View: NSView {
+        var hovered = false
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            configureScrollView()
+        }
+
+        func configureScrollView() {
+            guard let scroll = enclosingScrollView else { return }
+            if !(scroll.verticalScroller is Scroller) {
+                scroll.verticalScroller = Scroller()
+            }
+            // Own visibility so the list hover remains visible for as long as needed.
+            scroll.scrollerStyle = .legacy
+            scroll.autohidesScrollers = true
+            scroll.verticalScroller?.controlSize = .small
+            (scroll.verticalScroller as? Scroller)?.hovered = hovered
+        }
+    }
+
+    func makeNSView(context: Context) -> View { View() }
+
+    func updateNSView(_ view: View, context: Context) {
+        view.hovered = hovered
+        view.configureScrollView()
     }
 }
 

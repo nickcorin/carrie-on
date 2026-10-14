@@ -1,5 +1,7 @@
 # Menu bar
 
+Chat lists use a narrow, softly tinted native scrollbar thumb without a visible track beside the cards. The thumb appears while hovering over its list or for 0.8 seconds after scrolling, and only when content overflows. AppKit retains native scrolling and thumb dragging. Verify both lists with overflowing and short results, then move the pointer outside the list and confirm the thumb disappears after scrolling stops.
+
 Adding or removing a queue enrollment fades and gently scales its cards between sections over 0.3 seconds, while surrounding cards and section heights ease into place. Transitions follow confirmed queue changes, including background reconciliation; instruction edits and search do not trigger queue animations. Reduce Motion disables these transitions.
 
 Cards are neutral for available chats, amber with a clock while queued, blue with a spinner while sending, and red with a warning icon when reactivation fails or needs attention. State icons sit beside the title on both faces; instructions stay plain. Hover help describes the state: **Scheduled for the next usage reset**, **Sending continuation…**, or the failure reason and recovery guidance. Sending cards retain a subtle two-second border pulse; Reduce Motion keeps both spinner and border static. Editing and removal are disabled while sending. The visible picker reads queue status every second independently of usage and chat metadata refreshes. Routine readiness checks do not change a card’s queued appearance; very fast sends can finish between reads.
