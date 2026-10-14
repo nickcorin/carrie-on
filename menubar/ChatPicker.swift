@@ -111,6 +111,18 @@ enum QueuedChange {
     case remove
 }
 
+enum RefreshTimestamp {
+    static func label(_ date: Date?, at now: Date) -> String {
+        guard let date else { return "Last updated: Never" }
+        let age = max(0, now.timeIntervalSince(date))
+        if age < 60 { return "Last updated: Just now" }
+        if age < 3600 { return "Last updated: \(Int(age / 60))m ago" }
+        let time = date.formatted(date: .omitted, time: .shortened)
+        if Calendar.current.isDate(date, inSameDayAs: now) { return "Last updated: \(time)" }
+        return "Last updated: \(date.formatted(date: .abbreviated, time: .omitted)), \(time)"
+    }
+}
+
 /// Desktop availability is independent of saved queue data and usage reads.
 enum CodexConnection: Equatable {
     case checking, connected, notRunning, notInstalled, unavailable, serviceUnavailable
@@ -169,10 +181,9 @@ final class ChatPickerModel: ObservableObject {
     @Published var paused = false
     @Published var ready = false
     @Published var connection: CodexConnection = .checking
+    @Published private(set) var lastUpdatedAt: Date?
     @Published private(set) var openingCodex = false
     @Published private(set) var launchError: String?
-    @Published private var checkingConnection = false
-    @Published private var loadingUsage = false
     @Published var refreshingSummary = false
     @Published var summary: MenuSnapshot? {
         didSet {
@@ -187,6 +198,7 @@ final class ChatPickerModel: ObservableObject {
     private var catalogQuery: String?
     private var queueRevision = 0
     private var queueReadRevision = 0
+    private var snapshotRefresh: Task<Void, Never>?
     private let baseURL: URL
     private let session: URLSession
     private let didQueue: () -> Void
@@ -209,7 +221,7 @@ final class ChatPickerModel: ObservableObject {
         activities.values.contains { if case .working = $0 { return true }; return false }
     }
     var refreshingCodex: Bool {
-        connection == .connected && (checkingConnection || refreshingSummary || loadingUsage || searching || checkingMetadata)
+        connection == .connected && (refreshingSummary || searching || checkingMetadata)
     }
     func queuedChat(_ entry: PickerQueue.Entry) -> PickerChat {
         knownChats[entry.id] ?? PickerChat(id: entry.id, title: entry.title, cwd: nil)
@@ -247,11 +259,10 @@ final class ChatPickerModel: ObservableObject {
 
     func load() async {
         async let queue: () = updateQueue()
-        await updateConnection()
+        await refreshSnapshot()
         async let catalog: () = searchChats()
-        async let usage: () = loadUsage()
         async let metadata: () = loadQueuedMetadata()
-        _ = await (catalog, queue, usage, metadata)
+        _ = await (catalog, queue, metadata)
     }
 
     private var codexApplicationURL: URL? {
@@ -271,27 +282,42 @@ final class ChatPickerModel: ObservableObject {
         defer { openingCodex = false }
         do {
             _ = try await NSWorkspace.shared.openApplication(at: url, configuration: .init())
-            await updateConnection()
+            await refreshSnapshot()
         } catch {
             launchError = error.localizedDescription
         }
     }
 
-    func updateConnection() async {
-        guard !checkingConnection else { return }
-        checkingConnection = true
-        defer { checkingConnection = false }
+    /// Refresh connection, usage, and queue together; overlapping callers share one poll.
+    /// Partial or failed reads preserve the last complete update time.
+    func refreshSnapshot() async {
+        if let snapshotRefresh {
+            await snapshotRefresh.value
+            return
+        }
+        let refresh = Task { await pollSnapshot() }
+        snapshotRefresh = refresh
+        await refresh.value
+        snapshotRefresh = nil
+    }
+
+    private func pollSnapshot() async {
+        refreshingSummary = true
+        defer { refreshingSummary = false }
         let previous = connection
         let identifiers = ["com.openai.codex", "com.openai.codex.helper"]
         let running = NSWorkspace.shared.runningApplications.contains { identifiers.contains($0.bundleIdentifier ?? "") }
         let installed = running || codexApplicationURL != nil
         if !running { connection = CodexConnection.resolve(installed: installed, running: false, handshake: false) }
         do {
-            struct Connection: Decodable { let connected: Bool }
-            let data = try await request("api/connection", timeout: 5)
-            let handshake = try JSONDecoder().decode(Connection.self, from: data).connected
+            let data = try await request("api/menu", timeout: 45)
+            let snapshot = try MenuSnapshot.decode(data)
+            guard let handshake = snapshot.connected else { throw MenuError.invalidData }
+            summary = snapshot
             connection = CodexConnection.resolve(installed: installed, running: running, handshake: handshake)
+            if snapshot.usage != nil, snapshot.queue != nil { lastUpdatedAt = Date() }
         } catch {
+            summary = nil
             connection = running ? .serviceUnavailable : CodexConnection.resolve(installed: installed, running: false, handshake: false)
         }
         if connection != .connected { loadError = nil }
@@ -348,19 +374,9 @@ final class ChatPickerModel: ObservableObject {
             guard !Task.isCancelled else { return }
             if revision == searchRevision, connection == .connected {
                 loadError = "Could not load chats: \(error.localizedDescription)"
-                await updateConnection()
+                await refreshSnapshot()
             }
         }
-    }
-
-    private func loadUsage() async {
-        guard !loadingUsage else { return }
-        loadingUsage = true
-        defer { loadingUsage = false }
-        do {
-            let data = try await request("api/menu")
-            summary = try MenuSnapshot.decode(data)
-        } catch { /* The menu app also refreshes usage independently. */ }
     }
 
     func reconcile(_ queue: PickerQueue) {
@@ -714,8 +730,13 @@ struct ChatPickerView: View {
                     .font(.system(size: 11)).lineLimit(1)
             }
             .accessibilityElement(children: .combine)
-            .help(connectionError ?? (model.refreshingCodex ? "Updating usage and chats in the background." : model.connection.detail))
             Spacer(minLength: 0)
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                Text(RefreshTimestamp.label(model.lastUpdatedAt, at: context.date))
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .lineLimit(1)
+            }
             if model.connection == .notRunning {
                 Button {
                     Task { await model.openCodex() }
@@ -730,6 +751,7 @@ struct ChatPickerView: View {
             }
         }
         .foregroundStyle(.secondary)
+        .accessibilityElement(children: .contain)
         .frame(minHeight: 26)
         .padding(.horizontal, 20).padding(.vertical, 8)
         .fixedSize(horizontal: false, vertical: true)
@@ -1303,7 +1325,8 @@ final class ChatPickerPopover: NSObject, NSPopoverDelegate {
         guard !popover.isShown else { return }
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        popover.contentViewController?.view.window?.title = "Carrie On"
+        popover.contentViewController?.view.window?.title =
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Carrie On"
         popover.contentViewController?.view.window?.makeKey()
         Task { await model.load() }
     }

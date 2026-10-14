@@ -55,6 +55,7 @@ struct QueueSummary: Decodable {
 }
 
 struct MenuSnapshot: Decodable {
+    let connected: Bool?
     let usage: UsageSummary?
     let queue: QueueSummary?
     let usageError: String?
@@ -100,7 +101,7 @@ final class MenuApp: NSObject, NSApplicationDelegate {
     private let diagnosticsURL: URL?
     private var timer: Timer?
     private var queueTimer: Timer?
-    private var snapshot: MenuSnapshot?
+    private var snapshot: MenuSnapshot? { picker?.model.summary }
     private var refreshing = false
     private var picker: ChatPickerPopover!
     private let lifecycle = AppLifecycle()
@@ -196,7 +197,6 @@ final class MenuApp: NSObject, NSApplicationDelegate {
         let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Carrie On"
         statusItem.button?.toolTip = "\(appName) · \(queueText) · \(resetText) · \(usageText)"
         statusItem.button?.setAccessibilityLabel("\(appName), \(queueText), \(resetText)")
-        picker.model.summary = snapshot
         writeDiagnostics()
     }
 
@@ -215,6 +215,8 @@ final class MenuApp: NSObject, NSApplicationDelegate {
             "usage_available": snapshot?.usage != nil,
             "queue_available": snapshot?.queue != nil,
             "refreshing": refreshing,
+            "connection": String(describing: picker.model.connection),
+            "updated_at": picker.model.lastUpdatedAt?.timeIntervalSince1970 as Any? ?? NSNull(),
             "rendered_at": Date().timeIntervalSince1970
         ]
         if let encoded = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted]) {
@@ -224,22 +226,11 @@ final class MenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func refresh() {
-        Task { await picker.model.updateConnection() }
         guard !refreshing else { return }
         refreshing = true
-        picker.model.refreshingSummary = true
         Task {
-            do {
-                var request = URLRequest(url: baseURL.appendingPathComponent("api/menu"))
-                request.setValue("1", forHTTPHeaderField: "X-Tokenmaxxer")
-                request.timeoutInterval = 45
-                request.cachePolicy = .reloadIgnoringLocalCacheData
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw MenuError.unavailable }
-                snapshot = try MenuSnapshot.decode(data)
-            } catch { snapshot = nil }
+            await picker.model.refreshSnapshot()
             refreshing = false
-            picker.model.refreshingSummary = false
             render()
             if picker.popover.isShown { await picker.model.updateQueue() }
         }

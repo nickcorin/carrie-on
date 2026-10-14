@@ -75,12 +75,7 @@ class Dashboard:
         if route == "/api/health":
             return {"version": VERSION, "build_id": self.build_id}
         if route == "/api/connection":
-            # A bounded handshake only: never open a chat or start a turn.
-            try:
-                with tokenmaxxer.Desktop(self.socket, timeout=3):
-                    return {"connected": True}
-            except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-                return {"connected": False}
+            return {"connected": self.desktop_connected()}
         if route == "/api/menu":
             return self.menu_summary()
         if route == "/api/status":
@@ -126,9 +121,22 @@ class Dashboard:
             return self.read_usage()
         raise ValueError("Unknown dashboard endpoint")
 
+    def desktop_connected(self):
+        """Observe desktop availability without opening a chat or starting a turn."""
+        try:
+            with tokenmaxxer.Desktop(self.socket, timeout=3):
+                return True
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            return False
+
     def menu_summary(self):
-        """Return only menu metadata; a failed source leaves the other usable."""
-        result = {"usage": None, "queue": None, "usage_error": None, "queue_error": None}
+        """Return connection, usage, and queue observations in one read-only poll.
+
+        Failed usage or queue reads return null with an error; other observations
+        remain usable. The desktop handshake is independent of CLI usage access.
+        """
+        result = {"connected": self.desktop_connected(), "usage": None, "queue": None,
+                  "usage_error": None, "queue_error": None}
         try:
             status = self.command("list")
             result["queue"] = {

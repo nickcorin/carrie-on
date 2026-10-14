@@ -3,13 +3,21 @@ import Foundation
 final class ChatPageProtocol: URLProtocol {
     @MainActor static var pending: [ChatPageProtocol] = []
     @MainActor static var requests = 0
+    @MainActor static var connected = true
+    @MainActor static var menuRequests = 0
+    @MainActor static var usageAvailable = true
+    @MainActor static var menuStatus = 200
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Task { @MainActor in
-            if request.url!.path == "/api/connection" {
-                reply(#"{"connected":true}"#)
+            if request.url!.path == "/api/menu" {
+                Self.menuRequests += 1
+                let usage = Self.usageAvailable ? #"{"windows":[{"bucket":"codex","name":"primary","used_percent":25,"resets_at":2000000000}]}"# : "null"
+                reply("{\"connected\":\(Self.connected),\"usage\":\(usage),\"queue\":{\"count\":0,\"paused\":false,\"needs_attention\":0}}", status: Self.menuStatus)
+            } else if request.url!.path == "/api/connection" {
+                fatalError("Refresh must not make a separate connection request")
             } else {
                 Self.requests += 1
                 Self.pending.append(self)
@@ -37,12 +45,34 @@ final class ChatPageProtocol: URLProtocol {
 
 @MainActor
 func testChatPagination() async throws {
+    let now = Date()
+    guard RefreshTimestamp.label(nil, at: now) == "Last updated: Never",
+          RefreshTimestamp.label(now, at: now) == "Last updated: Just now",
+          RefreshTimestamp.label(now.addingTimeInterval(-120), at: now) == "Last updated: 2m ago",
+          RefreshTimestamp.label(now.addingTimeInterval(-7200), at: now).hasSuffix(
+            now.addingTimeInterval(-7200).formatted(date: .omitted, time: .shortened)) else {
+        fatalError("Refresh labels did not use relative or minute-precision times")
+    }
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [ChatPageProtocol.self]
     let session = URLSession(configuration: configuration)
     defer { session.invalidateAndCancel() }
     let model = ChatPickerModel(baseURL: URL(string: "http://pagination.test")!, session: session, didQueue: {})
     model.connection = .connected
+    guard model.lastUpdatedAt == nil else {
+        fatalError("Refresh timestamps must start unknown")
+    }
+    async let initialSnapshot: () = model.refreshSnapshot()
+    async let concurrentRefresh: () = model.refreshSnapshot()
+    _ = await (initialSnapshot, concurrentRefresh)
+    guard model.connection == .connected, model.lastUpdatedAt != nil, ChatPageProtocol.menuRequests == 1 else {
+        fatalError("Concurrent refreshes must share a single snapshot request")
+    }
+    let updatedAt = model.lastUpdatedAt
+    model.summary = nil
+    guard model.lastUpdatedAt == updatedAt else {
+        fatalError("Rendering changed the successful snapshot timestamp")
+    }
     model.instructions["a"] = "Keep this draft."
     model.reconcile(PickerQueue(entries: [.init(enrollmentID: "queued-a", thread_id: "a",
                                                title: "Alpha", prompt: "Continue")], paused: false))
@@ -132,6 +162,22 @@ func testChatPagination() async throws {
     await cleared.value
     guard model.availableChats.map(\.id) == ["c"], model.queued == ["a"],
           model.instructions["a"] == "Keep this draft." else { fatalError("Clearing search failed to restart pagination") }
+    let previousUpdate = model.lastUpdatedAt!
+    ChatPageProtocol.usageAvailable = false
+    await model.refreshSnapshot()
+    guard model.connection == .connected, model.summary?.usage == nil, model.lastUpdatedAt == previousUpdate else {
+        fatalError("A partial refresh changed the last complete update time")
+    }
+    ChatPageProtocol.connected = false
+    await model.refreshSnapshot()
+    guard model.connection != .connected, model.lastUpdatedAt == previousUpdate else {
+        fatalError("A failed handshake retained connected status or refreshed the timestamp")
+    }
+    ChatPageProtocol.menuStatus = 503
+    await model.refreshSnapshot()
+    guard model.connection != .connected, model.summary == nil, model.lastUpdatedAt == previousUpdate else {
+        fatalError("A failed poll made the last update look fresh")
+    }
     print("Chat pagination checks passed")
 }
 

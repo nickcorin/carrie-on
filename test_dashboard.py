@@ -250,6 +250,7 @@ class DashboardBehavior(unittest.TestCase):
         self.request("/api/queue", {"chat": CHAT_ID, "prompt": "Private continuation instruction"})
         status, summary = self.request("/api/menu")
         self.assertEqual(status, 200)
+        self.assertTrue(summary["connected"])
         self.assertEqual(summary["queue"]["count"], 1)
         self.assertEqual(summary["queue"]["paused"], False)
         self.assertEqual(summary["usage"]["windows"][0]["used_percent"], 25)
@@ -266,6 +267,14 @@ class DashboardBehavior(unittest.TestCase):
         self.assertEqual(summary["queue"]["count"], 1)
         self.assertEqual(summary["usage"], None)
         self.assertEqual(summary["usage_error"], "Offline")
+
+    def test_menu_snapshot_reports_desktop_loss_and_recovery(self):
+        with patch("tokenmaxxer.Desktop", side_effect=FileNotFoundError("No socket")):
+            status, summary = self.request("/api/menu")
+        self.assertEqual(status, 200)
+        self.assertFalse(summary["connected"])
+        self.assertIsNotNone(summary["usage"])
+        self.assertTrue(self.request("/api/menu")[1]["connected"])
 
     def test_recent_usage_enrolls_without_starting_an_app_server(self):
         self.assertEqual(self.request("/api/menu")[0], 200)
