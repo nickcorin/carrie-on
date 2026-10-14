@@ -1,6 +1,6 @@
 # Contributing
 
-Use an Apple Silicon Mac with Apple's command-line tools, just 1.58+, uv, Node.js, and Go. The application uses Python's standard library; build dependencies and lint tools are pinned. See [Releasing](RELEASING.md#toolchain) for setup.
+Use an Apple Silicon Mac with Apple's command-line tools, just 1.58 or later, uv, Node.js, and Go. The application uses Python's standard library. Build dependencies and lint tools are pinned. See [build setup](RELEASING.md#toolchain).
 
 ```sh
 git clone https://github.com/nickcorin/carrie-on.git
@@ -9,9 +9,9 @@ just setup
 just ci
 ```
 
-`just ci` runs all release gates locally, including minimum-Python tests and a signed, verified app build. Pushes and pull requests do not run GitHub Actions; the optional hosted workflow is manual-only. Use `just lint` or `just test` for a shorter development loop, and `just --list` to discover the other commands.
+`just ci` runs all release checks locally, including tests on the minimum Python version and a signed, verified app build. Pushes and pull requests do not run GitHub Actions. Start the optional hosted workflow manually if needed. Use `just lint` or `just test` to check changes during development, and `just --list` to discover other commands.
 
-Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix sockets. They do not enroll or dispatch real chats. Allow local sockets in a sandbox. Native pagination tests compile a temporary Swift executable; the packaged acceptance check uses an isolated home.
+Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix sockets. They do not enroll or dispatch real chats. Allow local sockets in a sandbox. Native pagination tests compile a temporary Swift executable. Package verification uses an isolated home.
 
 ## Component map
 
@@ -23,6 +23,7 @@ Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix socket
 | `carrie_on_ui.py` | Loopback HTTP API for the native card |
 | `menubar/` | Native AppKit menu, chat picker, setup, and lifecycle |
 | `app_runtime.py`, `app_lifecycle.py`, `bundle_install.py` | Runtime paths, login services, and installation |
+| `legacy_migration.py` | Import of older bundled installations, recovery copies, and old service removal |
 | `app_update.py`, `menubar/AppUpdate.swift` | GitHub release checks, verified staging, atomic replacement, and restart |
 | `build_bundle.py`, `release.py`, `verify_bundle.py` | Release metadata, packaging, and archive acceptance |
 | `disk_image.py`, `assets/DMGBackground.swift` | Drag-to-Applications disk image, installer artwork, and mounted-image verification |
@@ -31,8 +32,8 @@ Keep queue mutations behind `locked_queue`. Persist sending state before dispatc
 
 ## Changes
 
-Use focused branches and Conventional Commits, and sign commits. Add behavior tests for changed contracts and update the relevant guide in the same change. Avoid installing development builds over a working installation simply to run tests: source and bundled installations share login service labels.
+Use focused branches and Conventional Commits, and sign commits. Add behavior tests for changed contracts and update the relevant guide in the same change. For interactive testing, run `just dev` and install **Carrie On Dev.app** alongside the release app. Dev has separate data and services. Source installations share service labels with the release app. See [local development app instructions](RELEASING.md#local-development-app).
 
-Open a pull request against `master` with the problem, resulting behavior, and verification performed. Run `just ci` locally before pushing and include the result in the pull request; no hosted check runs automatically. The release builder rejects incompatible Python runtimes through its Mach-O audit.
+Open a pull request against `master` with the problem, resulting behavior, and test results. Run `just ci` locally before pushing and include the result in the pull request. No hosted check runs automatically. The release builder rejects incompatible Python runtimes through its Mach-O checks.
 
 Never commit queue files, logs, settings, credentials, local verification records, or build environments. Use synthetic chat data in fixtures and screenshots. Bug reports should describe a minimal reproduction without private chat contents.

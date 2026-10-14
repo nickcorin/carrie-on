@@ -1,45 +1,63 @@
 # Install Carrie On on another Mac
 
-Carrie On ships as a single **Carrie On.app** containing its native menu interface, Python, worker, and local API. The destination needs no Python, Xcode, or runtime download. It does need the Codex desktop app and a signed-in Codex CLI. Keep Codex open and the Mac awake and connected for automatic continuation.
+You need an Apple Silicon Mac, the Codex desktop app, and a signed-in Codex CLI. Carrie On includes Python and needs no development tools. Keep Codex open and your Mac awake and connected for automatic continuation.
+
+The build targets macOS 13 or later. The current release has been tested on macOS 27.0.1. Runtime testing on macOS 13 remains outstanding.
 
 ## Install
 
-1. Download and open the release DMG. The `arm64` release targets **Apple Silicon and macOS 13 or later**. Runtime testing on macOS 13 is still outstanding; the current release has been exercised on macOS 27.0.1.
-2. Drag **Carrie On** onto the **Applications** shortcut in the installer window, then eject the disk image. If you cannot write to `/Applications`, drag the app into your home folder's `Applications` folder instead. It must be directly inside either folder. Quit an older Carrie On before replacing it. The ZIP remains available as an alternative: extract it and drag the app into Applications.
-3. Open **Carrie On**. First launch checks for the Codex CLI, saves its location, and sets up the worker, local API, and menu login services. If Codex cannot be found, choose its executable in the setup dialog. `command -v codex` in Terminal shows the path on a configured Mac.
-4. Open the menu bar item and queue a local chat.
+To install the app, follow these steps:
 
-The app is **ad-hoc signed, not notarized**. A downloaded copy may be blocked. After attempting to open it, approve that specific app in **System Settings → Privacy & Security → Open Anyway**, then open it again. Only approve a release you trust. No Apple developer membership is needed for this distribution, but it cannot offer the warning-free first launch of a Developer ID signed and notarized app. Managed Macs may prohibit this approval.
+1. Download and open the DMG from [GitHub Releases](https://github.com/nickcorin/carrie-on/releases).
+2. If an older Carrie On is running, choose **Quit Carrie On**.
+3. Drag **Carrie On** onto the **Applications** shortcut in the installer window. If you cannot write to `/Applications`, use `~/Applications` instead. The app must be directly inside either folder.
+4. Eject the disk image and open the installed **Carrie On** app.
+5. If setup cannot find Codex, choose its executable in the dialog. Run `command -v codex` in Terminal to find its path.
+6. Open the menu bar item and queue a local chat.
 
-Setup runs as your login user, without administrator privileges. Settings, queue/history, logs, and setup records live in `~/Library/Application Support/Carrie On`. Nothing is written into the signed app. No builder credentials, chats, queue entries, or logs enter the release archive.
+If you prefer the ZIP, extract it and drag the app into Applications, then continue from step 4 without ejecting a disk image.
+
+The app is ad-hoc signed and is not notarized. If macOS blocks a downloaded copy, open **System Settings**, select **Privacy & Security**, and choose **Open Anyway** for Carrie On. Open the app again. Only approve a release you trust. Managed Macs may prohibit this approval.
+
+Setup runs as your login user, without administrator privileges. Your settings, queue, history, and logs are stored in `~/Library/Application Support/Carrie On`.
 
 ## Updates
 
 These instructions apply to Carrie On releases. Carrie On Dev rebuilds from your local checkout. See [development builds](RELEASING.md#local-development-app).
 
-Carrie On checks for a newer stable GitHub release once on startup. When an update is available, open the menu's Settings, choose **Update to <version>**, then **Install and Restart**. Otherwise, the button reads **Check for Updates**. Startup checks show no dialogs, even if the check fails. You can check again from Settings.
+### Update 0.5.5 or later
 
-After you confirm, Carrie On downloads the release and checks its size, SHA-256 checksum, compatibility, bundle identity, and code signature before replacing the app. Settings shows progress. You do not need a GitHub account. Choose **Not Now** to leave the update for later, or **Release Notes** to open its GitHub page.
+Carrie On checks for a newer stable release on startup. To install an update, follow these steps:
 
-The app restarts its worker and local API from the replacement bundle. It preserves the saved CLI path, port, interval, socket, Codex home, queue/history, and launch-at-login preference. Reopening the same build leaves healthy services running. Quit stops the app and its background services; reopening restarts them. The settings menu's **Launch at Login** setting controls automatic startup independently of manual launches. See [startup and quit](features/app-lifecycle.md).
+1. Open **Settings** from the menu bar item.
+2. Choose **Update to <version>**. If that option is absent, choose **Check for Updates**.
+3. Choose **Install and Restart**.
 
-The first release containing the updater must be installed manually. For older versions, source installations, or an Applications folder you cannot write to, choose **Quit Carrie On**, replace **Carrie On.app** with the downloaded release, and reopen it. Source installations should update their Git checkout and rebuild instead. macOS may request approval for a downloaded build.
+Settings shows download and installation progress. Choose **Not Now** to leave the update for later, or **Release Notes** to open its GitHub page. You do not need a GitHub account.
 
-Starting with 0.5.6, replacing an older bundled app migrates its installation automatically. Quit the old app, replace it using the new DMG, and open Carrie On. First launch stops the old services, imports settings, queue/history and the launch-at-login preference, then starts the current services. The older updater cannot accept the changed bundle identity, so the app replacement is still manual; no Terminal commands or manual file transfers are needed.
+Updates preserve your settings, queue, history, and launch-at-login preference. See [startup and quit](features/app-lifecycle.md) for background service behavior.
 
-If both installations already have data, current settings and login preferences take precedence. Distinct queued chats and history are combined; completed enrollments are never reactivated. For a chat enrolled in both queues, an attempted or uncertain send takes precedence over waiting work, and otherwise the current enrollment wins. Superseded entries remain in history and recovery copies. Existing pauses and delivery uncertainty are preserved. Migration does not send messages or ask the user to resolve duplicate records.
+### Replace 0.5.4 or earlier
 
-After the new services are healthy, setup removes the old login registrations and moves the old data into `~/Library/Application Support/Carrie On/Migration/previous-installation/retired`. This recovery directory also contains snapshots of both installations and a migration journal. Unsupported or damaged files are retained there with diagnostic warnings in `journal.json`, while usable data is imported automatically. Reopening retries interrupted setup without reimporting stale queue entries. Remove the recovery directory only after verifying your settings and queue; keeping it allows recovery of old logs and files. Carrie On Dev never migrates the release installation.
+The older updater rejects the changed app identity. To upgrade, follow the [installation steps](#install) to quit the old app and replace it with 0.5.6.
 
-Network, compatibility, or verification failures leave the installed app unchanged. Retry from **Check for Updates…** after resolving the problem. Installation exchanges complete bundles atomically and keeps the previous app in a hidden `.Carrie-On-update-*` directory beside the installed app. If starting the replacement fails immediately, it restores the previous bundle. If startup fails later, reopen Carrie On for setup recovery, or quit it and restore the previous app from that directory or its release ZIP. Finder's **Command-Shift-.** shows hidden folders; remove old recovery directories once the update is working. Back up your Application Support folder before downgrading across a documented data-format migration.
+First launch imports your settings, queued work, history, and launch-at-login preference automatically. You do not need to move files, run Terminal commands, or resolve duplicate records. After the new services are healthy, setup removes the old service registrations and moves the old files into a recovery directory. See [migration behavior](features/distribution.md#legacy-migration) for merge rules and recovery files.
 
-Updates trust this project's GitHub release assets over HTTPS. Checksums detect damaged downloads; ad-hoc signatures validate bundle integrity but do not authenticate a developer identity. The updater does not change Gatekeeper settings or request administrator privileges.
+If migration is interrupted, reopen the app to resume it. To recover old files, look in `~/Library/Application Support/Carrie On/Migration/previous-installation`. Keep that directory until you have checked your settings, queue, and history.
 
-The automatic migration applies to older bundled installations. Source installations keep a project-local queue and must uninstall their old services using that version's instructions; finish or cancel existing enrollments deliberately before switching, or copy the queue while all workers are stopped.
+### Recover a failed update
+
+If a download or verification fails, resolve the reported problem and retry from **Check for Updates**. These failures leave the installed app unchanged.
+
+If the replacement fails to start immediately, the updater restores the previous app. If startup fails later, reopen Carrie On to retry setup. To restore the previous app yourself, quit Carrie On and copy it from the hidden `.Carrie-On-update-*` directory beside the installed app or its release ZIP. Press **Command-Shift-.** in Finder to show hidden folders. Remove old app recovery directories after the update works. Back up your Application Support folder before downgrading across a documented data-format migration.
+
+### Update a source installation
+
+Update your Git checkout and rebuild. To switch from a source installation to the bundled app, uninstall the source installation's services using that version's instructions. Finish or cancel queued work before switching, or copy the project-local queue while all workers are stopped. Automatic migration applies only to bundled installations.
 
 ## Configuration and recovery
 
-The bundled backend is `Carrie On.app/Contents/MacOS/carrie_on`. These examples assume the app is in your home Applications folder; substitute `/Applications` if installed there.
+The bundled backend is `Carrie On.app/Contents/MacOS/carrie_on`. These examples assume the app is in `~/Applications`. Substitute `/Applications` if installed there.
 
 ```sh
 "$HOME/Applications/Carrie On.app/Contents/MacOS/carrie_on" setup --port 8877 --interval 90
@@ -49,9 +67,11 @@ The bundled backend is `Carrie On.app/Contents/MacOS/carrie_on`. These examples 
 "$HOME/Applications/Carrie On.app/Contents/MacOS/carrie_on" list --history
 ```
 
-Setup options update only the specified settings; reopen the menu after changing its port. Settings are stored in `settings.json`. To clear a custom socket or Codex home, set its value to `null` there and reopen. `CODEX_HOME` is captured from the environment only when the settings do not yet contain a Codex home choice. Later launches preserve the saved choice, including `null` for the default, regardless of their environment. `doctor` checks live connectivity without starting a model turn; setup checks that the CLI executes but does not validate sign-in or desktop connectivity.
+Setup options update only the specified settings. Reopen the menu after changing its port. To clear a custom socket or Codex home, set its value to `null` in `settings.json` and reopen. Setup reads `CODEX_HOME` from the environment only when no choice is saved. Later launches preserve the saved choice, including `null` for the default.
 
-If setup is interrupted, reopen the app to retry. Service registration is not transactional; a failure can leave services stopped until the next successful setup. Setup is protected by a per-user lock. **Retry** in the error dialog repairs the worker and local API. For an occupied port, run setup with a free port and reopen.
+Run `doctor` to check sign-in and desktop connectivity without starting a model turn. Setup checks that the CLI executes but does not check those connections.
+
+If setup is interrupted, reopen the app or choose **Retry** in the error dialog to repair the worker and local API. A failure can leave services stopped until setup succeeds. For an occupied port, run setup with a free port and reopen.
 
 Logs are in `~/Library/Application Support/Carrie On/.runtime/`. The login jobs are `com.nickcorin.carrieon`, `com.nickcorin.carrieon.ui`, and `com.nickcorin.carrieon.menu`. macOS Background Items settings must allow these services. Advanced repair is available through `setup --repair`.
 
@@ -61,7 +81,7 @@ To uninstall, remove the login services before deleting the app:
 "$HOME/Applications/Carrie On.app/Contents/MacOS/carrie_on" remove-installation --yes
 ```
 
-Then quit Carrie On and move it to Trash. Settings, queue/history, and logs remain in Application Support; delete that directory manually only if you also want to discard personal data. The source CLI's `uninstall` command removes only the worker.
+Then quit Carrie On and move it to Trash. Your settings, queue, history, and logs remain in Application Support. Delete that directory only if you also want to discard personal data. The source CLI's `uninstall` command removes only the worker.
 
 ## Build and release
 
@@ -72,15 +92,15 @@ See [Releasing](RELEASING.md) for the pinned build environment, local builds, ch
 To rerun the packaged acceptance check:
 
 ```sh
-.venv/bin/python verify_bundle.py dist/Carrie-On-0.5.1-macos-arm64.zip
+just verify
 ```
 
 It extracts into paths containing spaces, copies the app to an isolated home, removes Python from PATH, and invokes the native first-launch helper with `--no-start`. It checks service paths, persisted configuration, queue operations, local API health, release health, app immutability, and code signatures. Its fake Codex executable only answers the setup version check. It never loads login services or dispatches a chat. `--no-start` is restricted to fresh test installations.
 
-Unit tests exercise repeated setup, upgrades, preservation of settings and queue/history, recovery after partial registration, and migration of legacy connection settings. Before broader distribution, manually test Gatekeeper approval, real first launch, login startup, `doctor`, update, and removal on another Mac, including macOS 13 if claiming that OS as supported. Local tests on macOS 27.0.1 and deployment-target audits do not establish that compatibility.
+Before broader distribution, test Gatekeeper approval, first launch, login startup, `doctor`, updates, and removal on another Mac. Include macOS 13 before claiming runtime compatibility with that version. Local tests on macOS 27.0.1 and deployment-target checks do not establish that compatibility. See [automated distribution checks](features/distribution.md#verification) for unit test coverage.
 
 ## Command reference
 
-`carrie_on setup [--codex PATH] [--socket PATH] [--codex-home PATH] [--port PORT] [--interval SECONDS] [--repair] [--no-start] [--json]` reconciles per-user services and persists settings. First-install defaults are port 8766 (1024–65535) and interval 60 seconds (minimum 30). The bundled queue location is fixed; worker commands still accept `--state PATH` for inspecting other queues.
+`carrie_on setup [--codex PATH] [--socket PATH] [--codex-home PATH] [--port PORT] [--interval SECONDS] [--repair] [--no-start] [--json]` registers per-user services and saves settings. The default port is 8766, with allowed values from 1024 to 65535. The default interval is 60 seconds, with a minimum of 30. The bundled queue location is fixed. Worker commands accept `--state PATH` to inspect other queues.
 
-`carrie_on remove-installation --yes` stops and removes all three login services, retaining the app and personal data. Setup commands return 0 on success, 1 for environment errors, 2 for argument errors, and 130 for interruption. `--json` returns structured setup success or failure on stdout; ordinary failures use stderr. Worker `--version` and the app's Info.plist report `VERSION`.
+`carrie_on remove-installation --yes` stops and removes all three login services, retaining the app and personal data. Setup commands return 0 on success, 1 for environment errors, 2 for argument errors, and 130 for interruption. `--json` returns structured setup success or failure on stdout. Ordinary failures use stderr. Worker `--version` and the app's Info.plist report `VERSION`.

@@ -1,14 +1,12 @@
 # Carrie On usage guide
 
-Carrie On is a deliberate spelling of “carry on.” Its cobalt app icon and monochrome menu-bar mark pair a C with a forward arrow. See [brand assets](assets/README.md) for artwork and regeneration instructions.
-
-Service identifiers, command filenames, and the Application Support directory use the Carrie On identity. See [upgrade instructions](INSTALL.md#updates) for installations with an older identity.
-
 Resume selected local Codex chats after a usage reset. A Python program checks quota metadata and asks the running desktop app to continue eligible chats. Polling, queue management, and the resume trigger require no model inference. Only the resumed work consumes model usage.
 
-Requires macOS, Python 3.10+, a signed-in Codex CLI, and the desktop app. Keep the Mac awake and connected. The internal desktop IPC protocol was inspected on **26.1007.30912 (20156)**; live reads were tested with CLI **0.161.0**. This adapter is version-sensitive: unsupported responses stop dispatch rather than falling back to a separate agent process.
+You need macOS, a signed-in Codex CLI, and the Codex desktop app. Source installations also need Python 3.10 or later. Keep the Mac awake and connected. The internal desktop IPC protocol was inspected on version 26.1007.30912, build 20156. Live reads were tested with CLI 0.161.0. Unsupported responses stop dispatch.
 
-For another laptop, use the [single-app Mac distribution](INSTALL.md). Drag **Carrie On.app** into Applications and open it; Python is bundled and first launch sets up the login services. To update, quit the menu, replace the app, and reopen it. Settings and queue/history remain outside the signed bundle. Releases use `VERSION`, `CHANGELOG.md`, and a single `build_bundle.py` command that tests, signs, and verifies the archive. The instructions below describe running and installing from source; bundled installations use the executable and data paths in the installation guide.
+For the bundled app, follow the [installation and update instructions](INSTALL.md). Python is included, and first launch sets up the services. Version 0.5.6 automatically imports data from older bundled installations after you replace the app. Settings, queues, and history remain outside the signed app.
+
+The Terminal commands below run from a source checkout. Bundled installations use the executable and data paths in the [configuration guide](INSTALL.md#configuration-and-recovery).
 
 ## Menu bar
 
@@ -30,7 +28,7 @@ Install or rebuild it with `python3 install_menubar.py` (requires Apple's Swift 
 
 Source installations offer **Settings → Rebuild and Restart…**. After confirmation, Carrie On runs the same `install_menubar.py` builder with `--prepare-app`, using the checkout, Python interpreter, and API port saved when the menu app was installed. The progress window streams compiler, self-test, and signing output. Only a successful build replaces the app and restarts its services; build failures leave the current app running and keep diagnostics visible for copying. Local edits are included; the action does not pull or switch Git branches. Queue, settings, and launch-at-login preferences are preserved. If the checkout or interpreter moves, reinstall from its new location. Older source apps need a terminal rebuild once to gain this action and its saved build paths.
 
-**Carrie On Dev.app** also offers **Rebuild and Restart…**, rebuilding the entire bundled app through its existing build pipeline. See [local development app](RELEASING.md#local-development-app) for build requirements and first installation.
+**Carrie On Dev.app** checks for newer commits in its saved checkout and offers **Update to <short hash>** when available. That action rebuilds the entire app. See [local development app](RELEASING.md#local-development-app) for build requirements and first installation.
 
 To remove the menu app, quit it, run `launchctl bootout gui/$(id -u)/com.nickcorin.carrieon.menu`, and remove `~/Library/LaunchAgents/com.nickcorin.carrieon.menu.plist` and `~/Applications/Carrie On Menu.app`. Logs are in `.runtime/menubar.log` and `.runtime/menubar-error.log`. The installed login service also writes a private `.runtime/menu-status.json` snapshot of status-item visibility, popover geometry, appearance, and data availability for troubleshooting; it never includes chat contents.
 

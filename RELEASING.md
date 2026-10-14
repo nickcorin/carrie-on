@@ -1,6 +1,6 @@
 # Releasing Carrie On
 
-All checks, builds, signing, and releases run locally through the `justfile`. Pushing a branch or tag does not start GitHub Actions. The optional GitHub CI workflow is manual-only and runs the same `just ci` command; do not dispatch it when you want to avoid hosted runner usage.
+Run checks, builds, signing, and releases locally through the `justfile`. Pushing a branch or tag does not start GitHub Actions. To use hosted runners, start the optional GitHub CI workflow manually. It runs the same `just ci` command.
 
 ## Toolchain
 
@@ -13,7 +13,7 @@ just setup
 just
 ```
 
-`.python-version` pins the build interpreter and `requirements-build.txt` pins the packaging dependencies. Ruff and actionlint versions are pinned in the justfile. The first setup and tool runs download dependencies; subsequent checks run on your Mac without GitHub CI credits. uv-managed Python is used because some Homebrew runtimes require a newer macOS version than the app targets.
+`.python-version` pins the build interpreter and `requirements-build.txt` pins the packaging dependencies. The justfile pins Ruff and actionlint versions. Setup and the first tool runs download dependencies. Later checks run on your Mac without GitHub CI credits. Use uv-managed Python because some Homebrew runtimes require a newer macOS version than the app targets.
 
 ## Check, build, and package
 
@@ -24,23 +24,25 @@ just test-minimum
 just ci
 ```
 
-`just ci` checks Python errors, JavaScript syntax, workflow syntax, release metadata, and Python 3.10 compatibility, then builds and verifies the complete app with the pinned build interpreter. The builder runs the full test suite, native checks, Mach-O compatibility audit, ad-hoc signing, and isolated ZIP acceptance. Tests use synthetic chats and temporary state, without installing login services or dispatching work.
+`just ci` checks Python errors, workflow syntax, release metadata, branding, and Python 3.10 compatibility. It then builds and verifies the app with the pinned build interpreter. The builder runs the full test suite, native checks, Mach-O compatibility checks, ad-hoc signing, and isolated ZIP verification. Tests use synthetic chats and temporary state, without installing login services or dispatching work.
 
-`just build` is an alias for `just package`: compiling, signing, and packaging are a single pipeline so the ZIP always contains the verified app. An existing version is preserved unless replacement is requested. CI deliberately replaces local development artifacts so repeated checks work.
+Use `just package` or its alias `just build` to compile, sign, and package the verified app. To replace an existing local package, pass `--replace`. CI replaces local packages so checks can run repeatedly.
 
-`just branding` checks current tracked and nonignored source files for retired app branding. Packaging also checks bundle paths, file contents, symlink targets, and compressed Python modules before signing; ZIP acceptance repeats the bundle check. Historical Git objects and ignored development caches are outside the source check and are never packaging inputs.
+Run `just branding` to check current tracked and nonignored source files for retired app branding. Packaging also checks bundle paths, file contents, symlink targets, and compressed Python modules before signing. ZIP verification repeats the bundle check. Historical Git objects and ignored development caches are outside the source check and never enter the packages.
 
 ```sh
 just package
 just package --replace
 just package --output '/tmp/Carrie On release'
 just verify
-just verify '/tmp/Carrie On release/Carrie-On-0.5.1-macos-arm64.zip'
+just verify '/tmp/Carrie On release/Carrie-On-0.5.6-macos-arm64.zip'
 ```
 
-Output is a versioned DMG, ZIP, a `.sha256` checksum for each, and a JSON manifest in `dist/`. The DMG provides the drag-to-Applications installation flow; built-in updates continue to use the ZIP. Both packages contain the same signed app. The builder mounts the DMG read-only, checks the Applications shortcut, and verifies a copied-out app against the ZIP payload and its code signature. The manifest records the version, clean source commit (or null for dirty/exported source), build identity, architecture, Python version, compatibility audit, size, and checksum, plus a `disk_image` object with the DMG filename, size, and checksum. Build identities and signing timestamps mean builds are not byte-reproducible. Generated files are ignored by Git.
+The builder writes a versioned DMG, ZIP, a `.sha256` checksum for each, and a JSON manifest to `dist/`. The DMG provides the drag-to-Applications installation window. Built-in updates use the ZIP. Both packages contain the same signed app. The builder mounts the DMG read-only, checks the Applications shortcut, and verifies a copied app against the ZIP and its code signature.
 
-The built-in updater reads the latest published stable release from GitHub. Keep the `vMAJOR.MINOR.PATCH` tag and generated asset names unchanged, and publish the ZIP and JSON manifest together. Drafts and prereleases are not offered; versions at or below the installed version are never installed. No additional update feed or credentials are required. The release manifest's hash and byte count must describe the final signed ZIP.
+The manifest records the version, source commit, build identity, architecture, Python version, compatibility results, ZIP size, and ZIP checksum. The source commit is `null` for dirty or exported source. The `disk_image` object records the DMG filename, size, and checksum. Build identities and signing timestamps prevent byte-for-byte reproducible builds. Git ignores generated files.
+
+Keep the `vMAJOR.MINOR.PATCH` tag and generated asset names unchanged, and publish the ZIP and JSON manifest together. The updater offers only newer stable GitHub releases. It ignores drafts and prereleases. No additional update feed or credentials are required. The release manifest's hash and byte count must describe the final signed ZIP.
 
 For an extracted app, signing and signature checks are also available directly:
 
@@ -49,11 +51,9 @@ just sign '/tmp/Carrie On.app'
 just verify-signature '/tmp/Carrie On.app'
 ```
 
-Signing is **ad-hoc**, not Developer ID signing or notarization. `just sign` modifies the app, so any existing archive/checksum must be rebuilt afterwards. `just icons` regenerates packaged icon sizes from the master artwork. `just doctor` checks local Codex connectivity without starting a turn.
+Signing is ad-hoc. It does not provide Developer ID signing or notarization. After `just sign` modifies an app, rebuild its archives and checksums. Use `just icons` to regenerate packaged icon sizes from the master artwork. Run `just doctor` to check local Codex connectivity without starting a turn.
 
-## Create a release
-
-### Local development app
+## Local development app
 
 Dev compares its built commit with the saved checkout's `HEAD` once on startup. If the checkout has newer commits, Settings shows **Update to <short hash>**. Otherwise it shows **Check for Updates**, which checks again when clicked. The check uses local Git history without fetching from GitHub. A rebuild includes uncommitted edits.
 
@@ -69,7 +69,7 @@ current app running and keeps the error output open. This command does not
 create a DMG, pull commits, or switch branches.
 
 Older dev builds need a fresh `just dev` build installed once to gain this
-action and its saved checkout/interpreter paths. Reinstall from a new location
+action and its saved checkout and interpreter paths. Reinstall from a new location
 if the checkout or build interpreter moves. No GitHub release or push is needed.
 
 Both profiles use the same optimized native executable, bundled backend, setup
@@ -87,17 +87,17 @@ profile changes installation resources, not feature behavior:
 Queues, connection settings, login preferences, logs, and installation locks are
 independent. Dev starts with an empty queue and the same automatic processing
 behavior as release. It does not copy production data. Both apps can connect to
-the same live Codex account; use different chats when testing, or quit the other
+the same live Codex account. Use different chats when testing, or quit the other
 app before enrolling the same chat. Separate application data does not isolate
 the external Codex chats or account quota.
 
 The release commands still build the release profile and reject development
 artifacts. Publish versioned GitHub prereleases for beta testing, then mark the
-validated release stable; there is no rolling beta feed. The existing in-app
+validated release stable. There is no rolling beta feed. The existing in-app
 updater offers stable releases only, so beta installation is manual. Dev never
 installs a production update over itself.
 
-### Publish a versioned release
+## Publish a versioned release
 
 Update `VERSION` and add exactly one nonempty `## MAJOR.MINOR.PATCH` section to `CHANGELOG.md`. Commit all source changes with signed Conventional Commits, then push the reviewed commits to `master`. A new published build always gets a new version.
 
@@ -115,7 +115,7 @@ An existing local tag stops `just release` instead of being moved. If the tag wa
 just release-retry
 ```
 
-If GitHub created the draft but an asset upload was interrupted, use `just upload` to replace its assets. Both recovery commands require artifacts matching the current clean commit and a local tag pointing to that commit. `just upload` rejects published releases. Use `just release-notes` to regenerate `dist/release-notes.md` for review; retries do not silently publish anything.
+If GitHub created the draft but an asset upload was interrupted, use `just upload` to replace its assets. Both recovery commands require packages matching the current clean commit and a local tag pointing to that commit. `just upload` rejects published releases. Use `just release-notes` to regenerate `dist/release-notes.md` for review. Retrying does not publish the draft.
 
 Download and test the draft on another Mac using the [installation and release verification guide](INSTALL.md#release-verification). Record the actual macOS and Codex versions tested in its notes, including remaining compatibility limits. When satisfied:
 
@@ -123,10 +123,17 @@ Download and test the draft on another Mac using the [installation and release v
 just publish
 ```
 
-Publishing requires the matching source, tag, artifacts, and an existing draft. Never move a published tag or replace published assets. Correct defects with a new patch version. Recipients can restore the previous app from its ZIP; back up personal data before downgrading across a data-format migration.
+Publishing requires the matching source, tag, packages, and an existing draft. Never move a published tag or replace published assets. Correct defects with a new patch version. Recipients can restore the previous app from its ZIP. Back up personal data before downgrading across a data-format migration.
 
 ## Command behavior
 
-Run `just --list` to discover recipes and `just --dry-run release` to inspect the commands without executing them. Recipe dependencies handle ordering and run once per invocation. Paths are quoted and extra `package` arguments are forwarded unchanged. `just` stops at the first failed command; no later tag push or release creation runs after a failed check.
+Run `just --list` to discover recipes and `just --dry-run release` to inspect the commands without executing them. Recipe dependencies handle ordering and run once per invocation. Paths are quoted and extra `package` arguments are forwarded unchanged. `just` stops at the first failed command. A failed check prevents later tag pushes and release creation.
 
-The underlying `python3 release.py [--tag TAG]` prints Markdown notes. `--check-source` requires a clean Git commit; `--check-assets DIRECTORY` verifies release provenance and integrity; `--check-tag` requires a matching local tag; `--check-draft` requires a GitHub draft. These checks do not mutate source, tags, or releases. File/validation failures return 1 with stderr diagnostics, and argument errors return 2. Without check flags, release metadata works outside a Git checkout. There is no custom credential or environment configuration; Git and GitHub CLI use their existing authentication.
+The underlying `python3 release.py [--tag TAG]` prints Markdown notes. Its validation flags check the following conditions:
+
+- `--check-source` requires a clean Git commit.
+- `--check-assets DIRECTORY` verifies that package metadata and checksums match the source and version.
+- `--check-tag` requires a matching local tag.
+- `--check-draft` requires a GitHub draft.
+
+These checks do not change source, tags, or releases. File and validation failures return 1 with stderr diagnostics. Argument errors return 2. Without check flags, release metadata works outside a Git checkout. Git and GitHub CLI use their existing authentication.
