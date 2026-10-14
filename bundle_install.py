@@ -17,6 +17,7 @@ from pathlib import Path
 from app_runtime import APP_IDENTIFIER, PROFILE, RUNTIME, VERSION
 from app_lifecycle import agent_path, remove_agent, write_agent
 from macos_compatibility import version_tuple
+from legacy_migration import LegacyMigration
 import carrie_on
 import carrie_on_ui
 
@@ -145,6 +146,17 @@ def setup(args):
     No setup step writes into or signs the app bundle.
     """
     metadata = check_bundle()
+    if PROFILE.name == "dev" or args.no_start:
+        return configure(args, metadata)
+    migration = LegacyMigration(Path.home(), RUNTIME.data, LABELS)
+    with migration.prepare():
+        result = configure(args, metadata)
+        migration.complete()
+    return result
+
+
+def configure(args, metadata):
+    """Register the current installation after any previous data has been imported."""
     settings = Settings.load(args)
     environment = dict(os.environ)
     environment["PATH"] = f"{Path(settings.codex).parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"

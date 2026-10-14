@@ -5,6 +5,7 @@
 - Ship a single ad-hoc signed Carrie On.app containing Python, the local API, worker, native menu, and custom app icon.
 - Configure three per-user login services on first launch without development tools.
 - Detect app replacements and reconcile services while preserving connection settings, queue, and history.
+- Automatically migrate older bundled installations on first launch, merging queued work and retiring old services after the current installation is healthy.
 - Check for a newer stable GitHub release on startup and show **Update to <version>** when available. Download and install it after confirmation.
 - Rebuild the entire Carrie On Dev app from its saved checkout with live output, replacing and restarting only after tests, signing, and bundle verification succeed. Source menu installations reuse their native menu builder.
 - Build versioned releases with automated acceptance checks, checksums, and release manifests.
@@ -34,8 +35,10 @@ For source builds, see [menu usage](../USAGE.md#menu-bar). `python3 -m unittest 
 
 `python3 -m unittest test_app_update -v` tests startup checks, offline failures, release selection, and download verification. It also replaces temporary apps to test native installation, rollback after a failed launch, and retry. It never replaces the installed app. See [updates](../INSTALL.md#updates) for recovery and download verification details.
 
+`python3 -m unittest test_legacy_migration -v` exercises first launch with old settings, queue/history, startup preferences and service registrations in isolated homes. It checks duplicate enrollments, uncertain sends, damaged data, interrupted import, setup failures, retries, and Dev isolation with a simulated launchd session. Recovery copies and the import journal belong to `legacy_migration.py`; the current bundle identity and updater remain unchanged.
+
 ## Gotchas
 
 The builder mounts the DMG read-only, checks the Applications shortcut, copies its app into an isolated directory, and verifies that its contents and code signature match the ZIP's app. The release manifest records the DMG's own filename, size, and SHA-256 hash; release checks require both package formats and their checksum files. Eject the DMG after dragging the app into Applications, and open the installed copy. Built-in updates continue to use the ZIP.
 
-Ad-hoc signing does not provide notarization or remove Gatekeeper approval. Binary deployment targets cannot substitute for runtime tests on the oldest OS. Setup replaces existing source service labels without importing project-local queues. Service registration is recoverable but not transactional; retry setup after correcting failures. Quit Carrie On stops background jobs and the menu; reopening restarts them and preserves the launch-at-login preference. Removal must stop services before the app is discarded. Installations with an older identity require manual migration; see the [upgrade instructions](../INSTALL.md#updates).
+Ad-hoc signing does not provide notarization or remove Gatekeeper approval. Binary deployment targets cannot substitute for runtime tests on the oldest OS. Setup replaces existing source service labels without importing project-local queues. Service registration is recoverable but not transactional; retry setup after correcting failures. Quit Carrie On stops background jobs and the menu; reopening restarts them and preserves the launch-at-login preference. Removal must stop services before the app is discarded. Installations with an older identity require manual app replacement, followed by automatic data and service migration; see the [upgrade instructions](../INSTALL.md#updates).

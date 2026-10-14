@@ -23,6 +23,9 @@ enum AppSetup {
     }
 
     static func run(arguments: [String] = []) throws -> SetupResult {
+        if !isDevelopment && !arguments.contains("--no-start") {
+            try stopPreviousApp()
+        }
         let process = Process()
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/carrie_on")
         process.arguments = ["setup", "--json"] + arguments
@@ -42,6 +45,21 @@ enum AppSetup {
             throw SetupFailure(code: "setup_failed", message: "Setup returned an invalid local API port.")
         }
         return result
+    }
+
+    /// Quit only the previous bundle identity before its data and services move.
+    private static func stopPreviousApp() throws {
+        guard let identifier = Bundle.main.object(forInfoDictionaryKey: "CarrieOnPreviousBundleIdentifier") as? String,
+              identifier != Bundle.main.bundleIdentifier else { return }
+        let applications = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+        for application in applications { application.terminate() }
+        let deadline = Date().addingTimeInterval(15)
+        while applications.contains(where: { !$0.isTerminated }) && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        guard applications.allSatisfy({ $0.isTerminated }) else {
+            throw SetupFailure(code: "previous_app_busy", message: "The previous app is still finishing work. Reopen Carrie On to retry setup.")
+        }
     }
 
     @MainActor

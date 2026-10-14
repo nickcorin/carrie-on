@@ -26,3 +26,15 @@ class BrandingTests(unittest.TestCase):
             (root / "release-notes.md").write_bytes(RETIRED_NAME)
             with self.assertRaises(ValueError):
                 check_source(root)
+
+    def test_historical_names_are_allowed_only_in_migration_source(self):
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "legacy_migration.py").write_bytes(RETIRED_NAME)
+            check_source(root)
+            (root / "app_runtime.py").write_bytes(RETIRED_NAME)
+            with self.assertRaisesRegex(ValueError, "app_runtime.py"):
+                check_source(root)

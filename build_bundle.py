@@ -23,6 +23,7 @@ from verify_bundle import verify
 from release import Release, source_commit
 from disk_image import build_disk_image
 from branding import check_source, check_bundle
+from legacy_migration import PREVIOUS_IDENTIFIER
 
 ROOT = Path(__file__).resolve().parent
 
@@ -87,6 +88,8 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
                      "LSUIElement": True, "LSMinimumSystemVersion": MINIMUM_MACOS,
                      "NSHighResolutionCapable": True, "CarrieOnStandalone": True})
         info["CarrieOnBuildProfile"] = profile.name
+        if profile.name == "release":
+            info["CarrieOnPreviousBundleIdentifier"] = PREVIOUS_IDENTIFIER
         if profile.name == "dev":
             info["CarrieOnSourceRoot"] = str(ROOT)
             info["CarrieOnBuildPython"] = sys.executable
