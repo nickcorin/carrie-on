@@ -1,13 +1,13 @@
 # Install Carrie On on another Mac
 
-Carrie On ships as a single **Carrie On.app** containing its native menu interface, Python, worker, and local dashboard. The destination needs no Python, Xcode, or runtime download. It does need the Codex desktop app and a signed-in Codex CLI. Keep Codex open and the Mac awake and connected for automatic continuation.
+Carrie On ships as a single **Carrie On.app** containing its native menu interface, Python, worker, and local API. The destination needs no Python, Xcode, or runtime download. It does need the Codex desktop app and a signed-in Codex CLI. Keep Codex open and the Mac awake and connected for automatic continuation.
 
 ## Install
 
 1. Download and open the release DMG. The `arm64` release targets **Apple Silicon and macOS 13 or later**. Runtime testing on macOS 13 is still outstanding; the current release has been exercised on macOS 27.0.1.
 2. Drag **Carrie On** onto the **Applications** shortcut in the installer window, then eject the disk image. If you cannot write to `/Applications`, drag the app into your home folder's `Applications` folder instead. It must be directly inside either folder. Quit an older Carrie On before replacing it. The ZIP remains available as an alternative: extract it and drag the app into Applications.
-3. Open **Carrie On**. First launch checks for the Codex CLI, saves its location, and sets up the worker, dashboard, and menu login services. If Codex cannot be found, choose its executable in the setup dialog. `command -v codex` in Terminal shows the path on a configured Mac.
-4. Open the menu bar item and queue a local chat. The browser dashboard is also available at [localhost:8766](http://127.0.0.1:8766).
+3. Open **Carrie On**. First launch checks for the Codex CLI, saves its location, and sets up the worker, local API, and menu login services. If Codex cannot be found, choose its executable in the setup dialog. `command -v codex` in Terminal shows the path on a configured Mac.
+4. Open the menu bar item and queue a local chat.
 
 The app is **ad-hoc signed, not notarized**. A downloaded copy may be blocked. After attempting to open it, approve that specific app in **System Settings → Privacy & Security → Open Anyway**, then open it again. Only approve a release you trust. No Apple developer membership is needed for this distribution, but it cannot offer the warning-free first launch of a Developer ID signed and notarized app. Managed Macs may prohibit this approval.
 
@@ -17,7 +17,7 @@ Setup runs as your login user, without administrator privileges. Settings, queue
 
 Open the menu bar popover, choose **Settings → Check for Updates…**, then **Install and Restart**. Carrie On checks the latest published stable GitHub release, downloads the version you accepted, and verifies its size, SHA-256 checksum, compatibility, bundle identity, and code signature before replacing the app. The settings action reports checking, downloading, and installation progress. Checks happen only when requested; no GitHub account or token is needed. **Not Now** leaves the app unchanged, and **Release Notes** opens that version's GitHub page.
 
-The app restarts its worker and dashboard from the replacement bundle. It preserves the saved CLI path, port, interval, socket, Codex home, queue/history, and launch-at-login preference. Reopening the same build leaves healthy services running. Quit stops the app and its background services; reopening restarts them. The settings menu's **Launch at Login** setting controls automatic startup independently of manual launches. See [startup and quit](features/app-lifecycle.md).
+The app restarts its worker and local API from the replacement bundle. It preserves the saved CLI path, port, interval, socket, Codex home, queue/history, and launch-at-login preference. Reopening the same build leaves healthy services running. Quit stops the app and its background services; reopening restarts them. The settings menu's **Launch at Login** setting controls automatic startup independently of manual launches. See [startup and quit](features/app-lifecycle.md).
 
 The first release containing the updater must be installed manually. For older versions, source installations, or an Applications folder you cannot write to, choose **Quit Carrie On**, replace **Carrie On.app** with the downloaded release, and reopen it. Source installations should update their Git checkout and rebuild instead. macOS may request approval for a downloaded build.
 
@@ -43,7 +43,7 @@ The bundled backend is `Carrie On.app/Contents/MacOS/tokenmaxxer`. These example
 
 Setup options update only the specified settings; reopen the menu after changing its port. Settings are stored in `settings.json`. To clear a custom socket or Codex home, set its value to `null` there and reopen. `CODEX_HOME` is captured from the environment only when the settings do not yet contain a Codex home choice. Later launches preserve the saved choice, including `null` for the default, regardless of their environment. `doctor` checks live connectivity without starting a model turn; setup checks that the CLI executes but does not validate sign-in or desktop connectivity.
 
-If setup is interrupted, reopen the app to retry. Service registration is not transactional; a failure can leave services stopped until the next successful setup. Setup is protected by a per-user lock. **Retry** in the error dialog repairs the worker and dashboard. For an occupied port, run setup with a free port and reopen.
+If setup is interrupted, reopen the app to retry. Service registration is not transactional; a failure can leave services stopped until the next successful setup. Setup is protected by a per-user lock. **Retry** in the error dialog repairs the worker and local API. For an occupied port, run setup with a free port and reopen.
 
 Logs are in `~/Library/Application Support/Tokenmaxxer/.runtime/`. The login jobs are `com.nickcorin.tokenmaxxer`, `com.nickcorin.tokenmaxxer.ui`, and `com.nickcorin.tokenmaxxer.menu`. macOS Background Items settings must allow these services. Advanced repair is available through `setup --repair`.
 
@@ -67,7 +67,7 @@ To rerun the packaged acceptance check:
 .venv/bin/python verify_bundle.py dist/Carrie-On-0.5.1-macos-arm64.zip
 ```
 
-It extracts into paths containing spaces, copies the app to an isolated home, removes Python from PATH, and invokes the native first-launch helper with `--no-start`. It checks service paths, persisted configuration, queue operations, dashboard assets, release health, app immutability, and code signatures. Its fake Codex executable only answers the setup version check. It never loads login services or dispatches a chat. `--no-start` is restricted to fresh test installations.
+It extracts into paths containing spaces, copies the app to an isolated home, removes Python from PATH, and invokes the native first-launch helper with `--no-start`. It checks service paths, persisted configuration, queue operations, local API health, release health, app immutability, and code signatures. Its fake Codex executable only answers the setup version check. It never loads login services or dispatches a chat. `--no-start` is restricted to fresh test installations.
 
 Unit tests exercise repeated setup, upgrades, preservation of settings and queue/history, recovery after partial registration, and migration of legacy connection settings. Before broader distribution, manually test Gatekeeper approval, real first launch, login startup, `doctor`, update, and removal on another Mac, including macOS 13 if claiming that OS as supported. Local tests on macOS 27.0.1 and deployment-target audits do not establish that compatibility.
 

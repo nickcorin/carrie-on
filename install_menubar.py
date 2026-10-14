@@ -93,7 +93,7 @@ def install(port, start=True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8766, help="Local dashboard port")
+    parser.add_argument("--port", type=int, default=8766, help="Local API port")
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         parser.error("Port must be between 1024 and 65535")

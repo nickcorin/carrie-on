@@ -1,4 +1,4 @@
-"""Entry point for the bundled CLI, dashboard, and per-user installer."""
+"""Entry point for the bundled CLI, local API, and per-user installer."""
 
 import sys
 

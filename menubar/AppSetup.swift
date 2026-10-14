@@ -35,7 +35,7 @@ enum AppSetup {
         }
         let result = try JSONDecoder().decode(SetupResult.self, from: data)
         guard (1024...65535).contains(result.port) else {
-            throw SetupFailure(code: "setup_failed", message: "Setup returned an invalid dashboard port.")
+            throw SetupFailure(code: "setup_failed", message: "Setup returned an invalid local API port.")
         }
         return result
     }

@@ -18,13 +18,13 @@ Installed standalone apps offer **Settings → Check for Updates…** in the men
 
 Each enrollment authorizes a single continuation after a recorded reset. Carrie On waits for fresh quota headroom and checks that the chat still matches the enrolled work. Active chats and chats awaiting approval or input are deferred. Changed work, paused goals, and uncertain delivery require attention rather than automatic retries. You can pause the queue or remove an enrollment at any time.
 
-Queue data, instructions, and logs stay on your Mac. The browser dashboard listens only on `127.0.0.1`; it loads no external scripts or fonts. Carrie On does not purchase credits, change models, or run a competing agent process. Remote chats and ChatGPT conversations are unsupported.
+Queue data, instructions, and logs stay on your Mac. The native card uses a local API listening only on `127.0.0.1`. Carrie On does not purchase credits, change models, or run a competing agent process. Remote chats and ChatGPT conversations are unsupported.
 
 The desktop integration uses a private, version-sensitive IPC protocol. Unsupported snapshots stop dispatch. After a Codex update, check connectivity before relying on unattended continuation. This is an independent project, not an official OpenAI product.
 
 ## Documentation
 
-- [Usage guide](USAGE.md): menu bar, dashboard, terminal commands, and queue behavior.
+- [Usage guide](USAGE.md): native card, terminal commands, and queue behavior.
 - [Installation](INSTALL.md): install, update, recover, and uninstall.
 - [Contributing](CONTRIBUTING.md): development setup, component map, and tests.
 - [Releasing](RELEASING.md): build locally and prepare GitHub releases.

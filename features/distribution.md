@@ -2,7 +2,7 @@
 
 ## Sub-features
 
-- Ship a single ad-hoc signed Carrie On.app containing Python, the dashboard, worker, native menu, and custom app icon.
+- Ship a single ad-hoc signed Carrie On.app containing Python, the local API, worker, native menu, and custom app icon.
 - Configure three per-user login services on first launch without development tools.
 - Detect app replacements and reconcile services while preserving connection settings, queue, and history.
 - Check published stable GitHub releases, verify a compatible download, and install it from the menu with explicit consent.
@@ -15,7 +15,7 @@
 
 Follow the [installation guide](../INSTALL.md) for setup, updates, release commands, and recovery. The app must reside directly in `/Applications` or `~/Applications`. Its Apple Silicon build targets macOS 13+, but runtime testing on macOS 13 is still outstanding. Codex desktop and a signed-in Codex CLI remain prerequisites.
 
-First launch discovers or asks for the CLI executable, saves settings in Application Support, registers services, and checks dashboard readiness before opening the menu. It never modifies the signed app. Fresh installations contain no enrolled chats or builder credentials. Replacing and reopening the app refreshes services based on its build identity; ordinary reopening preserves running services.
+First launch discovers or asks for the CLI executable, saves settings in Application Support, registers services, and checks local API readiness before opening the menu. It never modifies the signed app. Fresh installations contain no enrolled chats or builder credentials. Replacing and reopening the app refreshes services based on its build identity; ordinary reopening preserves running services.
 
 ## Verification
 

@@ -7,7 +7,6 @@ The C flows into a forward arrow to express continuation. The app icon uses porc
 - `app-icon.svg` and `tray-icon.svg`: generated color and monochrome vector assets.
 - `app-icon.png` and `CarrieOn.icns`: generated 1024-pixel app artwork and macOS icon family.
 - `tray-18.png` and `tray-36.png`: menu-bar previews at standard and Retina resolution.
-- `../web/app-icon.png`: generated 128-pixel dashboard and favicon asset.
 - `../menubar/Brand.swift`: generated AppKit geometry, used directly by the native tray and popover.
 
 Run `python3 build_icons.py` on macOS with Apple's command-line tools to regenerate every output. Edit the canonical `mark.svg` rather than generated paths. The build uses AppKit for rasterization and `sips`/`iconutil` for packaging; it needs no image-generation service.
