@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.6
+
+- Automatically migrate older bundled installations after manual app replacement, preserving settings, queued work, history, and launch-at-login preferences.
+- Merge existing queues without replaying finished or uncertain sends, and resume interrupted migration without overwriting newer work.
+- Retire old services after the new installation is healthy and retain previous files in a private recovery directory.
+
 ## 0.5.5
 
 - Check for updates once on startup. Show Update to <version> when a release is available, or Check for Updates when current.
