@@ -34,7 +34,7 @@ struct PickerChat: Decodable, Identifiable {
 }
 
 enum ChatCardState: Equatable {
-    case base, queued, failed
+    case base, queued, processing, failed
 }
 
 struct PickerChatPage: Decodable {
@@ -52,21 +52,35 @@ struct PickerQueue: Decodable {
         var note: String? = nil
         var reactivation_error: String? = nil
         var attempted_at: Double? = nil
+        var processing_until: Double? = nil
         var id: String { thread_id }
         var cardState: ChatCardState {
-            reactivation_error != nil || state == "needs_attention" ? .failed : .queued
+            if reactivation_error != nil || state == "needs_attention" { return .failed }
+            if state == "sending", let expiry = processing_until,
+               expiry > Date().timeIntervalSince1970 { return .processing }
+            return state == "sending" ? .failed : .queued
         }
         var failureTitle: String {
-            attempted_at != nil ? "Resume unconfirmed" : "Couldn’t resume"
+            if attempted_at != nil { return "Resume unconfirmed" }
+            return state == "needs_attention" ? "Needs attention" : "Couldn’t resume"
         }
         var failureDetail: String {
-            let reason = reactivation_error ?? note ?? "The chat could not be resumed."
-            return reason + (state == "waiting" ? " Will retry automatically." : " Inspect the chat before re-queueing.")
+            let reason = reactivation_error ?? (state == "sending" ? "Delivery has not been confirmed." : note)
+                ?? "The chat could not be resumed."
+            let sentence = reason.hasSuffix(".") ? reason : reason + "."
+            return sentence + (state == "waiting" ? " Will retry automatically." : " Inspect the chat before re-queueing.")
         }
-        var cardHeight: CGFloat { cardState == .failed ? 104 : 84 }
+        var statusDescription: String {
+            switch cardState {
+            case .failed: return "\(failureTitle). \(failureDetail)"
+            case .processing: return "Sending continuation…"
+            case .queued, .base: return "Scheduled for the next usage reset."
+            }
+        }
+        var cardHeight: CGFloat { 84 }
         enum CodingKeys: String, CodingKey {
             case enrollmentID = "id"
-            case thread_id, title, prompt, state, note, reactivation_error, attempted_at
+            case thread_id, title, prompt, state, note, reactivation_error, attempted_at, processing_until
         }
     }
     let entries: [Entry]
@@ -354,7 +368,8 @@ final class ChatPickerModel: ObservableObject {
         paused = queue.paused
     }
 
-    func updateQueue() async {
+    func updateQueue(refreshMetadata: Bool = true) async {
+        guard !checkingQueue else { return }
         if !ready && !searching { Task { await searchChats() } }
         queueReadRevision += 1
         let readRevision = queueReadRevision
@@ -367,7 +382,7 @@ final class ChatPickerModel: ObservableObject {
             // A read started before a mutation must not undo the mutation's result.
             guard readRevision == queueReadRevision, mutationRevision == queueRevision, !working else { return }
             reconcile(queue)
-            Task { await loadQueuedMetadata() }
+            if refreshMetadata { Task { await loadQueuedMetadata() } }
             for (id, activity) in activities {
                 if case .uncertain(let reason) = activity {
                     activities[id] = .failed(reason + " Queue status has been refreshed.")
@@ -895,6 +910,66 @@ struct CardActionStyle: ButtonStyle {
     }
 }
 
+/// Show hover help only when the available width cannot hold the complete title.
+struct ChatCardTitle: NSViewRepresentable {
+    let title: String
+    var size: CGFloat = 13
+
+    final class Label: NSTextField {
+        override var intrinsicContentSize: NSSize {
+            let lineFont = font ?? NSFont.systemFont(ofSize: 13)
+            return NSSize(width: NSView.noIntrinsicMetric,
+                          height: ceil(lineFont.ascender - lineFont.descender + lineFont.leading))
+        }
+
+        override func layout() {
+            super.layout()
+            let fullWidth = (stringValue as NSString).size(withAttributes: [
+                .font: font ?? NSFont.systemFont(ofSize: 13)
+            ]).width
+            let availableWidth = cell?.drawingRect(forBounds: bounds).width ?? bounds.width
+            toolTip = fullWidth > availableWidth || stringValue.contains("\n") ? stringValue : nil
+        }
+    }
+
+    func makeNSView(context: Context) -> Label {
+        let label = Label(labelWithString: title)
+        label.maximumNumberOfLines = 1
+        label.cell?.usesSingleLineMode = true
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return label
+    }
+
+    func updateNSView(_ label: Label, context: Context) {
+        label.stringValue = title
+        label.font = .systemFont(ofSize: size, weight: .semibold)
+        label.needsLayout = true
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: Label, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 0, height: nsView.intrinsicContentSize.height)
+    }
+}
+
+func chatTitleSelfTest() {
+    let title = "Can neovim be used as a service, instead of starting a new instance every time?"
+    let label = ChatCardTitle.Label(labelWithString: title)
+    label.font = .systemFont(ofSize: 13, weight: .semibold)
+    label.frame = NSRect(x: 0, y: 0, width: 180, height: 18)
+    label.layout()
+    precondition(label.toolTip == title, "Truncated title must expose the complete source string")
+    label.frame.size.width = 900
+    label.layout()
+    precondition(label.toolTip == nil, "A fully visible title should not show redundant help")
+    let singleLineHeight = label.intrinsicContentSize.height
+    label.stringValue = "A title\nwith a second line"
+    label.layout()
+    precondition(label.toolTip == "A title\nwith a second line", "Tooltip must preserve hidden lines")
+    precondition(label.intrinsicContentSize.height == singleLineHeight,
+                 "Paragraph breaks must not increase the compact title height")
+}
+
 struct ChatCard: View {
     let chat: PickerChat
     let activity: CardActivity?
@@ -910,12 +985,13 @@ struct ChatCard: View {
         if case .queued = content { return true }
         return false
     }
-    private var blocked: Bool { activity?.blocksAction == true }
+    private var blocked: Bool { activity?.blocksAction == true || content.state == .processing }
     private var revealsRemove: Bool { isQueued && hovered && !flipped }
     private var tint: Color {
         switch content.state {
         case .base: return .primary
         case .queued: return .orange
+        case .processing: return .blue
         case .failed: return .red
         }
     }
@@ -953,10 +1029,12 @@ struct ChatCard: View {
     private var cardSurface: some View {
         ZStack {
             front
+                .frame(height: frontHeight)
                 .opacity(flipped ? 0 : 1)
                 .rotation3DEffect(.degrees(reduceMotion ? 0 : (flipped ? 180 : 0)), axis: (x: 1, y: 0, z: 0))
                 .allowsHitTesting(!flipped).accessibilityHidden(flipped)
             back
+                .frame(height: 116)
                 .opacity(flipped ? 1 : 0)
                 .rotation3DEffect(.degrees(reduceMotion ? 0 : (flipped ? 0 : -180)), axis: (x: 1, y: 0, z: 0))
                 .allowsHitTesting(flipped).accessibilityHidden(!flipped)
@@ -966,6 +1044,14 @@ struct ChatCard: View {
                     in: RoundedRectangle(cornerRadius: 13))
         .overlay(RoundedRectangle(cornerRadius: 13)
             .strokeBorder(tint.opacity(isQueued ? 0.3 : (hovered ? 0.16 : 0.06))))
+        .overlay {
+            if content.state == .processing {
+                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+                    let opacity = reduceMotion ? 0.65 : 0.45 + 0.2 * sin(context.date.timeIntervalSinceReferenceDate * .pi)
+                    RoundedRectangle(cornerRadius: 13).strokeBorder(Color.blue.opacity(opacity), lineWidth: 1.5)
+                }.allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
     }
 
     @ViewBuilder private var activityIndicator: some View {
@@ -982,6 +1068,29 @@ struct ChatCard: View {
         }
     }
 
+    @ViewBuilder private var queueStateIndicator: some View {
+        if case .queued(let entry, _, _) = content {
+            Group {
+                switch entry.cardState {
+                case .processing:
+                    TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+                        Circle().trim(from: 0, to: 0.72)
+                            .stroke(Color.blue, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                            .rotationEffect(.degrees(reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate * 360))
+                            .frame(width: 12, height: 12)
+                    }
+                case .failed:
+                    Image(systemName: "exclamationmark.circle.fill")
+                case .queued, .base:
+                    Image(systemName: "clock")
+                }
+            }
+            .font(.system(size: 12, weight: .medium)).foregroundStyle(tint)
+            .frame(width: 16, height: 16)
+            .help(entry.statusDescription).accessibilityLabel(entry.statusDescription)
+        }
+    }
+
     private var front: some View {
         Button {
             if case .queued(let entry, _, _) = content {
@@ -990,47 +1099,51 @@ struct ChatCard: View {
             }
             flipped = true
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .top) {
-                    Text(chat.displayTitle).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    activityIndicator
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .top) {
+                        ChatCardTitle(title: chat.displayTitle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        activityIndicator
+                        queueStateIndicator
+                    }
+                    if case .queued(let entry, _, _) = content {
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Text("“")
+                                .font(.system(size: 15, weight: .medium, design: .serif))
+                                .foregroundStyle(.tertiary)
+                            Text(entry.prompt)
+                                .font(.system(size: 11.5)).foregroundStyle(Color.primary.opacity(0.72)).lineLimit(1)
+                        }
+                        .help(entry.prompt)
+                        .accessibilityLabel("Queued instruction: \(entry.prompt)")
+                    }
                 }
+                .padding(.horizontal, 11).padding(.top, 12)
+
+                Spacer(minLength: 6)
+
                 HStack(spacing: 6) {
                     Label(chat.location, systemImage: "folder").lineLimit(1)
                     Spacer(minLength: 2)
                     TimelineView(.periodic(from: .now, by: 60)) { context in
-                        Text(chat.activityLabel(at: context.date)).lineLimit(1)
+                        Text(chat.activityDate == nil ? "No activity recorded" : "Last active \(chat.activityLabel(at: context.date).lowercased())").lineLimit(1)
                             .help(chat.activityDate.map { "Last activity: \($0.formatted())" } ?? "Activity time unavailable")
                     }.fixedSize()
-                }.font(.caption2).foregroundStyle(.secondary)
-                if case .queued(let entry, _, _) = content {
-                    Label(entry.prompt, systemImage: "hourglass")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    if entry.cardState == .failed {
-                        Label(entry.failureTitle, systemImage: "exclamationmark.circle.fill")
-                            .font(.caption2.weight(.medium)).foregroundStyle(.red)
-                        Text(entry.reactivation_error ?? entry.note ?? "The chat could not be resumed.")
-                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                            .help(entry.failureDetail)
-                    } else if entry.state != "waiting" {
-                        Text(entry.note ?? entry.state).font(.caption2).foregroundStyle(.orange).lineLimit(1)
-                    }
-                }
+                }.font(.system(size: 9.5)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 11).padding(.bottom, 10)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .padding(9).contentShape(Rectangle())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: frontHeight)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(chat.displayTitle), \(chat.location), \(chat.activityLabel(at: Date())), \(isQueued ? "edit queued instruction" : "edit instruction")")
-        .accessibilityValue(failureDescription)
-        .help(failureDescription)
+        .accessibilityLabel("\(chat.displayTitle), project \(chat.location), last active \(chat.activityLabel(at: Date())), \(isQueued ? "edit queued instruction" : "edit instruction")")
+        .accessibilityValue(statusDescription)
     }
 
-    private var failureDescription: String {
-        if case .queued(let entry, _, _) = content, entry.cardState == .failed {
-            return "\(entry.failureTitle). \(entry.failureDetail)"
-        }
+    private var statusDescription: String {
+        if case .queued(let entry, _, _) = content { return entry.statusDescription }
         return ""
     }
 
@@ -1042,10 +1155,10 @@ struct ChatCard: View {
             .buttonStyle(.plain).accessibilityLabel("Back to \(chat.displayTitle)")
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text(chat.displayTitle).font(.caption.weight(.semibold)).lineLimit(1)
-                        .allowsHitTesting(false)
+                    ChatCardTitle(title: chat.displayTitle, size: 11)
                     Spacer()
                     activityIndicator
+                    queueStateIndicator
                 }
                 switch content {
                 case .draft(let instruction, let canQueue, let queue):

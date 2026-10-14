@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from codex_bridge import AppServer, Desktop
-from resume_queue import Chat, Entry, Usage, check_queue, locked_queue
+from resume_queue import Chat, Entry, Queue, Usage, check_queue, locked_queue
 from app_runtime import PROFILE, RUNTIME, VERSION
 from app_lifecycle import remove_agent, write_agent
 
@@ -197,12 +197,16 @@ def run(args, *, usage_observation=None):
     if args.command == "queue":
         return enroll(args, usage_observation)
 
+    if args.command == "list":
+        # Atomic replacement gives readers a complete snapshot while the worker
+        # holds its mutation lock across network reads and dispatch.
+        queue = Queue(args.state)
+        return {"paused": queue.data["paused"], "last_check": queue.data.get("last_check"),
+                "last_error": queue.data.get("last_error"),
+                "entries": [asdict(e) for e in queue.entries],
+                **({"history": queue.data["history"]} if args.history else {})}
+
     with locked_queue(args.state) as queue:
-        if args.command == "list":
-            return {"paused": queue.data["paused"], "last_check": queue.data.get("last_check"),
-                    "last_error": queue.data.get("last_error"),
-                    "entries": [asdict(e) for e in queue.entries],
-                    **({"history": queue.data["history"]} if args.history else {})}
         if args.command in {"pause", "resume"}:
             queue.data["paused"] = args.command == "pause"
             queue.save()
@@ -215,8 +219,7 @@ def run(args, *, usage_observation=None):
             queue.finish(matches[0], "cancelled", time.time())
             return {"message": f"Removed {matches[0].title} from the queue."}
         if args.command == "tick":
-            due = [e for e in queue.entries if e.state == "sending" or
-                   (e.state == "waiting" and time.time() >= max(e.reset_windows.values()))]
+            due = [e for e in queue.entries if e.state in {"waiting", "sending"}]
             if queue.data["paused"] or not due:
                 if not args.dry_run:
                     queue.data["last_check"] = time.time()

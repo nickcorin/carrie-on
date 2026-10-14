@@ -448,7 +448,8 @@ h1 {
 }
 
 .queue-card {
-  border:1px solid var(--line);
+  border:1px solid #e3bd83;
+  background:#fff9f0;
   border-radius:10px;
   padding:15px;
   margin-top:15px;
@@ -461,7 +462,36 @@ h1 {
   align-items:flex-start;
 }
 
+.queue-card.processing {
+  background:#f3f8ff;
+  border-color:#528bd2;
+  animation:queue-processing 2s ease-in-out infinite;
+}
+
+.queue-state { color:#a56812; font-size:18px; line-height:18px; flex-shrink:0; }
+.queue-card.processing .queue-state { color:#245a9e; }
+.queue-card.failed { background:#fff5f4; border-color:#d68b87; }
+.queue-card.failed .queue-state {
+  color:white; background:#a52d26; border-radius:50%; width:18px; text-align:center;
+  font-size:12px; font-weight:700;
+}
+.queue-state.spinner {
+  width:16px; height:16px; border:2px solid currentColor; border-top-color:transparent;
+  border-radius:50%; animation:queue-spin 1s linear infinite;
+}
+.queue-state:focus-visible { outline:2px solid currentColor; outline-offset:3px; }
+@keyframes queue-spin { to { transform:rotate(360deg); } }
+
+@keyframes queue-processing {
+  50% { border-color:#a4c6f0; box-shadow:0 0 0 2px #528bd214; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .queue-card.processing, .queue-state.spinner { animation:none; }
+}
+
 .queue-top a {
+  flex:1;
   font-weight:600;
   font-size:14px;
   line-height:1.5;

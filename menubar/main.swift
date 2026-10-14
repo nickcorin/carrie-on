@@ -99,6 +99,7 @@ final class MenuApp: NSObject, NSApplicationDelegate {
     private var baseURL: URL
     private let diagnosticsURL: URL?
     private var timer: Timer?
+    private var queueTimer: Timer?
     private var snapshot: MenuSnapshot?
     private var refreshing = false
     private var picker: ChatPickerPopover!
@@ -160,6 +161,13 @@ final class MenuApp: NSObject, NSApplicationDelegate {
             }
         }
         RunLoop.main.add(timer!, forMode: .common)
+        queueTimer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.picker.popover.isShown else { return }
+                await self.picker.model.updateQueue(refreshMetadata: false)
+            }
+        }
+        RunLoop.main.add(queueTimer!, forMode: .common)
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(refresh), name: NSWorkspace.didWakeNotification, object: nil)
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
@@ -257,6 +265,7 @@ final class MenuApp: NSObject, NSApplicationDelegate {
 }
 
 func selfTest() throws {
+    chatTitleSelfTest()
     try lifecycleSelfTest()
     let fixture = #"{"usage":{"windows":[{"bucket":"codex","name":"primary","used_percent":25,"resets_at":200,"window_minutes":300},{"bucket":"codex","name":"secondary","used_percent":91,"resets_at":500,"window_minutes":10080}]},"queue":{"count":3,"paused":false,"needs_attention":0,"service_installed":true,"last_check":100,"last_error":null},"usage_error":null,"queue_error":null}"#
     let snapshot = try MenuSnapshot.decode(Data(fixture.utf8))
@@ -338,6 +347,16 @@ func selfTest() throws {
         guard !picker.canQueue("chat-b") else { fatalError("Unconfirmed write allowed a retry") }
         var entry = picker.queuedEntries[0]
         guard entry.cardState == .queued else { fatalError("Waiting enrollment displayed as failed") }
+        entry.processing_until = Date().timeIntervalSince1970 + 120
+        guard entry.cardState == .queued, entry.statusDescription == "Scheduled for the next usage reset."
+        else { fatalError("Readiness checking changed the queued card state") }
+        entry.state = "sending"
+        guard entry.cardState == .processing, entry.statusDescription == "Sending continuation…"
+        else { fatalError("Dispatch has no sending indicator") }
+        entry.processing_until = 1
+        guard entry.cardState == .failed else { fatalError("Expired dispatch still animates") }
+        entry.state = "waiting"
+        entry.processing_until = nil
         entry.reactivation_error = "Codex is unavailable"
         picker.reconcile(PickerQueue(entries: [entry], paused: false))
         guard picker.queuedEntries[0].cardState == .failed,
@@ -353,6 +372,10 @@ func selfTest() throws {
         entry.reactivation_error = nil
         entry.state = "needs_attention"
         guard entry.cardState == .failed else { fatalError("Legacy held enrollment lost its failure state") }
+        entry.attempted_at = nil
+        entry.note = "Chat changed after enrollment; remove and re-enroll if still wanted"
+        guard entry.failureTitle == "Needs attention", entry.failureDetail.contains("Chat changed after enrollment")
+        else { fatalError("Changed chat is missing actionable feedback") }
         entry.state = "waiting"
         entry.attempted_at = nil
         guard entry.cardState == .queued else { fatalError("Recovered enrollment remained failed") }

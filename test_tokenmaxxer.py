@@ -87,6 +87,35 @@ class QueueBehavior(unittest.TestCase):
         self.assertEqual(self.state()["history"][0]["outcome"], "resumed")
         self.assertEqual(self.state()["entries"], [])
 
+    def test_status_shows_processing_without_waiting_for_worker_lock(self):
+        args = tokenmaxxer.parser().parse_args(["--state", str(self.path), "list"])
+
+        def read_usage():
+            entry = tokenmaxxer.run(args)["entries"][0]
+            self.assertEqual((entry["state"], entry["processing_until"]), ("waiting", None))
+            return usage(0, 200)
+
+        def send(thread_id, prompt, message_id):
+            entry = tokenmaxxer.run(args)["entries"][0]
+            self.assertEqual((entry["state"], entry["processing_until"]), ("sending", 230))
+            self.assertEqual((thread_id, prompt, message_id), ("thread-a", "Finish tests", self.entry_id))
+
+        with patch.object(self.codex, "usage", side_effect=read_usage), \
+                patch.object(self.codex, "continue_chat", side_effect=send):
+            self.assertEqual(self.tick(), ["Continuation accepted: Finish feature"])
+        self.assertIsNone(self.state()["history"][0]["processing_until"])
+
+    def test_processing_clears_after_wait_and_error(self):
+        self.codex.limits = usage(100, 100)
+        self.tick()
+        self.assertEqual(self.state()["entries"][0]["state"], "waiting")
+        self.assertIsNone(self.state()["entries"][0]["processing_until"])
+        self.codex.usage_error = True
+        self.tick()
+        entry = self.state()["entries"][0]
+        self.assertEqual(entry["reactivation_error"], "Usage unavailable")
+        self.assertIsNone(entry["processing_until"])
+
     def test_no_model_turn_while_exhausted_then_resumes(self):
         self.codex.limits = usage(100, 200)
         self.tick()
@@ -95,14 +124,40 @@ class QueueBehavior(unittest.TestCase):
         self.tick()
         self.assertEqual(len(self.codex.delivered), 1)
 
-    def test_deadline_and_fresh_reset_both_required(self):
-        self.tick(now=99)
+    def test_early_reset_sends_once_before_original_deadline(self):
+        self.codex.limits = usage(100, 100)
+        self.tick(now=60)
+        self.assertEqual(self.state()["entries"][0]["state"], "waiting")
+        self.codex.limits = usage(0, 200)
+        self.tick(now=70)
+        self.tick(now=80)
+        self.assertEqual(self.codex.delivered, [{"thread_id": "thread-a", "prompt": "Finish tests",
+                                               "message_id": self.entry_id}])
+        self.assertEqual(self.state()["history"][0]["outcome"], "resumed")
+
+    def test_headroom_without_advanced_reset_still_waits(self):
         self.codex.limits = usage(0, 100)
         self.tick()
         self.assertEqual(self.state()["entries"][0]["state"], "waiting")
         self.codex.limits = usage(0, 200)
         self.tick()
         self.assertEqual(len(self.codex.delivered), 1)
+
+    def test_elapsed_replacement_reset_is_not_fresh_confirmation(self):
+        self.codex.limits = usage(0, 105)
+        self.tick(110)
+        self.assertEqual(self.state()["entries"][0]["state"], "waiting")
+        self.codex.limits = usage(0, 200)
+        self.tick(110)
+        self.assertEqual(self.state()["history"][0]["outcome"], "resumed")
+
+    def test_early_reset_still_holds_changed_chat(self):
+        self.codex.chat = snapshot(message_id="new-human-message")
+        self.tick(70)
+        self.assertEqual(self.state()["entries"][0]["state"], "needs_attention")
+        self.assertEqual(self.state()["entries"][0]["note"],
+                         "Chat changed after enrollment; remove and re-enroll if still wanted")
+        self.assertEqual(self.codex.delivered, [])
 
     def test_weekly_exhaustion_blocks_short_window_reset(self):
         self.codex.limits = usage(0, 200, {"usedPercent": 100, "resetsAt": 1000})
@@ -116,11 +171,22 @@ class QueueBehavior(unittest.TestCase):
         with locked_queue(self.path) as queue:
             queue.entries[0].reset_windows["secondary"] = 1000
             queue.save()
-        self.codex.limits = usage(0, 200, {"usedPercent": 0, "resetsAt": 2000})
-        self.tick(900)
+        self.codex.limits = usage(0, 200, {"usedPercent": 0, "resetsAt": 1000})
+        self.tick(90)
         self.assertEqual(self.state()["entries"][0]["state"], "waiting")
-        self.tick(1001)
+        self.codex.limits = usage(0, 200, {"usedPercent": 0, "resetsAt": 2000})
+        self.tick(95)
         self.assertEqual(len(self.codex.delivered), 1)
+
+    def test_cli_tick_observes_reset_before_deadline(self):
+        args = tokenmaxxer.parser().parse_args(["--state", str(self.path), "tick"])
+        with patch("tokenmaxxer.time.time", return_value=70), \
+                patch("tokenmaxxer.AppServer") as server, patch("tokenmaxxer.Desktop") as desktop:
+            server.return_value.__enter__.return_value = self.codex
+            desktop.return_value.__enter__.return_value = self.codex
+            self.assertEqual(tokenmaxxer.run(args),
+                             {"status": "checked", "outcomes": ["Continuation accepted: Finish feature"]})
+        self.assertEqual(self.state()["history"][0]["outcome"], "resumed")
 
     def test_unknown_usage_is_held_and_never_assumed_available(self):
         self.codex.limits["rateLimitsByLimitId"]["codex"]["primary"]["usedPercent"] = None
@@ -262,7 +328,7 @@ class QueueBehavior(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "read-only"):
             AppServer().request("turn/start", {"threadId": "thread-a"})
 
-    def test_connection_failure_marks_only_due_enrollments_and_dry_run_is_read_only(self):
+    def test_connection_failure_marks_waiting_enrollments_and_dry_run_is_read_only(self):
         args = tokenmaxxer.parser().parse_args(["--state", str(self.path), "tick", "--dry-run"])
         before = self.path.read_bytes()
         with patch("tokenmaxxer.AppServer", side_effect=BridgeError("Codex unavailable")):
@@ -278,8 +344,10 @@ class QueueBehavior(unittest.TestCase):
         self.assertEqual(self.state()["history"][0]["outcome"], "resumed")
 
     def test_waiting_and_blocked_chats_do_not_count_as_failed_reactivations(self):
+        self.codex.limits = usage(100, 100)
         self.tick(99)
         self.assertIsNone(self.state()["entries"][0]["reactivation_error"])
+        self.codex.limits = usage(0, 200)
         self.codex.chat["requests"] = [{"kind": "approval"}]
         self.tick()
         self.assertEqual(self.state()["entries"][0]["note"], "Waiting: chat is active or requires attention")
@@ -288,6 +356,7 @@ class QueueBehavior(unittest.TestCase):
     def test_existing_queue_without_failure_field_remains_readable(self):
         raw = self.state()
         raw["entries"][0].pop("reactivation_error")
+        raw["entries"][0].pop("processing_until")
         self.path.write_text(json.dumps(raw))
         self.tick()
         self.assertEqual(self.state()["history"][0]["outcome"], "resumed")

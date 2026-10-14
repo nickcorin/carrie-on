@@ -155,6 +155,7 @@ class Entry:
     note: str = "Waiting for the recorded usage reset"
     attempted_at: float | None = None
     reactivation_error: str | None = None
+    processing_until: float | None = None
 
     @classmethod
     def enroll(cls, chat, usage, prompt, now):
@@ -194,6 +195,9 @@ class Entry:
         if entry.reactivation_error is not None and (
                 not isinstance(entry.reactivation_error, str) or not entry.reactivation_error.strip()):
             raise ValueError("Invalid reactivation error")
+        if entry.processing_until is not None and (
+                type(entry.processing_until) not in (int, float) or not math.isfinite(entry.processing_until)):
+            raise ValueError("Invalid processing expiry")
         return entry
 
     def require_attention(self, reason):
@@ -209,7 +213,7 @@ class Entry:
         if not usage.allowed or any(w.used >= 100 for w in usage.windows):
             return False
         windows = {w.name: w for w in usage.windows}
-        return all(now >= baseline and name in windows and windows[name].reset_at > baseline
+        return all(name in windows and windows[name].reset_at > max(baseline, now)
                    for name, baseline in self.reset_windows.items())
 
 
@@ -258,6 +262,7 @@ class Queue:
 
     def finish(self, entry, outcome, now):
         """Remove an enrollment and retain its observable outcome in history."""
+        entry.processing_until = None
         self.entries.remove(entry)
         self.data["history"].append({**asdict(entry), "outcome": outcome, "finished_at": now})
         self.save()
@@ -304,7 +309,7 @@ def locked_queue(path):
 
 
 def check_queue(queue, server, desktop, now=None):
-    """Advance due entries; never retry an uncertain send automatically.
+    """Check reset eligibility; never retry an uncertain send automatically.
 
     Dependencies expose usage(), snapshot(id), and continue_chat(id, text, id).
     No dependency evaluates a prompt to choose an action.
@@ -316,10 +321,12 @@ def check_queue(queue, server, desktop, now=None):
     for entry in list(queue.entries):
         if entry.state == "needs_attention":
             continue
-        if entry.state == "waiting" and now < max(entry.reset_windows.values()):
-            continue
         try:
             entry.reactivation_error = None
+            # Presentation lease only; a crashed worker must not animate forever.
+            entry.processing_until = now + 120 if entry.state == "sending" else None
+            if entry.state == "sending":
+                queue.save()
             if entry.state == "waiting":
                 usage = Usage.parse(server.usage(), entry.limit_id)
                 if not entry.reset_ready(usage, now):
@@ -355,6 +362,7 @@ def check_queue(queue, server, desktop, now=None):
             # Persist before crossing the send boundary; a lost reply is not a retry signal.
             entry.state = "sending"
             entry.attempted_at = now
+            entry.processing_until = now + 120
             entry.note = "Continuation dispatch started"
             queue.save()
             desktop.continue_chat(entry.thread_id, entry.prompt, entry.id)
@@ -367,6 +375,7 @@ def check_queue(queue, server, desktop, now=None):
                 entry.state = "needs_attention"
             outcomes.append(f"{entry.title}: {entry.note}")
         finally:
+            entry.processing_until = None
             queue.save()
     queue.data["last_check"] = now
     queue.save()

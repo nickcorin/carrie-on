@@ -7,6 +7,7 @@ let status = null;
 let mutating = false;
 let refreshingStatus = false;
 let searchRevision = 0;
+let renderedStatus = "";
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -84,6 +85,9 @@ function chatLink(entry) {
 
 function renderStatus() {
   const stale = !status.last_check || Date.now() / 1000 - status.last_check > 180;
+  const revision = JSON.stringify([status, mutating, stale, status.entries.map((entry) => entry.processing_until > Date.now() / 1000)]);
+  if (revision === renderedStatus) return;
+  renderedStatus = revision;
   const monitor = !status.service_installed ? "Worker not installed" : status.paused ? "Queue paused" : stale ? "Check overdue" : "Watching for resets";
   $("monitor-state").textContent = monitor;
   $("last-check").textContent = `Last check: ${date(status.last_check)}`;
@@ -93,16 +97,27 @@ function renderStatus() {
   $("connection-error").textContent = status.last_error || (!status.service_installed ? "The background worker is not installed. Chats cannot resume automatically until it is restored." : stale ? "The worker has not checked recently. Keep this Mac awake; the next successful check will update this status." : "");
   $("connection-error").hidden = !$("connection-error").textContent;
   const cards = status.entries.map((entry) => {
-    const card = element("article", "queue-card");
+    const processing = !entry.reactivation_error && entry.state === "sending" && entry.processing_until > Date.now() / 1000;
+    const failed = !!entry.reactivation_error || entry.state === "needs_attention" || (entry.state === "sending" && !processing);
+    const card = element("article", "queue-card" + (failed ? " failed" : processing ? " processing" : ""));
+    if (processing) card.style.animationDelay = `-${Date.now() / 1000 % 2}s`;
     const top = element("div", "queue-top");
     const remove = element("button", "remove", "Remove");
-    remove.disabled = mutating;
+    remove.disabled = mutating || processing;
     remove.setAttribute("aria-label", `Remove ${entry.title} from queue`);
     remove.addEventListener("click", () => change("/api/remove", {chat: entry.id}));
-    top.append(chatLink(entry), remove);
-    const states = {waiting: status.paused ? "PAUSED" : "WAITING FOR RESET", sending: "CONFIRMING DELIVERY", needs_attention: "NEEDS ATTENTION"};
-    card.append(top, element("span", "badge" + (entry.state === "needs_attention" ? " attention" : ""), states[entry.state] || entry.state));
-    card.append(element("p", "", entry.note));
+    const guidance = failed ? (entry.state === "waiting" ? " Will retry automatically." : " Inspect the chat before re-queueing.") : "";
+    const reason = entry.reactivation_error || (entry.state === "sending" && !processing ? "Delivery has not been confirmed." : entry.note) || "";
+    const description = failed ? (entry.attempted_at ? "Resume unconfirmed. " : "Needs attention. ")
+      + reason + (reason && !reason.endsWith(".") ? "." : "") + guidance
+      : processing ? "Sending continuation…" : status.paused ? "Queue paused." : "Scheduled for the next usage reset.";
+    const indicator = element("span", "queue-state" + (processing ? " spinner" : ""), processing ? "" : failed ? "!" : "◷");
+    indicator.title = description;
+    indicator.setAttribute("role", "img");
+    indicator.setAttribute("aria-label", description);
+    indicator.tabIndex = 0;
+    top.append(chatLink(entry), indicator, remove);
+    card.append(top);
     card.append(element("p", "reset-time", `Reset expected: ${date(Math.max(...Object.values(entry.reset_windows)))}`));
     const details = element("details");
     details.append(element("summary", "", "Continuation instruction"), element("p", "", entry.prompt));
@@ -139,6 +154,8 @@ async function refreshStatus() {
     status = await api("/api/status");
     renderStatus();
   } catch (error) {
+    if (status) renderStatus();
+    renderedStatus = "";
     $("connection-error").textContent = `Could not refresh queue status: ${error.message}`;
     $("connection-error").hidden = false;
     $("monitor-state").textContent = "Connection unavailable";
@@ -227,4 +244,4 @@ $("refresh").addEventListener("click", async () => {
   finally { $("refresh").disabled = false; }
 });
 Promise.all([refreshStatus(), loadChats(), loadUsage()]);
-setInterval(refreshStatus, 10000);
+setInterval(() => { if (!document.hidden) refreshStatus(); }, 1000);

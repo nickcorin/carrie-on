@@ -137,6 +137,7 @@ func testChatPagination() async throws {
 
 Task { @MainActor in
     do {
+        try selfTest()
         try await testChatPagination()
         exit(0)
     } catch {
