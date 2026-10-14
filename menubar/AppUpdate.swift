@@ -16,7 +16,7 @@ struct UpdateFailure: Decodable, LocalizedError {
 enum AppUpdate {
     static func run(_ arguments: [String]) throws -> UpdateReply {
         let process = Process()
-        process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/tokenmaxxer")
+        process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/carrie_on")
         process.arguments = ["update"] + arguments
         let output = Pipe()
         process.standardOutput = output
@@ -55,7 +55,7 @@ enum AppUpdate {
 
     static func launchReplacement(_ app: URL) throws {
         let process = Process()
-        process.executableURL = app.appendingPathComponent("Contents/MacOS/TokenmaxxerMenu")
+        process.executableURL = app.appendingPathComponent("Contents/MacOS/CarrieOnMenu")
         process.arguments = ["--relaunch-after", String(getpid())]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice

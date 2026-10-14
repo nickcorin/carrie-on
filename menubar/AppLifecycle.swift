@@ -5,8 +5,8 @@ import Foundation
 
 struct LifecycleFiles {
     static let labels = Bundle.main.object(forInfoDictionaryKey: "CarrieOnServiceLabels") as? [String]
-        ?? ["com.nickcorin.tokenmaxxer", "com.nickcorin.tokenmaxxer.ui", "com.nickcorin.tokenmaxxer.menu"]
-    static let dataDirectory = Bundle.main.object(forInfoDictionaryKey: "CarrieOnDataDirectory") as? String ?? "Tokenmaxxer"
+        ?? ["com.nickcorin.carrieon", "com.nickcorin.carrieon.ui", "com.nickcorin.carrieon.menu"]
+    static let dataDirectory = Bundle.main.object(forInfoDictionaryKey: "CarrieOnDataDirectory") as? String ?? "Carrie On"
     let home: URL
     var data: URL { home.appendingPathComponent("Library/Application Support/\(Self.dataDirectory)") }
     private var root: URL { data.appendingPathComponent("Lifecycle") }
@@ -58,7 +58,7 @@ struct LifecycleFiles {
     }
 
     private func failure(_ message: String) -> NSError {
-        NSError(domain: "Tokenmaxxer", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        NSError(domain: "Carrie On", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 }
 
@@ -88,7 +88,7 @@ enum LifecycleServices {
             let result = try run(arguments)
             let nowLoaded = try run(["print", target]).0 == 0
             guard nowLoaded == running else {
-                throw NSError(domain: "Tokenmaxxer", code: Int(result.0), userInfo: [NSLocalizedDescriptionKey:
+                throw NSError(domain: "Carrie On", code: Int(result.0), userInfo: [NSLocalizedDescriptionKey:
                     "Could not \(running ? "start" : "stop") \(label). \(result.1)"])
             }
         }

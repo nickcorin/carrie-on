@@ -213,8 +213,8 @@ def prepare_update(release, app):
         metadata = json.loads((candidate / "Contents/Resources/release.json").read_text())
         if (info.get("CFBundleIdentifier") != APP_IDENTIFIER
                 or info.get("CFBundleShortVersionString") != release.version
-                or info.get("CFBundleExecutable") != "TokenmaxxerMenu"
-                or info.get("TokenmaxxerStandalone") is not True
+                or info.get("CFBundleExecutable") != "CarrieOnMenu"
+                or info.get("CarrieOnStandalone") is not True
                 or metadata.get("version") != release.version
                 or metadata.get("architecture") != platform.machine()
                 or metadata.get("minimum_macos") != release.minimum_macos):

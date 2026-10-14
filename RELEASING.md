@@ -28,6 +28,8 @@ just ci
 
 `just build` is an alias for `just package`: compiling, signing, and packaging are a single pipeline so the ZIP always contains the verified app. An existing version is preserved unless replacement is requested. CI deliberately replaces local development artifacts so repeated checks work.
 
+`just branding` checks current tracked and nonignored source files for retired app branding. Packaging also checks bundle paths, file contents, symlink targets, and compressed Python modules before signing; ZIP acceptance repeats the bundle check. Historical Git objects and ignored development caches are outside the source check and are never packaging inputs.
+
 ```sh
 just package
 just package --replace
@@ -65,8 +67,8 @@ profile changes installation resources, not feature behavior:
 | Resource | Release | Development |
 | --- | --- | --- |
 | App | Carrie On.app | Carrie On Dev.app |
-| Application Support folder | Tokenmaxxer | Carrie On Dev |
-| Service prefix | com.nickcorin.tokenmaxxer | com.nickcorin.tokenmaxxer.dev |
+| Application Support folder | Carrie On | Carrie On Dev |
+| Service prefix | com.nickcorin.carrieon | com.nickcorin.carrieon.dev |
 | Default local port | 8766 | 8767 |
 | Updates | Versioned GitHub releases | Local rebuilds |
 

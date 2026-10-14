@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from app_runtime import Runtime
 import bundle_install
-import tokenmaxxer
+import carrie_on
 from macos_compatibility import audit, deployment_versions, version_tuple
 
 
@@ -52,11 +52,11 @@ Load command 2
 
     def test_launch_commands_follow_runtime_not_build_machine(self):
         source = Runtime(Path("/source tree"), Path("/source tree"), Path("/usr/bin/python3"), False)
-        installed = Runtime(Path("/app/_internal"), Path("/User Data"), Path("/app/tokenmaxxer"), True)
-        self.assertEqual(source.command("worker"), ["/usr/bin/python3", "/source tree/tokenmaxxer.py"])
-        self.assertEqual(source.command("dashboard"), ["/usr/bin/python3", "/source tree/tokenmaxxer_ui.py"])
-        self.assertEqual(installed.command("worker"), ["/app/tokenmaxxer"])
-        self.assertEqual(installed.command("dashboard"), ["/app/tokenmaxxer", "dashboard"])
+        installed = Runtime(Path("/app/_internal"), Path("/User Data"), Path("/app/carrie_on"), True)
+        self.assertEqual(source.command("worker"), ["/usr/bin/python3", "/source tree/carrie_on.py"])
+        self.assertEqual(source.command("dashboard"), ["/usr/bin/python3", "/source tree/carrie_on_ui.py"])
+        self.assertEqual(installed.command("worker"), ["/app/carrie_on"])
+        self.assertEqual(installed.command("dashboard"), ["/app/carrie_on", "dashboard"])
         self.assertEqual(installed.state, Path("/User Data/resume-queue.json"))
 
     def test_worker_registration_uses_installed_runtime_and_private_data(self):
@@ -64,15 +64,15 @@ Load command 2
             home = Path(temporary).resolve()
             data = home / "User Data"
             data.mkdir()
-            runtime = Runtime(home / "app/_internal", data, home / "app/tokenmaxxer", True)
+            runtime = Runtime(home / "app/_internal", data, home / "app/carrie_on", True)
             args = argparse.Namespace(command="install", interval=90, codex="codex", socket=None,
                                       state=runtime.state, start=False)
-            with patch("tokenmaxxer.RUNTIME", runtime), patch("pathlib.Path.home", return_value=home), \
+            with patch("carrie_on.RUNTIME", runtime), patch("pathlib.Path.home", return_value=home), \
                  patch("shutil.which", return_value="/cli/codex"), patch("sys.platform", "darwin"):
-                tokenmaxxer.launch_agent(args)
-            path = home / "Library/LaunchAgents/com.nickcorin.tokenmaxxer.plist"
+                carrie_on.launch_agent(args)
+            path = home / "Library/LaunchAgents/com.nickcorin.carrieon.plist"
             config = plistlib.loads(path.read_bytes())
-            self.assertEqual(config["ProgramArguments"], [str(home / "app/tokenmaxxer"), "--state",
+            self.assertEqual(config["ProgramArguments"], [str(home / "app/carrie_on"), "--state",
                              str(data / "resume-queue.json"), "--codex", "/cli/codex", "tick"])
             self.assertEqual(config["StartInterval"], 90)
             self.assertEqual(config["WorkingDirectory"], str(data))
@@ -93,9 +93,9 @@ class FirstLaunchTests(unittest.TestCase):
         self.metadata = {"architecture": "arm64", "minimum_macos": "13.0", "build_id": "first-build"}
         self.release = contents / "Resources/release.json"
         self.release.write_text(json.dumps(self.metadata))
-        self.data = self.home / "Library/Application Support/Tokenmaxxer"
+        self.data = self.home / "Library/Application Support/Carrie On"
         self.data.mkdir(parents=True)
-        self.runtime = Runtime(contents / "Resources", self.data, contents / "MacOS/tokenmaxxer", True)
+        self.runtime = Runtime(contents / "Resources", self.data, contents / "MacOS/carrie_on", True)
         self.codex = self.home / "Codex CLI"
         self.codex.write_text("#!/bin/sh\nexit 0\n")
         self.codex.chmod(0o755)
@@ -104,8 +104,8 @@ class FirstLaunchTests(unittest.TestCase):
         self.fail_bootstrap = None
         contexts = ExitStack()
         self.addCleanup(contexts.close)
-        for target, value in (("bundle_install.RUNTIME", self.runtime), ("tokenmaxxer.RUNTIME", self.runtime),
-                              ("tokenmaxxer_ui.RUNTIME", self.runtime)):
+        for target, value in (("bundle_install.RUNTIME", self.runtime), ("carrie_on.RUNTIME", self.runtime),
+                              ("carrie_on_ui.RUNTIME", self.runtime)):
             contexts.enter_context(patch(target, value))
         contexts.enter_context(patch("pathlib.Path.home", return_value=self.home))
         contexts.enter_context(patch("platform.machine", return_value="arm64"))
@@ -157,13 +157,13 @@ class FirstLaunchTests(unittest.TestCase):
         self.assertEqual(marker["build_id"], "replacement-build")
         self.assertEqual(self.runtime.state.read_bytes(), original_queue)
         self.assertEqual(before_app, {path: path.read_bytes() for path in self.app.rglob("*") if path.is_file()})
-        worker = plistlib.loads((self.home / "Library/LaunchAgents/com.nickcorin.tokenmaxxer.plist").read_bytes())
+        worker = plistlib.loads((self.home / "Library/LaunchAgents/com.nickcorin.carrieon.plist").read_bytes())
         self.assertEqual(worker["ProgramArguments"][0], str(self.runtime.executable))
         self.assertEqual(worker["EnvironmentVariables"]["CODEX_HOME"], str(self.home / "Custom Codex"))
 
     def test_failed_registration_is_repaired_on_next_launch(self):
         from subprocess import CalledProcessError
-        self.fail_bootstrap = bundle_install.tokenmaxxer_ui.LABEL
+        self.fail_bootstrap = bundle_install.carrie_on_ui.LABEL
         with self.assertRaises(CalledProcessError):
             bundle_install.setup(self.args(codex=str(self.codex), port=8877))
         self.assertFalse((self.data / "installation.json").exists())
@@ -184,7 +184,7 @@ class FirstLaunchTests(unittest.TestCase):
         self.assertEqual(json.loads(settings_path.read_text())["codex_home"], None)
         self.assertEqual(settings_path.read_bytes(), saved)
         self.assertEqual(self.restarts, [])
-        worker = plistlib.loads((self.home / "Library/LaunchAgents/com.nickcorin.tokenmaxxer.plist").read_bytes())
+        worker = plistlib.loads((self.home / "Library/LaunchAgents/com.nickcorin.carrieon.plist").read_bytes())
         self.assertNotIn("CODEX_HOME", worker["EnvironmentVariables"])
 
     def test_initial_environment_is_captured_and_explicit_setting_can_change_it(self):
@@ -208,10 +208,10 @@ class FirstLaunchTests(unittest.TestCase):
     def test_legacy_connection_settings_are_migrated(self):
         agents = self.home / "Library/LaunchAgents"
         agents.mkdir(parents=True)
-        (agents / f"{tokenmaxxer.LABEL}.plist").write_bytes(plistlib.dumps({
+        (agents / f"{carrie_on.LABEL}.plist").write_bytes(plistlib.dumps({
             "ProgramArguments": ["old-runtime", "--codex", str(self.codex), "--socket", "/custom/ipc.sock", "tick"],
             "StartInterval": 90, "EnvironmentVariables": {"CODEX_HOME": "/custom/codex"}}))
-        (agents / f"{bundle_install.tokenmaxxer_ui.LABEL}.plist").write_bytes(plistlib.dumps({
+        (agents / f"{bundle_install.carrie_on_ui.LABEL}.plist").write_bytes(plistlib.dumps({
             "ProgramArguments": ["old-runtime", "--codex", str(self.codex), "--port", "8877", "serve"]}))
         bundle_install.setup(self.args())
         settings = json.loads((self.data / "settings.json").read_text())
@@ -226,7 +226,7 @@ class FirstLaunchTests(unittest.TestCase):
         moved = self.home / "Downloads/Carrie On.app"
         moved.parent.mkdir()
         self.app.rename(moved)
-        runtime = Runtime(moved / "Contents/Resources", self.data, moved / "Contents/MacOS/tokenmaxxer", True)
+        runtime = Runtime(moved / "Contents/Resources", self.data, moved / "Contents/MacOS/carrie_on", True)
         with patch("bundle_install.RUNTIME", runtime):
             with self.assertRaises(bundle_install.SetupError) as caught:
                 bundle_install.setup(self.args())
@@ -246,7 +246,7 @@ class FirstLaunchTests(unittest.TestCase):
         alias.symlink_to(self.home, target_is_directory=True)
         with patch("pathlib.Path.home", return_value=alias):
             bundle_install.setup(self.args(codex=str(self.codex), no_start=True))
-        config = plistlib.loads((self.home / "Library/LaunchAgents/com.nickcorin.tokenmaxxer.plist").read_bytes())
+        config = plistlib.loads((self.home / "Library/LaunchAgents/com.nickcorin.carrieon.plist").read_bytes())
         self.assertEqual(config["ProgramArguments"][0], str(self.runtime.executable))
 
 

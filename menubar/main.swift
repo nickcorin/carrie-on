@@ -394,13 +394,13 @@ if CommandLine.arguments.contains("--self-test") {
     }
 } else {
     try AppUpdate.waitForPreviousInstance()
-    let portText = Bundle.main.object(forInfoDictionaryKey: "TokenmaxxerPort") as? String ?? "8766"
+    let portText = Bundle.main.object(forInfoDictionaryKey: "CarrieOnPort") as? String ?? "8766"
     guard let port = Int(portText), (1024...65535).contains(port),
           let url = URL(string: "http://127.0.0.1:\(port)") else { fatalError("Invalid dashboard port") }
     MainActor.assumeIsolated {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
-        let diagnostics = ProcessInfo.processInfo.environment["TOKENMAXXER_MENU_DIAGNOSTICS"].map { URL(fileURLWithPath: $0) }
+        let diagnostics = ProcessInfo.processInfo.environment["CARRIE_ON_MENU_DIAGNOSTICS"].map { URL(fileURLWithPath: $0) }
         let delegate = MenuApp(baseURL: url, diagnosticsURL: diagnostics)
         app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }

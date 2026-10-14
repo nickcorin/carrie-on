@@ -15,12 +15,12 @@ struct SetupFailure: Decodable, LocalizedError {
 
 enum AppSetup {
     static var isStandalone: Bool {
-        Bundle.main.object(forInfoDictionaryKey: "TokenmaxxerStandalone") as? Bool == true
+        Bundle.main.object(forInfoDictionaryKey: "CarrieOnStandalone") as? Bool == true
     }
 
     static func run(arguments: [String] = []) throws -> SetupResult {
         let process = Process()
-        process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/tokenmaxxer")
+        process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/carrie_on")
         process.arguments = ["setup", "--json"] + arguments
         let output = Pipe()
         process.standardOutput = output

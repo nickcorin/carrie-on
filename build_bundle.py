@@ -22,6 +22,7 @@ from macos_compatibility import audit
 from verify_bundle import verify
 from release import Release, source_commit
 from disk_image import build_disk_image
+from branding import check_source, check_bundle
 
 ROOT = Path(__file__).resolve().parent
 
@@ -29,7 +30,7 @@ ROOT = Path(__file__).resolve().parent
 def sign_app(app):
     """Ad-hoc sign completed executables and their enclosing app, then verify it."""
     contents = app / "Contents"
-    for target in (contents / "MacOS/tokenmaxxer", contents / "MacOS/TokenmaxxerMenu", app):
+    for target in (contents / "MacOS/carrie_on", contents / "MacOS/CarrieOnMenu", app):
         subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(target)], check=True)
     subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
 
@@ -38,6 +39,7 @@ def build(output, replace=False, profile=PROFILES["release"]):
     if sys.platform != "darwin":
         raise ValueError("Build on a Mac with Python 3.10+ and Apple's Swift command-line tools")
     release = Release.read(ROOT)
+    check_source(ROOT)
     commit = source_commit(ROOT)
     architecture = platform.machine()
     name = f"{profile.app_name.replace(' ', '-')}-{release.version}-macos-{architecture}"
@@ -46,7 +48,7 @@ def build(output, replace=False, profile=PROFILES["release"]):
     if not replace and any((output / f"{name}{suffix}").exists() for suffix in suffixes):
         raise ValueError(f"Release {release.version} already exists. Bump VERSION, or use --replace for a development rebuild.")
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-v"], cwd=ROOT, check=True)
-    with tempfile.TemporaryDirectory(prefix="tokenmaxxer-build-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="carrie_on-build-") as temporary:
         work = Path(temporary)
         profile_file = work / "build-profile.json"
         profile_file.write_text(json.dumps({"profile": profile.name}) + "\n")
@@ -54,7 +56,7 @@ def build(output, replace=False, profile=PROFILES["release"]):
         environment = dict(os.environ, PYINSTALLER_CONFIG_DIR=str(work / "cache"))
         subprocess.run([
             sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--windowed",
-            "--name", "tokenmaxxer", "--target-arch", architecture,
+            "--name", "carrie_on", "--target-arch", architecture,
             "--osx-bundle-identifier", profile.identifier,
             "--distpath", str(work / "dist"), "--workpath", str(work / "build"),
             "--specpath", str(work),
@@ -62,21 +64,21 @@ def build(output, replace=False, profile=PROFILES["release"]):
             "--add-data", f"{profile_file}:.", str(ROOT / "bundle_entry.py"),
         ], check=True, cwd=ROOT, env=environment)
         app = work / profile.bundle_name
-        shutil.move(str(work / "dist/tokenmaxxer.app"), app)
+        shutil.move(str(work / "dist/carrie_on.app"), app)
         contents = app / "Contents"
-        native = contents / "MacOS/TokenmaxxerMenu"
+        native = contents / "MacOS/CarrieOnMenu"
         shutil.copy2(menu, native)
         info_path = contents / "Info.plist"
         info = plistlib.loads(info_path.read_bytes())
-        info.update({"CFBundleIdentifier": profile.identifier, "CFBundleExecutable": "TokenmaxxerMenu",
+        info.update({"CFBundleIdentifier": profile.identifier, "CFBundleExecutable": "CarrieOnMenu",
                      "CFBundleName": profile.app_name, "CFBundleDisplayName": profile.app_name,
                      "CarrieOnDataDirectory": profile.data_directory,
                      "CarrieOnServiceLabels": list(profile.labels),
-                     "TokenmaxxerPort": str(profile.port),
+                     "CarrieOnPort": str(profile.port),
                      "CFBundleIconFile": "CarrieOn.icns",
                      "CFBundleVersion": release.version, "CFBundleShortVersionString": release.version,
                      "LSUIElement": True, "LSMinimumSystemVersion": MINIMUM_MACOS,
-                     "NSHighResolutionCapable": True, "TokenmaxxerStandalone": True})
+                     "NSHighResolutionCapable": True, "CarrieOnStandalone": True})
         info_path.write_bytes(plistlib.dumps(info))
         resources = contents / "Resources"
         shutil.copy2(ROOT / "assets/CarrieOn.icns", resources / "CarrieOn.icns")
@@ -102,6 +104,7 @@ def build(output, replace=False, profile=PROFILES["release"]):
                     "python": platform.python_version(), "signing": "ad-hoc", "source_commit": commit,
                     "binary_audit": audit(app, MINIMUM_MACOS)}
         (resources / "release.json").write_text(json.dumps(metadata, indent=2) + "\n")
+        check_bundle(app)
         sign_app(app)
         staged = work / archive.name
         subprocess.run(["/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(staged)], check=True)

@@ -32,7 +32,7 @@ The desktop integration uses a private, version-sensitive IPC protocol. Unsuppor
 
 Report reproducible bugs through [GitHub Issues](https://github.com/nickcorin/carrie-on/issues). Include app, macOS, and Codex versions; redact chat contents, account identifiers, and local paths from diagnostics.
 
-Carrie On was previously named Tokenmaxxer. Command filenames, installed service identities, and the Application Support directory retain that name to preserve existing installations and saved queues.
+Command filenames, installed service identities, and the Application Support directory use the Carrie On identity. See [installation and upgrades](INSTALL.md) before upgrading an installation with an older identity.
 
 ## License
 

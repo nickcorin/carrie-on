@@ -139,10 +139,10 @@ class UpdateTests(unittest.TestCase):
         contents = app / "Contents"
         (contents / "MacOS").mkdir(parents=True)
         (contents / "Resources").mkdir()
-        shutil.copyfile("/usr/bin/true", contents / "MacOS/TokenmaxxerMenu")
-        (contents / "MacOS/TokenmaxxerMenu").chmod(0o755)
-        info = {"CFBundleIdentifier": "com.nickcorin.tokenmaxxer.app", "CFBundleShortVersionString": "0.10.0",
-                "CFBundleExecutable": "TokenmaxxerMenu", "TokenmaxxerStandalone": True}
+        shutil.copyfile("/usr/bin/true", contents / "MacOS/CarrieOnMenu")
+        (contents / "MacOS/CarrieOnMenu").chmod(0o755)
+        info = {"CFBundleIdentifier": "com.nickcorin.carrieon.app", "CFBundleShortVersionString": "0.10.0",
+                "CFBundleExecutable": "CarrieOnMenu", "CarrieOnStandalone": True}
         (contents / "Info.plist").write_bytes(plistlib.dumps(info))
         (contents / "Resources/release.json").write_text(json.dumps({"version": "0.10.0", "architecture": platform.machine(), "minimum_macos": "13.0"}))
         subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(app)], check=True, capture_output=True)

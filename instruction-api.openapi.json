@@ -1,13 +1,13 @@
 {
   "openapi": "3.1.0",
-  "info": {"title": "Tokenmaxxer queued-instruction edit", "version": "1.0.0", "description": "Contract for the queued-instruction action; other local API endpoints are outside this document."},
+  "info": {"title": "Carrie On queued-instruction edit", "version": "1.0.0", "description": "Contract for the queued-instruction action; other local API endpoints are outside this document."},
   "servers": [{"url": "http://127.0.0.1:8766"}],
   "paths": {
     "/api/instruction": {
       "post": {
         "summary": "Edit a waiting enrollment without changing its reset deadline",
         "description": "Requires the exact enrollment UUID and the previously read instruction. A repeated identical edit succeeds. Conflicting edits, missing enrollments, and sending or attention states are rejected. No model access is needed. After a lost reply, reread /api/status to determine the saved state. The server requires a loopback Host and rejects foreign Origin or cross-site requests.",
-        "parameters": [{"in": "header", "name": "X-Tokenmaxxer", "required": true, "schema": {"type": "string", "const": "1"}}],
+        "parameters": [{"in": "header", "name": "X-Carrie-On", "required": true, "schema": {"type": "string", "const": "1"}}],
         "requestBody": {
           "required": true,
           "content": {"application/json": {"schema": {

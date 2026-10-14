@@ -17,12 +17,12 @@ from pathlib import Path
 from app_runtime import APP_IDENTIFIER, PROFILE, RUNTIME, VERSION
 from app_lifecycle import agent_path, remove_agent, write_agent
 from macos_compatibility import version_tuple
-import tokenmaxxer
-import tokenmaxxer_ui
+import carrie_on
+import carrie_on_ui
 
 
 MENU_LABEL = PROFILE.labels[2]
-LABELS = (tokenmaxxer.LABEL, tokenmaxxer_ui.LABEL, MENU_LABEL)
+LABELS = (carrie_on.LABEL, carrie_on_ui.LABEL, MENU_LABEL)
 
 
 class SetupError(ValueError):
@@ -68,7 +68,7 @@ class Settings:
 def legacy_settings():
     """Preserve connection settings from pre-0.4 services without importing queues."""
     saved = {}
-    for label in (tokenmaxxer.LABEL, tokenmaxxer_ui.LABEL):
+    for label in (carrie_on.LABEL, carrie_on_ui.LABEL):
         path = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
         if not path.exists():
             continue
@@ -166,8 +166,8 @@ def setup(args):
     options = argparse.Namespace(command="install", state=RUNTIME.state, codex=settings.codex,
                                  socket=Path(settings.socket) if settings.socket else None,
                                  port=settings.port, interval=settings.interval, start=False)
-    tokenmaxxer.launch_agent(options)
-    tokenmaxxer_ui.install(options)
+    carrie_on.launch_agent(options)
+    carrie_on_ui.install(options)
     menu = {
         "Label": MENU_LABEL,
         "ProgramArguments": ["/usr/bin/open", "-g", str(RUNTIME.app), "--args", "--background"],
@@ -180,7 +180,7 @@ def setup(args):
     if not args.no_start:
         changed = {label for label in LABELS if previous.get(label) != agent_path(label).read_bytes()}
         if marker != identity or args.repair:
-            changed.update((tokenmaxxer.LABEL, tokenmaxxer_ui.LABEL))
+            changed.update((carrie_on.LABEL, carrie_on_ui.LABEL))
         stop_services(tuple(label for label in LABELS if label in changed))
         if MENU_LABEL in changed:
             subprocess.run(["/usr/bin/osascript", "-e", f'if application id "{MENU_LABEL}" is running '
@@ -199,7 +199,7 @@ def wait_for_dashboard(port, build_id):
     for attempt in range(50):
         try:
             request = urllib.request.Request(f"http://127.0.0.1:{port}/api/health",
-                                             headers={"X-Tokenmaxxer": "1"})
+                                             headers={"X-Carrie-On": "1"})
             with urllib.request.urlopen(request, timeout=1) as response:
                 health = json.load(response)
                 if health.get("version") == VERSION and health.get("build_id") == build_id:

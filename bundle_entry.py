@@ -4,8 +4,8 @@ import sys
 
 import bundle_install
 import app_update
-import tokenmaxxer
-import tokenmaxxer_ui
+import carrie_on
+import carrie_on_ui
 
 
 if __name__ == "__main__":
@@ -16,5 +16,5 @@ if __name__ == "__main__":
         sys.exit(bundle_install.main(sys.argv[1:]))
     if command == "dashboard":
         del sys.argv[1]
-        sys.exit(tokenmaxxer_ui.main())
-    sys.exit(tokenmaxxer.main())
+        sys.exit(carrie_on_ui.main())
+    sys.exit(carrie_on.main())

@@ -39,7 +39,7 @@ class AppServer:
         )
         try:
             self.request("initialize", {
-                "clientInfo": {"name": "tokenmaxxer", "version": VERSION},
+                "clientInfo": {"name": "carrie_on", "version": VERSION},
             })
             self._send({"method": "initialized"})
         except BaseException:
@@ -125,7 +125,7 @@ class Desktop:
         self.path = Path(path) if path else home / "ipc" / "ipc.sock"
         self.timeout = timeout
         self.open_if_needed = open_if_needed
-        self.client_id = "tokenmaxxer"
+        self.client_id = "carrie_on"
         self.socket = None
         self.snapshots = {}
 
@@ -139,7 +139,7 @@ class Desktop:
         self.socket.settimeout(self.timeout)
         try:
             self.socket.connect(str(self.path))
-            reply = self.request("initialize", {"clientType": "tokenmaxxer"}, version=0)
+            reply = self.request("initialize", {"clientType": "carrie_on"}, version=0)
             self.client_id = reply["clientId"]
         except BaseException:
             self.__exit__(None, None, None)

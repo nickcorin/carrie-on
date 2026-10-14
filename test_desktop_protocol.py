@@ -10,7 +10,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from codex_bridge import BridgeError, Desktop
-from test_tokenmaxxer import snapshot
+from test_carrie_on import snapshot
 
 
 class DesktopProtocol(unittest.TestCase):

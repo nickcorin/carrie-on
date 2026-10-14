@@ -8,7 +8,7 @@ from pathlib import Path
 
 from codex_bridge import AppServer, BridgeError
 from resume_queue import Chat, Entry, Usage, check_queue, locked_queue
-import tokenmaxxer
+import carrie_on
 
 
 def usage(used=100, reset=100, secondary=None, account="account-a"):
@@ -88,15 +88,15 @@ class QueueBehavior(unittest.TestCase):
         self.assertEqual(self.state()["entries"], [])
 
     def test_status_shows_processing_without_waiting_for_worker_lock(self):
-        args = tokenmaxxer.parser().parse_args(["--state", str(self.path), "list"])
+        args = carrie_on.parser().parse_args(["--state", str(self.path), "list"])
 
         def read_usage():
-            entry = tokenmaxxer.run(args)["entries"][0]
+            entry = carrie_on.run(args)["entries"][0]
             self.assertEqual((entry["state"], entry["processing_until"]), ("waiting", None))
             return usage(0, 200)
 
         def send(thread_id, prompt, message_id):
-            entry = tokenmaxxer.run(args)["entries"][0]
+            entry = carrie_on.run(args)["entries"][0]
             self.assertEqual((entry["state"], entry["processing_until"]), ("sending", 230))
             self.assertEqual((thread_id, prompt, message_id), ("thread-a", "Finish tests", self.entry_id))
 
@@ -179,12 +179,12 @@ class QueueBehavior(unittest.TestCase):
         self.assertEqual(len(self.codex.delivered), 1)
 
     def test_cli_tick_observes_reset_before_deadline(self):
-        args = tokenmaxxer.parser().parse_args(["--state", str(self.path), "tick"])
-        with patch("tokenmaxxer.time.time", return_value=70), \
-                patch("tokenmaxxer.AppServer") as server, patch("tokenmaxxer.Desktop") as desktop:
+        args = carrie_on.parser().parse_args(["--state", str(self.path), "tick"])
+        with patch("carrie_on.time.time", return_value=70), \
+                patch("carrie_on.AppServer") as server, patch("carrie_on.Desktop") as desktop:
             server.return_value.__enter__.return_value = self.codex
             desktop.return_value.__enter__.return_value = self.codex
-            self.assertEqual(tokenmaxxer.run(args),
+            self.assertEqual(carrie_on.run(args),
                              {"status": "checked", "outcomes": ["Continuation accepted: Finish feature"]})
         self.assertEqual(self.state()["history"][0]["outcome"], "resumed")
 
@@ -329,15 +329,15 @@ class QueueBehavior(unittest.TestCase):
             AppServer().request("turn/start", {"threadId": "thread-a"})
 
     def test_connection_failure_marks_waiting_enrollments_and_dry_run_is_read_only(self):
-        args = tokenmaxxer.parser().parse_args(["--state", str(self.path), "tick", "--dry-run"])
+        args = carrie_on.parser().parse_args(["--state", str(self.path), "tick", "--dry-run"])
         before = self.path.read_bytes()
-        with patch("tokenmaxxer.AppServer", side_effect=BridgeError("Codex unavailable")):
+        with patch("carrie_on.AppServer", side_effect=BridgeError("Codex unavailable")):
             with self.assertRaisesRegex(BridgeError, "Codex unavailable"):
-                tokenmaxxer.run(args)
+                carrie_on.run(args)
             self.assertEqual(self.path.read_bytes(), before)
             args.dry_run = False
             with self.assertRaisesRegex(BridgeError, "Codex unavailable"):
-                tokenmaxxer.run(args)
+                carrie_on.run(args)
         entry = self.state()["entries"][0]
         self.assertEqual((entry["state"], entry["reactivation_error"]), ("waiting", "Codex unavailable"))
         self.tick()

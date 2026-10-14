@@ -13,7 +13,7 @@ from app_lifecycle import write_agent
 
 
 ROOT = Path(__file__).resolve().parent
-LABEL = "com.nickcorin.tokenmaxxer.menu"
+LABEL = "com.nickcorin.carrieon.menu"
 
 
 def build_menu(build):
@@ -21,7 +21,7 @@ def build_menu(build):
     # Compile stable inputs even when the working copy is being edited.
     for name in ("Brand.swift", "ChatPicker.swift", "AppSetup.swift", "AppLifecycle.swift", "AppUpdate.swift", "main.swift"):
         shutil.copyfile(ROOT / "menubar" / name, build / name)
-    executable = build / "TokenmaxxerMenu"
+    executable = build / "CarrieOnMenu"
     target = f"{platform.machine()}-apple-macosx{MINIMUM_MACOS}"
     subprocess.run(["/usr/bin/swiftc", "-O", "-target", target,
                     "-module-cache-path", str(build / "cache"),
@@ -34,16 +34,11 @@ def build_menu(build):
 
 def install(port, start=True):
     """Install the app and login plist; start=False leaves process lifecycle to the caller."""
-    executable = (RUNTIME.resources / "TokenmaxxerMenu" if RUNTIME.bundled else
+    executable = (RUNTIME.resources / "CarrieOnMenu" if RUNTIME.bundled else
                   build_menu(RUNTIME.logs / "menubar-build"))
     RUNTIME.logs.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     app = Path.home() / "Applications" / "Carrie On Menu.app"
-    previous = app.with_name("Tokenmaxxer Menu.app")
-    if not app.exists() and previous.exists():
-        info = plistlib.loads((previous / "Contents/Info.plist").read_bytes())
-        if info.get("CFBundleIdentifier") == LABEL:
-            previous.rename(app)
     if app.exists():
         info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
         if info.get("CFBundleIdentifier") != LABEL:
@@ -58,17 +53,17 @@ def install(port, start=True):
                        capture_output=True)
     binary_directory = app / "Contents/MacOS"
     binary_directory.mkdir(parents=True, exist_ok=True)
-    staged_binary = binary_directory / "TokenmaxxerMenu.new"
+    staged_binary = binary_directory / "CarrieOnMenu.new"
     shutil.copy2(executable, staged_binary)
-    os.replace(staged_binary, binary_directory / "TokenmaxxerMenu")
+    os.replace(staged_binary, binary_directory / "CarrieOnMenu")
     info = {
         "CFBundleIdentifier": LABEL, "CFBundleName": APP_NAME,
-        "CFBundleDisplayName": APP_NAME, "CFBundleExecutable": "TokenmaxxerMenu",
+        "CFBundleDisplayName": APP_NAME, "CFBundleExecutable": "CarrieOnMenu",
         "CFBundleIconFile": "CarrieOn.icns",
         "CFBundlePackageType": "APPL", "CFBundleVersion": "1",
         "CFBundleShortVersionString": VERSION, "LSUIElement": True,
         "LSMinimumSystemVersion": MINIMUM_MACOS,
-        "NSHighResolutionCapable": True, "TokenmaxxerPort": str(port),
+        "NSHighResolutionCapable": True, "CarrieOnPort": str(port),
     }
     resources = app / "Contents/Resources"
     resources.mkdir(parents=True, exist_ok=True)
@@ -78,10 +73,10 @@ def install(port, start=True):
     subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
 
     configuration = {
-        "Label": LABEL, "ProgramArguments": [str(binary_directory / "TokenmaxxerMenu"), "--background"],
+        "Label": LABEL, "ProgramArguments": [str(binary_directory / "CarrieOnMenu"), "--background"],
         "RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}, "ThrottleInterval": 10,
         "LimitLoadToSessionType": "Aqua",
-        "EnvironmentVariables": {"TOKENMAXXER_MENU_DIAGNOSTICS": str(RUNTIME.logs / "menu-status.json")},
+        "EnvironmentVariables": {"CARRIE_ON_MENU_DIAGNOSTICS": str(RUNTIME.logs / "menu-status.json")},
         "StandardOutPath": str(RUNTIME.logs / "menubar.log"),
         "StandardErrorPath": str(RUNTIME.logs / "menubar-error.log"),
     }

@@ -1,6 +1,6 @@
 # Continuation queue
 
-Find a chat with `python3 tokenmaxxer.py threads SEARCH`, enroll it with `queue CHAT`, and inspect it with `list`. `remove CHAT` cancels enrollment; `pause` and `resume` control dispatch globally. `install` registers the macOS worker; `uninstall` removes it without deleting history.
+Find a chat with `python3 carrie_on.py threads SEARCH`, enroll it with `queue CHAT`, and inspect it with `list`. `remove CHAT` cancels enrollment; `pause` and `resume` control dispatch globally. `install` registers the macOS worker; `uninstall` removes it without deleting history.
 
 Enrollment records intent and its timing anchors. Readiness is evaluated when a continuation is due.
 

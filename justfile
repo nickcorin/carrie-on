@@ -26,7 +26,11 @@ alias check := ci
 alias build := package
 
 # Check Python, JavaScript, workflows, and release metadata.
-lint: lint-just lint-python lint-workflows release-check
+lint: lint-just lint-python lint-workflows release-check branding
+
+# Reject retired app names in current source inputs.
+branding:
+    python3 branding.py
 
 lint-just:
     just --fmt --check
@@ -111,4 +115,4 @@ icons:
 
 # Inspect local connectivity without dispatching chats or installing services.
 doctor: setup
-    {{ python }} tokenmaxxer.py doctor
+    {{ python }} carrie_on.py doctor

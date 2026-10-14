@@ -26,9 +26,9 @@ DEFAULT_PROMPT = "Continue the unfinished work already requested in this chat."
 def parser():
     result = argparse.ArgumentParser(
         description="Resume selected Codex chats after quota resets, without model-driven polling.",
-        epilog='Example: python3 tokenmaxxer.py queue "Chat title" --prompt "Finish the tests."',
+        epilog='Example: python3 carrie_on.py queue "Chat title" --prompt "Finish the tests."',
     )
-    result.add_argument("--version", action="version", version=f"tokenmaxxer {VERSION}")
+    result.add_argument("--version", action="version", version=f"carrie_on {VERSION}")
     result.add_argument("--state", type=Path, default=RUNTIME.state, help="Queue file")
     result.add_argument("--codex", default=shutil.which("codex") or "codex", help="Codex CLI executable")
     result.add_argument("--socket", type=Path, help="Desktop IPC socket (normally discovered from CODEX_HOME)")
@@ -259,12 +259,12 @@ def main():
         elif isinstance(output, dict) and "message" in output:
             print(output["message"])
             if output.get("paused"):
-                print("Dispatch is paused. Run: python3 tokenmaxxer.py resume")
+                print("Dispatch is paused. Run: python3 carrie_on.py resume")
         else:
             print(json.dumps(output, indent=2))
         return 0
     except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        print(f"tokenmaxxer: {error}", file=sys.stderr)
+        print(f"carrie_on: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

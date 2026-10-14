@@ -19,6 +19,7 @@ from pathlib import Path
 
 from macos_compatibility import audit
 from app_runtime import PROFILES
+from branding import check_bundle
 
 
 def app_contents(app):
@@ -42,12 +43,13 @@ def verify(archive, profile=None):
             assert parts[0] in {profile.bundle_name, "__MACOSX"}, name
             assert not {".runtime", ".codex", "resume-queue.json", "resume-queue.lock"}.intersection(parts), name
             assert not name.startswith("/") and ".." not in parts, name
-    with tempfile.TemporaryDirectory(prefix="tokenmaxxer release check ") as temporary:
+    with tempfile.TemporaryDirectory(prefix="carrie_on release check ") as temporary:
         root = Path(temporary).resolve()
         home = root / "Fresh Home"
         home.mkdir()
         subprocess.run(["/usr/bin/ditto", "-x", "-k", str(archive), str(root / "Extracted")], check=True)
         extracted = root / "Extracted" / profile.bundle_name
+        check_bundle(extracted)
         app = home / "Applications" / profile.bundle_name
         subprocess.run(["/usr/bin/ditto", str(extracted), str(app)], check=True)
         metadata = json.loads((app / "Contents/Resources/release.json").read_text())
@@ -71,8 +73,8 @@ def verify(archive, profile=None):
                 assert not linked or (document.parent / linked).exists(), f"Broken bundled link: {document.name}: {target}"
         assert (app / "Contents/Resources/Licenses/Carrie-On.txt").read_text() == (documentation / "LICENSE").read_text()
         before = app_contents(app)
-        cli = app / "Contents/MacOS/tokenmaxxer"
-        native = app / "Contents/MacOS/TokenmaxxerMenu"
+        cli = app / "Contents/MacOS/carrie_on"
+        native = app / "Contents/MacOS/CarrieOnMenu"
         fake_codex = root / "fake-codex"
         fake_codex.write_text('#!/bin/sh\n[ "$1" = "--version" ] || exit 99\necho "codex-cli test"\n')
         fake_codex.chmod(0o755)
@@ -98,11 +100,11 @@ def verify(archive, profile=None):
                 assert process.returncode != 0
             return stdout
 
-        assert run(cli, "--version").strip() == f"tokenmaxxer {metadata['version']}"
+        assert run(cli, "--version").strip() == f"carrie_on {metadata['version']}"
         # The same native helper used by first launch drives setup through a pipe.
         run(native, "--self-test")
         run(native, "--setup-check", "--no-start", "--codex", str(fake_codex), "--port", str(port))
-        failure = json.loads(run(extracted / "Contents/MacOS/tokenmaxxer", "setup", "--json", success=False))
+        failure = json.loads(run(extracted / "Contents/MacOS/carrie_on", "setup", "--json", success=False))
         assert failure["code"] == "move_app"
         extracted.rename(root / "Moved Transfer.app")
         data = profile.data_path(home)
@@ -136,7 +138,7 @@ def verify(archive, profile=None):
                         raise RuntimeError(logs.read().decode())
                     try:
                         with urllib.request.urlopen(urllib.request.Request(
-                                url + "/api/health", headers={"X-Tokenmaxxer": "1"}), timeout=1) as response:
+                                url + "/api/health", headers={"X-Carrie-On": "1"}), timeout=1) as response:
                             assert json.load(response)["version"] == metadata["version"]
                         break
                     except OSError:
@@ -149,7 +151,7 @@ def verify(archive, profile=None):
                     assert error.code == 404
                 else:
                     raise AssertionError("Browser view is still available")
-                request = urllib.request.Request(url + "/api/health", headers={"X-Tokenmaxxer": "1"})
+                request = urllib.request.Request(url + "/api/health", headers={"X-Carrie-On": "1"})
                 with urllib.request.urlopen(request, timeout=2) as response:
                     health = json.load(response)
                     assert health == {"version": metadata["version"], "build_id": metadata["build_id"]}

@@ -240,7 +240,7 @@ final class ChatPickerModel: ObservableObject {
         if let query { components.queryItems = [URLQueryItem(name: "search", value: query)] }
         if let cursor { components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "cursor", value: cursor)] }
         var request = URLRequest(url: components.url!)
-        request.setValue("1", forHTTPHeaderField: "X-Tokenmaxxer")
+        request.setValue("1", forHTTPHeaderField: "X-Carrie-On")
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = timeout
         if let body {
@@ -252,7 +252,7 @@ final class ChatPickerModel: ObservableObject {
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             struct Failure: Decodable { let error: String }
             let reason = (try? JSONDecoder().decode(Failure.self, from: data).error) ?? "Local service unavailable. Try again shortly."
-            throw NSError(domain: "Tokenmaxxer", code: 1, userInfo: [NSLocalizedDescriptionKey: reason])
+            throw NSError(domain: "Carrie On", code: 1, userInfo: [NSLocalizedDescriptionKey: reason])
         }
         return data
     }

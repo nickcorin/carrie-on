@@ -34,35 +34,35 @@ sys.frozen = True
 import app_runtime
 sys.path.append(sys.argv[1])
 import argparse, json, plistlib
-import app_lifecycle, bundle_install, tokenmaxxer
+import app_lifecycle, bundle_install, carrie_on
 runtime = app_runtime.RUNTIME
 runtime.data.mkdir(parents=True)
-args = tokenmaxxer.parser().parse_args(["pause"])
-tokenmaxxer.run(args)
+args = carrie_on.parser().parse_args(["pause"])
+carrie_on.run(args)
 settings = bundle_install.Settings.load(argparse.Namespace(codex="/bin/echo"))
 (runtime.data / "settings.json").write_text(json.dumps({"port": settings.port}))
-tokenmaxxer.launch_agent(argparse.Namespace(command="install", state=runtime.state,
+carrie_on.launch_agent(argparse.Namespace(command="install", state=runtime.state,
     codex="/bin/echo", interval=60, socket=None, start=False))
 if app_runtime.PROFILE.name == "dev":
     (app_lifecycle.directory() / "preferences.plist").write_bytes(
         plistlib.dumps({"launch_at_login": False}))
-    tokenmaxxer.launch_agent(argparse.Namespace(command="install", state=runtime.state,
+    carrie_on.launch_agent(argparse.Namespace(command="install", state=runtime.state,
         codex="/bin/echo", interval=60, socket=None, start=False))
 '''
                 subprocess.run([sys.executable, "-c", script, str(ROOT)], cwd=resources,
                                env=dict(os.environ, HOME=str(home)), check=True, capture_output=True)
-            release = home / "Library/Application Support/Tokenmaxxer"
+            release = home / "Library/Application Support/Carrie On"
             dev = home / "Library/Application Support/Carrie On Dev"
             for data, port in ((release, 8766), (dev, 8767)):
                 self.assertTrue(json.loads((data / "resume-queue.json").read_text())["paused"])
                 self.assertEqual(json.loads((data / "settings.json").read_text()), {"port": port})
             agents = home / "Library/LaunchAgents"
-            worker = plistlib.loads((agents / "com.nickcorin.tokenmaxxer.plist").read_bytes())
+            worker = plistlib.loads((agents / "com.nickcorin.carrieon.plist").read_bytes())
             self.assertEqual(worker["WorkingDirectory"], str(release))
-            dev_worker = plistlib.loads((dev / "Lifecycle/Agents/com.nickcorin.tokenmaxxer.dev.plist").read_bytes())
+            dev_worker = plistlib.loads((dev / "Lifecycle/Agents/com.nickcorin.carrieon.dev.plist").read_bytes())
             self.assertEqual(dev_worker["WorkingDirectory"], str(dev))
             self.assertEqual(dev_worker["StartInterval"], worker["StartInterval"])
-            self.assertFalse((agents / "com.nickcorin.tokenmaxxer.dev.plist").exists())
+            self.assertFalse((agents / "com.nickcorin.carrieon.dev.plist").exists())
 
     def test_unknown_packaged_profile_fails_before_using_release_data(self):
         with tempfile.TemporaryDirectory() as temporary:

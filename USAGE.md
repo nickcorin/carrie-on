@@ -2,7 +2,7 @@
 
 Carrie On is a deliberate spelling of “carry on.” Its cobalt app icon and monochrome menu-bar mark pair a C with a forward arrow. See [brand assets](assets/README.md) for artwork and regeneration instructions.
 
-The app was previously named Tokenmaxxer. Existing service identifiers, command filenames, and the Application Support directory retain that name to preserve installations and saved queues.
+Service identifiers, command filenames, and the Application Support directory use the Carrie On identity. See [upgrade instructions](INSTALL.md#updates) for installations with an older identity.
 
 Resume selected local Codex chats after a usage reset. A Python program checks quota metadata and asks the running desktop app to continue eligible chats. Polling, queue management, and the resume trigger require no model inference. Only the resumed work consumes model usage.
 
@@ -26,38 +26,36 @@ If a queued chat cannot be reactivated, its card turns red and shows the reason.
 
 The native popover follows the Mac's light or dark appearance and accent color. AppKit supplies the popover material, including Liquid Glass where supported; compact action controls sit inside the instruction editors. Native controls honor system accessibility preferences. See Apple's [Liquid Glass adoption guidance](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass).
 
-Install or rebuild it with `python3 install_menubar.py` (requires Apple's Swift command-line tools). For a nondefault local API port, add `--port PORT`. This creates `~/Applications/Carrie On Menu.app` and the `com.nickcorin.tokenmaxxer.menu` login service. It renames an existing Tokenmaxxer Menu.app with the matching identifier. Background polling reads only a compact local summary, with no chat titles, prompts, or account identifiers. Opening the picker reads chat titles and queue state locally; the card's queue icon enrolls the chat through the same validated commands as the local API. The app never runs inference. The native card uses a local API service, which must be running. Its menu uses Apple's [NSStatusItem API](https://developer.apple.com/documentation/appkit/nsstatusitem).
+Install or rebuild it with `python3 install_menubar.py` (requires Apple's Swift command-line tools). For a nondefault local API port, add `--port PORT`. This creates `~/Applications/Carrie On Menu.app` and the `com.nickcorin.carrieon.menu` login service. Background polling reads only a compact local summary, with no chat titles, prompts, or account identifiers. Opening the picker reads chat titles and queue state locally; the card's queue icon enrolls the chat through the same validated commands as the local API. The app never runs inference. The native card uses a local API service, which must be running. Its menu uses Apple's [NSStatusItem API](https://developer.apple.com/documentation/appkit/nsstatusitem).
 
-To remove the menu app, quit it, run `launchctl bootout gui/$(id -u)/com.nickcorin.tokenmaxxer.menu`, and remove `~/Library/LaunchAgents/com.nickcorin.tokenmaxxer.menu.plist` and `~/Applications/Carrie On Menu.app`. Logs are in `.runtime/menubar.log` and `.runtime/menubar-error.log`. The installed login service also writes a private `.runtime/menu-status.json` snapshot of status-item visibility, popover geometry, appearance, and data availability for troubleshooting; it never includes chat contents.
+To remove the menu app, quit it, run `launchctl bootout gui/$(id -u)/com.nickcorin.carrieon.menu`, and remove `~/Library/LaunchAgents/com.nickcorin.carrieon.menu.plist` and `~/Applications/Carrie On Menu.app`. Logs are in `.runtime/menubar.log` and `.runtime/menubar-error.log`. The installed login service also writes a private `.runtime/menu-status.json` snapshot of status-item visibility, popover geometry, appearance, and data availability for troubleshooting; it never includes chat contents.
 
 ## Use the interface
 
-Manual component removal must also remove the matching retained service definition under `~/Library/Application Support/Tokenmaxxer/Lifecycle/Agents/`. See [startup and quit](features/app-lifecycle.md) for registration and removal semantics.
-
 Open **Carrie On** from Applications and click its menu bar item. Search for a local chat, open its card, optionally edit the continuation instruction, and use **Add to queue**. Each enrollment authorizes a single continuation after reset. Queued cards show their saved instructions and status; remove an enrollment with the trash control on the card front. Keep this Mac awake and Codex open for automatic continuation.
 
-The card uses a local API service listening only on `127.0.0.1`; the worker owns polling and dispatch. For source installations, run `python3 tokenmaxxer_ui.py install` to register the API service, then install the native menu app with `python3 install_menubar.py`. The API installer accepts `--state`, `--codex`, `--socket`, and `--port` before `install`. Logs are in `.runtime/dashboard.log` and `.runtime/dashboard-error.log`.
+The card uses a local API service listening only on `127.0.0.1`; the worker owns polling and dispatch. For source installations, run `python3 carrie_on_ui.py install` to register the API service, then install the native menu app with `python3 install_menubar.py`. The API installer accepts `--state`, `--codex`, `--socket`, and `--port` before `install`. Logs are in `.runtime/dashboard.log` and `.runtime/dashboard-error.log`.
 
-Manual component removal must also remove the matching retained service definition under `~/Library/Application Support/Tokenmaxxer/Lifecycle/Agents/`. See [startup and quit](features/app-lifecycle.md) for registration and removal semantics.
+Manual component removal must also remove the matching retained service definition under `~/Library/Application Support/Carrie On/Lifecycle/Agents/`. See [startup and quit](features/app-lifecycle.md) for registration and removal semantics.
 
 ## Terminal commands
 
 Run commands from this directory:
 
 ```sh
-python3 tokenmaxxer.py doctor
-python3 tokenmaxxer.py install
-python3 tokenmaxxer.py threads "Chat title"
-python3 tokenmaxxer.py queue "Chat title"
-python3 tokenmaxxer.py list
+python3 carrie_on.py doctor
+python3 carrie_on.py install
+python3 carrie_on.py threads "Chat title"
+python3 carrie_on.py queue "Chat title"
+python3 carrie_on.py list
 ```
 
 Use an exact chat title, UUID, or `codex://threads/UUID` link. Ambiguous titles require an ID. Enrollment authorizes a single continuation. The default instruction is “Continue the unfinished work already requested in this chat.” For a specific instruction:
 
 ```sh
-python3 tokenmaxxer.py queue "Chat title" --prompt "Finish the implementation and run the tests."
-python3 tokenmaxxer.py queue "Another chat" --prompt-file continuation.txt
-printf '%s\n' 'Finish the review and report findings.' | python3 tokenmaxxer.py queue "Review chat" --prompt-file -
+python3 carrie_on.py queue "Chat title" --prompt "Finish the implementation and run the tests."
+python3 carrie_on.py queue "Another chat" --prompt-file continuation.txt
+printf '%s\n' 'Finish the review and report findings.' | python3 carrie_on.py queue "Review chat" --prompt-file -
 ```
 
 These commands work while model usage is exhausted. You can also ask an agent to run them when model access is available. Remote hosts and ChatGPT conversations are unsupported. Multiple quota buckets require `--limit-id`, chosen using `usage`.
@@ -101,13 +99,13 @@ Queue writes use a process lock, atomic replacement, and disk flushes. A durable
 Unavailable usage, a closed app, and network errors leave entries for another check. Missing/invalid quota data, account changes, changed chats, and incompatible history shapes require review. The monitor does not infer completion from prose or bypass approvals. A small race remains between reading live state and sending; the desktop is the final authority on accepting a turn.
 
 ```sh
-python3 tokenmaxxer.py doctor
-python3 tokenmaxxer.py list --history
-python3 tokenmaxxer.py service
-python3 tokenmaxxer.py tick --dry-run
+python3 carrie_on.py doctor
+python3 carrie_on.py list --history
+python3 carrie_on.py service
+python3 carrie_on.py tick --dry-run
 ```
 
-Logs live in `.runtime/monitor.log` and `.runtime/monitor-error.log`. The job is `com.nickcorin.tokenmaxxer` in `~/Library/LaunchAgents/`. If Python, Codex, or this project moves, reinstall. After a desktop update, run `doctor --thread UUID` before relying on unattended dispatch.
+Logs live in `.runtime/monitor.log` and `.runtime/monitor-error.log`. The job is `com.nickcorin.carrieon` in `~/Library/LaunchAgents/`. If Python, Codex, or this project moves, reinstall. After a desktop update, run `doctor --thread UUID` before relying on unattended dispatch.
 
 For `needs_attention`, inspect the actual chat first. If another continuation is still required and was not delivered, remove and re-enroll. This is a new authorization, not an automatic retry. Empty version-1 queues migrate automatically; populated legacy queues require deliberate re-enrollment. Keep the former native scheduled monitor paused or delete it to prevent competing dispatch.
 
@@ -120,4 +118,4 @@ python3 -m pydoc codex_bridge resume_queue app_runtime macos_compatibility
 
 Tests cover exhausted/reset quotas, multiple windows, changed accounts/chats, busy or manually stopped work, pauses, corrupt state, and lost replies. `doctor` checks live model-free reads. Synthetic resets do not establish the backend's behavior at a future reset. See [release verification](INSTALL.md#release-verification) for the manual checks and compatibility limits.
 
-`codex_bridge.py` owns protocol adaptation, `resume_queue.py` owns enrollment and durable transitions, and `tokenmaxxer.py` owns CLI and worker installation. `tokenmaxxer_ui.py` adapts local API requests from the native card to those same commands. No third-party packages are required. See the [feature map](features/index.md) and [official App Server reference](https://learn.chatgpt.com/docs/app-server).
+`codex_bridge.py` owns protocol adaptation, `resume_queue.py` owns enrollment and durable transitions, and `carrie_on.py` owns CLI and worker installation. `carrie_on_ui.py` adapts local API requests from the native card to those same commands. No third-party packages are required. See the [feature map](features/index.md) and [official App Server reference](https://learn.chatgpt.com/docs/app-server).

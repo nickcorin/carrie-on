@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-import tokenmaxxer
+import carrie_on
 from resume_queue import Usage, UsageObservation, locked_queue
 from app_runtime import PROFILE, RUNTIME, VERSION
 from app_lifecycle import write_agent
@@ -42,7 +42,7 @@ class Dashboard:
             self.options += ["--socket", str(socket)]
 
     def command(self, *arguments, usage_observation=None):
-        return tokenmaxxer.run(tokenmaxxer.parser().parse_args(self.options + list(arguments)),
+        return carrie_on.run(carrie_on.parser().parse_args(self.options + list(arguments)),
                               usage_observation=usage_observation)
 
     def read_usage(self):
@@ -93,7 +93,7 @@ class Dashboard:
             cursor = query.get("cursor", [None])[0]
             if len(search) > 500 or (cursor is not None and len(cursor) > 16384):
                 raise ValueError("Search or cursor is too long")
-            with tokenmaxxer.AppServer(self.codex) as server:
+            with carrie_on.AppServer(self.codex) as server:
                 page = server.thread_page(search, cursor=cursor)
             return {"chats": [{"id": chat["id"], "title": chat.get("name") or chat.get("preview"),
                                "cwd": chat.get("cwd"), "last_activity": chat.get("updatedAt")}
@@ -105,7 +105,7 @@ class Dashboard:
             if not entries:
                 return []
             result = []
-            with tokenmaxxer.AppServer(self.codex) as server:
+            with carrie_on.AppServer(self.codex) as server:
                 for entry in entries:
                     try:
                         chat = server.request("thread/read", {"threadId": entry["thread_id"], "includeTurns": False})["thread"]
@@ -122,7 +122,7 @@ class Dashboard:
     def desktop_connected(self):
         """Observe desktop availability without opening a chat or starting a turn."""
         try:
-            with tokenmaxxer.Desktop(self.socket, timeout=3):
+            with carrie_on.Desktop(self.socket, timeout=3):
                 return True
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             return False
@@ -177,7 +177,7 @@ class Dashboard:
         uuid.UUID(chat)
         if route == "/api/remove":
             return self.command("remove", chat)
-        prompt = body.get("prompt") if route == "/api/instruction" else body.get("prompt", tokenmaxxer.DEFAULT_PROMPT)
+        prompt = body.get("prompt") if route == "/api/instruction" else body.get("prompt", carrie_on.DEFAULT_PROMPT)
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 32000:
             raise ValueError("Continuation instruction must contain 1–32,000 characters")
         if route == "/api/instruction":
@@ -241,7 +241,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Sec-Fetch-Site") == "cross-site" and api:
             return False
         # A foreign website cannot set this header without a CORS preflight.
-        return not api or self.headers.get("X-Tokenmaxxer") == "1"
+        return not api or self.headers.get("X-Carrie-On") == "1"
 
     def do_GET(self):
         url = urlsplit(self.path)

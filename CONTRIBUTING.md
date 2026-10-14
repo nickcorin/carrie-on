@@ -19,15 +19,15 @@ Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix socket
 | --- | --- |
 | `resume_queue.py` | Queue persistence, enrollment anchors, quota eligibility, and uncertain-send recovery |
 | `codex_bridge.py` | Read-only app-server calls and desktop-owned continuation over IPC |
-| `tokenmaxxer.py` | CLI and scheduled worker |
-| `tokenmaxxer_ui.py` | Loopback HTTP API for the native card |
+| `carrie_on.py` | CLI and scheduled worker |
+| `carrie_on_ui.py` | Loopback HTTP API for the native card |
 | `menubar/` | Native AppKit menu, chat picker, setup, and lifecycle |
 | `app_runtime.py`, `app_lifecycle.py`, `bundle_install.py` | Runtime paths, login services, and installation |
 | `app_update.py`, `menubar/AppUpdate.swift` | GitHub release checks, verified staging, atomic replacement, and restart |
 | `build_bundle.py`, `release.py`, `verify_bundle.py` | Release metadata, packaging, and archive acceptance |
 | `disk_image.py`, `assets/DMGBackground.swift` | Drag-to-Applications disk image, installer artwork, and mounted-image verification |
 
-Keep queue mutations behind `locked_queue`. Persist sending state before dispatch and never turn a missing reply into an automatic retry. The CLI and native card share that contract. Preserve installed service identities and data paths during branding changes. More detail is in the [feature contracts](features/index.md).
+Keep queue mutations behind `locked_queue`. Persist sending state before dispatch and never turn a missing reply into an automatic retry. The CLI and native card share that contract. Changes to installed service identities and data paths require explicit migration guidance. More detail is in the [feature contracts](features/index.md).
 
 ## Changes
 

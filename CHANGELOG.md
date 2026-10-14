@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Use the Carrie On identity throughout Python modules, executable names, bundle metadata, login services, local API headers, and Application Support paths, including isolated development builds.
+- Reject retired branding in source inputs and packaged application payloads before a release is produced.
+- Remove the browser dashboard and bundle only the native menu interface and its local API.
+- Preserve the latest queue safeguards, native card states, settings menu, and shared refresh timestamps.
+- When upgrading an app with an older identity, install manually. Remove its services and migrate saved settings and queue data as described in the installation guide before opening the new app.
+
 ## 0.5.4
 
 - Add a disk image with a drag-to-Applications installer window, alongside the ZIP used by built-in updates.
@@ -36,7 +44,7 @@
 
 ## 0.4.0
 
-- Distribute a single Tokenmaxxer.app with Python, the native menu, and dashboard bundled.
+- Distribute a single Carrie On.app with Python, the native menu, and dashboard bundled.
 - Configure login services on first launch, with native recovery dialogs for missing Codex or setup errors.
 - Preserve settings and queue/history across app replacements; refresh services when the build changes.
 - Keep application contents immutable after ad-hoc signing.

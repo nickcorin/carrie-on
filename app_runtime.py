@@ -34,10 +34,9 @@ class BuildProfile:
         return home / "Library/Application Support" / self.data_directory
 
 
-# Preserve the released app's existing identity and user data.
 PROFILES = {
-    "release": BuildProfile("release", "Carrie On", "com.nickcorin.tokenmaxxer", "Tokenmaxxer", 8766),
-    "dev": BuildProfile("dev", "Carrie On Dev", "com.nickcorin.tokenmaxxer.dev", "Carrie On Dev", 8767),
+    "release": BuildProfile("release", "Carrie On", "com.nickcorin.carrieon", "Carrie On", 8766),
+    "dev": BuildProfile("dev", "Carrie On Dev", "com.nickcorin.carrieon.dev", "Carrie On Dev", 8767),
 }
 
 
@@ -90,7 +89,7 @@ class Runtime:
         """Return argv for the worker or local API, without requiring external Python when bundled."""
         if self.bundled:
             return [str(self.executable)] + (["dashboard"] if component == "dashboard" else [])
-        script = "tokenmaxxer_ui.py" if component == "dashboard" else "tokenmaxxer.py"
+        script = "carrie_on_ui.py" if component == "dashboard" else "carrie_on.py"
         return [str(self.executable), str(self.resources / script)]
 
 

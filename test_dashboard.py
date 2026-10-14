@@ -9,8 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_tokenmaxxer import snapshot, usage
-from tokenmaxxer_ui import Dashboard, DashboardServer
+from test_carrie_on import snapshot, usage
+from carrie_on_ui import Dashboard, DashboardServer
 from resume_queue import Usage, UsageObservation, locked_queue
 from codex_bridge import AppServer
 
@@ -55,10 +55,10 @@ class DashboardBehavior(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.state = Path(temporary.name) / "queue.json"
         for target in ("AppServer", "Desktop"):
-            mock = patch("tokenmaxxer." + target, LocalCodex)
+            mock = patch("carrie_on." + target, LocalCodex)
             mock.start()
             self.addCleanup(mock.stop)
-        service = patch("tokenmaxxer.launch_agent", return_value={"installed": True})
+        service = patch("carrie_on.launch_agent", return_value={"installed": True})
         service.start()
         self.addCleanup(service.stop)
         self.server = DashboardServer(Dashboard(self.state, "codex"), port=0)
@@ -70,7 +70,7 @@ class DashboardBehavior(unittest.TestCase):
     def request(self, path, body=None, headers=None, raw=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=10)
         data = raw if raw is not None else json.dumps(body) if body is not None else None
-        request_headers = {"X-Tokenmaxxer": "1", "Content-Type": "application/json"}
+        request_headers = {"X-Carrie-On": "1", "Content-Type": "application/json"}
         request_headers.update(headers or {})
         connection.request("POST" if data is not None else "GET", path, data, request_headers)
         response = connection.getresponse()
@@ -85,17 +85,17 @@ class DashboardBehavior(unittest.TestCase):
             status, health = self.request("/api/health")
         self.assertEqual(status, 200)
         self.assertEqual(health, {"version": VERSION, "build_id": "running-build"})
-        self.assertEqual(self.request("/api/health", headers={"X-Tokenmaxxer": ""})[0], 403)
+        self.assertEqual(self.request("/api/health", headers={"X-Carrie-On": ""})[0], 403)
 
     def test_connection_reports_handshake_and_recovers_without_changing_queue(self):
         self.request("/api/queue", {"chat": CHAT_ID, "prompt": "Continue the tests."})
         self.assertEqual(self.request("/api/connection"), (200, {"connected": True}))
-        with patch("tokenmaxxer.Desktop", side_effect=FileNotFoundError("No socket")):
+        with patch("carrie_on.Desktop", side_effect=FileNotFoundError("No socket")):
             self.assertEqual(self.request("/api/connection"), (200, {"connected": False}))
             _, queue = self.request("/api/status")
             self.assertEqual(queue["entries"][0]["prompt"], "Continue the tests.")
         self.assertEqual(self.request("/api/connection"), (200, {"connected": True}))
-        self.assertEqual(self.request("/api/connection", headers={"X-Tokenmaxxer": ""})[0], 403)
+        self.assertEqual(self.request("/api/connection", headers={"X-Carrie-On": ""})[0], 403)
 
     def test_select_queue_duplicate_pause_resume_remove_and_history(self):
         status, chats = self.request("/api/chats")
@@ -121,7 +121,7 @@ class DashboardBehavior(unittest.TestCase):
 
     def test_cross_origin_rebinding_and_missing_header_cannot_mutate(self):
         for headers in ({"Origin": "https://evil.example"}, {"Host": "evil.example"},
-                        {"X-Tokenmaxxer": ""}, {"Sec-Fetch-Site": "cross-site"}):
+                        {"X-Carrie-On": ""}, {"Sec-Fetch-Site": "cross-site"}):
             status, _ = self.request("/api/pause", {}, headers)
             self.assertEqual(status, 403)
         self.assertEqual(self.request("/api/status")[1]["paused"], False)
@@ -132,7 +132,7 @@ class DashboardBehavior(unittest.TestCase):
         _, queued = self.request("/api/queue", {"chat": CHAT_ID, "prompt": "Original instruction"})
         entry = queued["entry"]
         body = {"chat": entry["id"], "prompt": "--finish the revised tests", "expected_prompt": entry["prompt"]}
-        with patch("tokenmaxxer.AppServer", side_effect=AssertionError("Editing must not contact Codex")):
+        with patch("carrie_on.AppServer", side_effect=AssertionError("Editing must not contact Codex")):
             for _ in range(2):
                 status, edited = self.request("/api/instruction", body)
                 self.assertEqual(status, 200)
@@ -170,7 +170,7 @@ class DashboardBehavior(unittest.TestCase):
                 end = start + params["limit"]
                 return {"data": chats[start:end], "nextCursor": f"offset:{end}" if end < len(chats) else None}
 
-        with patch("tokenmaxxer.AppServer", PagedCodex):
+        with patch("carrie_on.AppServer", PagedCodex):
             status, page = self.request("/api/chat-page")
             self.assertEqual(status, 200)
             self.assertEqual([chat["id"] for chat in page["chats"]], [str(i) for i in range(124, 99, -1)])
@@ -188,7 +188,7 @@ class DashboardBehavior(unittest.TestCase):
             self.assertEqual([chat["id"] for chat in page["chats"]], [str(i) for i in range(19, 9, -1)] + ["1"])
             self.assertIsNone(page["next_cursor"])
             self.assertEqual(self.request("/api/chat-page?search=absent"), (200, {"chats": [], "next_cursor": None}))
-        self.assertEqual(self.request("/api/chat-page", headers={"X-Tokenmaxxer": ""})[0], 403)
+        self.assertEqual(self.request("/api/chat-page", headers={"X-Carrie-On": ""})[0], 403)
 
     def test_chat_page_errors_are_retryable_and_validate_inputs(self):
         with patch.object(LocalCodex, "thread_page", create=True, side_effect=RuntimeError("Temporarily unavailable")):
@@ -268,7 +268,7 @@ class DashboardBehavior(unittest.TestCase):
         self.assertEqual(summary["usage_error"], "Offline")
 
     def test_menu_snapshot_reports_desktop_loss_and_recovery(self):
-        with patch("tokenmaxxer.Desktop", side_effect=FileNotFoundError("No socket")):
+        with patch("carrie_on.Desktop", side_effect=FileNotFoundError("No socket")):
             status, summary = self.request("/api/menu")
         self.assertEqual(status, 200)
         self.assertFalse(summary["connected"])
@@ -277,7 +277,7 @@ class DashboardBehavior(unittest.TestCase):
 
     def test_recent_usage_enrolls_without_starting_an_app_server(self):
         self.assertEqual(self.request("/api/menu")[0], 200)
-        with patch("tokenmaxxer.AppServer", side_effect=AssertionError("Cached enrollment must not start a helper")):
+        with patch("carrie_on.AppServer", side_effect=AssertionError("Cached enrollment must not start a helper")):
             status, result = self.request("/api/queue", {"chat": CHAT_ID, "prompt": "Continue tests"})
         self.assertEqual(status, 200)
         entry = result["entry"]
@@ -314,7 +314,7 @@ class DashboardBehavior(unittest.TestCase):
             status, result = self.request("/api/queue", {"chat": CHAT_ID})
             self.assertEqual(status, 400)
             self.assertIn("Choose --limit-id", result["error"])
-            with patch("tokenmaxxer.AppServer", side_effect=AssertionError("Selected cached bucket should suffice")):
+            with patch("carrie_on.AppServer", side_effect=AssertionError("Selected cached bucket should suffice")):
                 status, result = self.request("/api/queue", {"chat": CHAT_ID, "limit_id": "other"})
             self.assertEqual(status, 200)
             self.assertEqual(result["entry"]["limit_id"], "other")
@@ -339,7 +339,7 @@ class DashboardBehavior(unittest.TestCase):
                 release.set()
                 worker.join(5)
         self.assertEqual(results[0][1]["accountId"], "old-account")
-        with patch("tokenmaxxer.AppServer", side_effect=AssertionError("Use the newer cached account")):
+        with patch("carrie_on.AppServer", side_effect=AssertionError("Use the newer cached account")):
             status, result = self.request("/api/queue", {"chat": CHAT_ID})
         self.assertEqual(status, 200)
         self.assertEqual(result["entry"]["account_id"], "account-a")
