@@ -56,9 +56,19 @@ Signing is **ad-hoc**, not Developer ID signing or notarization. `just sign` mod
 ### Local development app
 
 Run `just dev` to build **Carrie On Dev** into `dist/dev/`. Install its app from
-the DMG into Applications alongside Carrie On. To update it, quit Carrie On Dev,
-build again, replace only Carrie On Dev.app, and reopen it. This preserves its
-own queue and settings. No GitHub release or push is needed.
+the DMG into Applications alongside Carrie On. Use **Settings → Rebuild and
+Restart…** to rebuild the entire app from its saved checkout, including the
+native interface, bundled Python runtime, and backend. The action runs the same
+`build_bundle.py --profile dev` pipeline with `--prepare-app`, streams build
+output, and stages a signed replacement only after tests and isolated bundle
+acceptance checks succeed. It skips distribution DMG generation. A failure
+keeps the current app running and leaves diagnostics visible. Success replaces
+the complete app and restarts its dev services, preserving its queue, settings,
+and login preference. It does not pull or switch Git branches.
+
+Older dev builds need a fresh `just dev` build installed once to gain this
+action and its saved checkout/interpreter paths. Reinstall from a new location
+if the checkout or build interpreter moves. No GitHub release or push is needed.
 
 Both profiles use the same optimized native executable, bundled backend, setup
 flow, polling interval, dispatch rules, and acceptance checks. The signed build

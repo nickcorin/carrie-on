@@ -534,7 +534,7 @@ struct ChatPickerView: View {
                         }
                             .disabled(lifecycle.busy || !lifecycle.ready)
                         Button { lifecycle.checkForUpdates() } label: {
-                            Label("Check for Updates", systemImage: "arrow.triangle.2.circlepath")
+                            Label(lifecycle.updateActionTitle, systemImage: "arrow.triangle.2.circlepath")
                         }
                             .disabled(lifecycle.busy || !lifecycle.ready)
                         Divider()

@@ -1,5 +1,7 @@
 # Menu bar
 
+Carrie On Dev and source installations show **Rebuild and Restart…** in place of **Check for Updates**. Dev rebuilds the entire bundled app; source installations rebuild their menu app. See [rebuild usage](../USAGE.md#menu-bar) for progress, failure handling, and saved checkout behavior, and [distribution verification](distribution.md#verification) for isolated rebuild tests.
+
 Chat lists use a narrow, softly tinted native scrollbar thumb without a visible track beside the cards. The thumb appears while hovering over its list or for 0.8 seconds after scrolling, and only when content overflows. AppKit retains native scrolling and thumb dragging. Verify both lists with overflowing and short results, then move the pointer outside the list and confirm the thumb disappears after scrolling stops.
 
 Adding or removing a queue enrollment fades and gently scales its cards between sections over 0.3 seconds, while surrounding cards and section heights ease into place. Transitions follow confirmed queue changes, including background reconciliation; instruction edits and search do not trigger queue animations. Reduce Motion disables these transitions.

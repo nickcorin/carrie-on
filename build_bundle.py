@@ -35,7 +35,12 @@ def sign_app(app):
     subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
 
 
-def build(output, replace=False, profile=PROFILES["release"]):
+def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
+    if prepare_app is not None:
+        if profile.name != "dev":
+            raise ValueError("Only dev builds can stage an app for local rebuilding")
+        if prepare_app.exists():
+            raise ValueError("The rebuild destination already exists")
     if sys.platform != "darwin":
         raise ValueError("Build on a Mac with Python 3.10+ and Apple's Swift command-line tools")
     release = Release.read(ROOT)
@@ -79,6 +84,10 @@ def build(output, replace=False, profile=PROFILES["release"]):
                      "CFBundleVersion": release.version, "CFBundleShortVersionString": release.version,
                      "LSUIElement": True, "LSMinimumSystemVersion": MINIMUM_MACOS,
                      "NSHighResolutionCapable": True, "CarrieOnStandalone": True})
+        info["CarrieOnBuildProfile"] = profile.name
+        if profile.name == "dev":
+            info["CarrieOnSourceRoot"] = str(ROOT)
+            info["CarrieOnBuildPython"] = sys.executable
         info_path.write_bytes(plistlib.dumps(info))
         resources = contents / "Resources"
         shutil.copy2(ROOT / "assets/CarrieOn.icns", resources / "CarrieOn.icns")
@@ -111,6 +120,11 @@ def build(output, replace=False, profile=PROFILES["release"]):
         digest = hashlib.sha256(staged.read_bytes()).hexdigest()
         staged.with_suffix(".zip.sha256").write_text(f"{digest}  {archive.name}\n")
         verify(staged, profile)
+        if prepare_app is not None:
+            prepare_app.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(app, prepare_app, symlinks=True)
+            print(f"Build ready: {prepare_app}", flush=True)
+            return prepare_app
         image = work / f"{name}.dmg"
         build_disk_image(app, image, release.version)
         image_digest = hashlib.sha256(image.read_bytes()).hexdigest()
@@ -132,13 +146,14 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "dist", help="Release directory")
     parser.add_argument("--replace", action="store_true", help="Overwrite this version's local release artifacts")
     parser.add_argument("--profile", choices=PROFILES, default="release", help="Isolated installation namespace")
+    parser.add_argument("--prepare-app", type=Path, help="Stage a verified dev app without installing or restarting")
     parser.add_argument("--sign-app", type=Path, metavar="APP", help="Ad-hoc sign and verify an existing app instead of building")
     args = parser.parse_args()
     try:
         if args.sign_app:
             sign_app(args.sign_app.resolve())
         else:
-            build(args.output.resolve(), args.replace, PROFILES[args.profile])
+            build(args.output.resolve(), args.replace, PROFILES[args.profile], args.prepare_app)
         return 0
     except (OSError, ValueError, RuntimeError, AssertionError, subprocess.SubprocessError) as error:
         print(f"Carrie On build: {error}", file=sys.stderr)

@@ -6,6 +6,7 @@
 - Configure three per-user login services on first launch without development tools.
 - Detect app replacements and reconcile services while preserving connection settings, queue, and history.
 - Check published stable GitHub releases, verify a compatible download, and install it from the menu with explicit consent.
+- Rebuild the entire Carrie On Dev app from its saved checkout with live output, replacing and restarting only after tests, signing, and bundle verification succeed. Source menu installations reuse their native menu builder.
 - Build versioned releases with automated acceptance checks, checksums, and release manifests.
 - Offer a DMG with an illustrated drag-to-Applications window and the same signed app as the updater ZIP.
 - Remove login services while preserving personal data.
@@ -24,6 +25,8 @@ pipeline as release. `python3 -m unittest test_build_profiles -v` exercises both
 profiles in the same isolated home, including independent queue state, worker
 definitions, ports, and startup preferences. See the
 [development build instructions](../RELEASING.md#local-development-app).
+
+For source builds, see [menu usage](../USAGE.md#menu-bar). `python3 -m unittest test_source_build -v` checks streamed build diagnostics, failed builds, staging with saved build paths and a custom port, signing, and replacement after success. The checks use temporary apps without stopping or installing live services.
 
 `build_bundle.py` runs unit tests, native self-tests, linkage audits, code-signature checks, and `verify_bundle.py` before publishing artifacts to `dist/`. The verifier exercises the native setup helper in an isolated home without loading login services. Tests cover interrupted setup, updates, stable reopening, settings and queue preservation, legacy connection migration, and invalid install locations. See the installation guide for real-Mac release acceptance checks.
 

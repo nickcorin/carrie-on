@@ -14,6 +14,10 @@ struct SetupFailure: Decodable, LocalizedError {
 }
 
 enum AppSetup {
+    static var isDevelopment: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "CarrieOnBuildProfile") as? String == "dev"
+    }
+
     static var isStandalone: Bool {
         Bundle.main.object(forInfoDictionaryKey: "CarrieOnStandalone") as? Bool == true
     }

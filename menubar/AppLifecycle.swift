@@ -146,6 +146,11 @@ final class AppLifecycle: ObservableObject {
     @Published private(set) var busy = false
     @Published private(set) var updateStatus: String?
     @Published private(set) var ready = false
+    private var rebuildWindow: BuildProgressWindow?
+
+    var updateActionTitle: String {
+        AppSetup.isStandalone && !AppSetup.isDevelopment ? "Check for Updates" : "Rebuild and Restart…"
+    }
 
     func start() async {
         busy = true
@@ -201,13 +206,14 @@ final class AppLifecycle: ObservableObject {
 extension AppLifecycle {
     func checkForUpdates() {
         guard !busy, ready else { return }
+        if !AppSetup.isStandalone || AppSetup.isDevelopment {
+            rebuildAndRestart()
+            return
+        }
         busy = true
         Task {
             defer { busy = false; updateStatus = nil }
             do {
-                guard AppSetup.isStandalone else {
-                    throw UpdateFailure(message: "This is a source installation. Update its checkout with Git and rebuild the menu app.")
-                }
                 let metadataURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/release.json")
                 let originalMetadata = try Data(contentsOf: metadataURL)
                 updateStatus = "Checking for Updates…"
@@ -266,6 +272,59 @@ extension AppLifecycle {
                 }
                 NSApp.terminate(nil)
             } catch { showUpdate(message: "Carrie On couldn’t update", detail: error.localizedDescription) }
+        }
+    }
+
+    private func rebuildAndRestart() {
+        let build: SourceBuild
+        do { build = try SourceBuild(bundle: .main) }
+        catch { showUpdate(message: "Carrie On couldn’t rebuild", detail: error.localizedDescription); return }
+        let alert = NSAlert()
+        alert.messageText = "Rebuild Carrie On?"
+        alert.informativeText = "Build and restart using the code in this checkout. Your queue and settings will be preserved.\n\n\(build.root.path)"
+        alert.addButton(withTitle: "Rebuild and Restart")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        busy = true
+        updateStatus = "Rebuilding…"
+        rebuildWindow?.close()
+        let progress = BuildProgressWindow()
+        rebuildWindow = progress
+        let installed = Bundle.main.bundleURL
+        let staging = installed.deletingLastPathComponent().appendingPathComponent(".Carrie-On-rebuild-\(UUID().uuidString)")
+        let candidate = staging.appendingPathComponent(installed.lastPathComponent)
+        Task {
+            defer { busy = false; updateStatus = nil }
+            do {
+                progress.append("Building from \(build.root.path)\n\n")
+                do {
+                    try await Task.detached {
+                        try await build.prepare(at: candidate) { output in
+                            await progress.append(output)
+                        }
+                    }.value
+                } catch {
+                    try? FileManager.default.removeItem(at: staging)
+                    throw error
+                }
+                updateStatus = "Restarting…"
+                progress.append("\nBuild succeeded. Restarting Carrie On…\n")
+                try await Task.detached {
+                    let files = LifecycleFiles(home: FileManager.default.homeDirectoryForCurrentUser)
+                    do {
+                        try LifecycleServices.setRunning(false, files: files)
+                        try AppUpdate.install(candidate: candidate, installed: installed, launch: AppUpdate.launchReplacement)
+                    } catch {
+                        try? LifecycleServices.setRunning(true, files: files)
+                        throw UpdateFailure(message: "\(error.localizedDescription)\n\nStaged or recovery app: \(candidate.path)")
+                    }
+                }.value
+                try? FileManager.default.removeItem(at: staging)
+                progress.close()
+                NSApp.terminate(nil)
+            } catch { progress.fail(error) }
         }
     }
 
