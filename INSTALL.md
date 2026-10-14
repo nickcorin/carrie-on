@@ -30,7 +30,7 @@ These instructions apply to Carrie On releases. Carrie On Dev rebuilds from your
 Carrie On checks for a newer stable release on startup. To install an update, follow these steps:
 
 1. Open **Settings** from the menu bar item.
-2. Choose **Update to <version>**. If that option is absent, choose **Check for Updates**.
+2. Choose **Update to &lt;version&gt;**. If that option is absent, choose **Check for Updates**.
 3. Choose **Install and Restart**.
 
 Settings shows download and installation progress. Choose **Not Now** to leave the update for later, or **Release Notes** to open its GitHub page. You do not need a GitHub account.

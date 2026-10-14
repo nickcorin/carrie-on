@@ -55,11 +55,11 @@ Signing is ad-hoc. It does not provide Developer ID signing or notarization. Aft
 
 ## Local development app
 
-Dev compares its built commit with the saved checkout's `HEAD` once on startup. If the checkout has newer commits, Settings shows **Update to <short hash>**. Otherwise it shows **Check for Updates**, which checks again when clicked. The check uses local Git history without fetching from GitHub. A rebuild includes uncommitted edits.
+Dev compares its built commit with the saved checkout's `HEAD` once on startup. If the checkout has newer commits, Settings shows **Update to &lt;short hash&gt;**. Otherwise it shows **Check for Updates**, which checks again when clicked. The check uses local Git history without fetching from GitHub. A rebuild includes uncommitted edits.
 
 Run `just dev` to build Carrie On Dev into `dist/dev/`. Install it from the DMG
 alongside Carrie On. To update it later, open Settings and choose
-**Update to <short hash>**. This rebuilds the native interface, bundled Python,
+**Update to &lt;short hash&gt;**. This rebuilds the native interface, bundled Python,
 and backend while displaying the build output.
 
 The action runs `build_bundle.py --profile dev --prepare-app`. Tests and bundle

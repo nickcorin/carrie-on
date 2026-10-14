@@ -6,7 +6,7 @@
 - Configure three per-user login services on first launch without development tools.
 - Detect app replacements and update service registrations while preserving connection settings, queue, and history.
 - Automatically migrate older bundled installations on first launch, merging queued work and retiring old services after the current installation is healthy.
-- Check for a newer stable GitHub release on startup and show **Update to <version>** when available. Download and install it after confirmation.
+- Check for a newer stable GitHub release on startup and show **Update to &lt;version&gt;** when available. Download and install it after confirmation.
 - Rebuild the entire Carrie On Dev app from its saved checkout with live output, replacing and restarting only after tests, signing, and bundle verification succeed. Source menu installations reuse their native menu builder.
 - Build versioned releases with automated acceptance checks, checksums, and release manifests.
 - Offer a DMG with an illustrated drag-to-Applications window and the same signed app as the updater ZIP.
@@ -39,7 +39,7 @@ Installation exchanges complete bundles atomically and keeps the previous app in
 
 ## Verification
 
-Dev compares its built commit with the local checkout's `HEAD` on startup. It offers **Update to <short hash>** only when the built commit is an ancestor of `HEAD`. Otherwise it shows **Check for Updates**. `python3 -m unittest test_source_build test_app_update -v` tests both labels and checkouts with newer, equal, older, unrelated, or missing commits.
+Dev compares its built commit with the local checkout's `HEAD` on startup. It offers **Update to &lt;short hash&gt;** only when the built commit is an ancestor of `HEAD`. Otherwise it shows **Check for Updates**. `python3 -m unittest test_source_build test_app_update -v` tests both labels and checkouts with newer, equal, older, unrelated, or missing commits.
 
 `just dev` builds and verifies the development profile with the same acceptance
 pipeline as release. `python3 -m unittest test_build_profiles -v` exercises both
