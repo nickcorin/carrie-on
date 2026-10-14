@@ -15,11 +15,11 @@ Setup runs as your login user, without administrator privileges. Settings, queue
 
 ## Updates
 
-**Carrie On Dev** shows **Update to <short hash>** when behind its local checkout, or **Check for Updates** when current. Updating rebuilds its entire local app. See [development builds](RELEASING.md#local-development-app) for progress, failure handling, and initial installation. The release-update flow below applies to **Carrie On**.
+These instructions apply to Carrie On releases. Carrie On Dev rebuilds from your local checkout. See [development builds](RELEASING.md#local-development-app).
 
-Carrie On quietly checks the latest published stable GitHub release on startup. When an update is available, the settings button reads **Update to <version>**. Open the menu bar popover, choose that action, then **Install and Restart**. Otherwise, choose **Settings → Check for Updates** to check manually. A failed startup check leaves manual checking available without interrupting you.
+Carrie On checks for a newer stable GitHub release once on startup. When an update is available, open the menu's Settings, choose **Update to <version>**, then **Install and Restart**. Otherwise, the button reads **Check for Updates**. Startup checks show no dialogs, even if the check fails. You can check again from Settings.
 
-Carrie On downloads the version you accepted and verifies its size, SHA-256 checksum, compatibility, bundle identity, and code signature before replacing the app. The settings action reports checking, downloading, and installation progress. No GitHub account or token is needed. **Not Now** leaves the update available for later, and **Release Notes** opens that version's GitHub page. Downloads and installation require your confirmation.
+After you confirm, Carrie On downloads the release and checks its size, SHA-256 checksum, compatibility, bundle identity, and code signature before replacing the app. Settings shows progress. You do not need a GitHub account. Choose **Not Now** to leave the update for later, or **Release Notes** to open its GitHub page.
 
 The app restarts its worker and local API from the replacement bundle. It preserves the saved CLI path, port, interval, socket, Codex home, queue/history, and launch-at-login preference. Reopening the same build leaves healthy services running. Quit stops the app and its background services; reopening restarts them. The settings menu's **Launch at Login** setting controls automatic startup independently of manual launches. See [startup and quit](features/app-lifecycle.md).
 

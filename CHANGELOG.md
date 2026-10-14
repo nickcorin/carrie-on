@@ -2,7 +2,7 @@
 
 ## 0.5.5
 
-- Check for updates once on startup and show Update to the available version; retain Check for Updates when current.
+- Check for updates once on startup. Show Update to <version> when a release is available, or Check for Updates when current.
 - Let development builds discover newer local checkout commits and rebuild the complete app from the update action.
 - Wait for background services to finish shutting down before replacing the app, avoiding false shutdown failures.
 - Show the installed version in the settings menu.
@@ -10,7 +10,6 @@
 - Use the Carrie On identity throughout Python modules, executable names, bundle metadata, login services, local API headers, and Application Support paths, including isolated development builds.
 - Reject retired branding in source inputs and packaged application payloads before a release is produced.
 - Remove the browser dashboard and bundle only the native menu interface and its local API.
-- Preserve the latest queue safeguards, native card states, settings menu, and shared refresh timestamps.
 - When upgrading an app with an older identity, install manually. Remove its services and migrate saved settings and queue data as described in the installation guide before opening the new app.
 
 ## 0.5.4

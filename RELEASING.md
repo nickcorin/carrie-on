@@ -55,18 +55,18 @@ Signing is **ad-hoc**, not Developer ID signing or notarization. `just sign` mod
 
 ### Local development app
 
-Dev checks the saved local checkout's `HEAD` once on startup. If the installed commit is behind, the action reads **Update to <short hash>** and uses the local rebuild-and-restart flow. Otherwise it reads **Check for Updates**, which checks again on demand and reports when no update is available. It does not fetch or pull from GitHub. Rebuilding includes the checkout's uncommitted edits.
+Dev compares its built commit with the saved checkout's `HEAD` once on startup. If the checkout has newer commits, Settings shows **Update to <short hash>**. Otherwise it shows **Check for Updates**, which checks again when clicked. The check uses local Git history without fetching from GitHub. A rebuild includes uncommitted edits.
 
-Run `just dev` to build **Carrie On Dev** into `dist/dev/`. Install its app from
-the DMG into Applications alongside Carrie On. Use **Settings → Update to
-<short hash>** when an update is available to rebuild from its saved checkout, including the
-native interface, bundled Python runtime, and backend. The action runs the same
-`build_bundle.py --profile dev` pipeline with `--prepare-app`, streams build
-output, and stages a signed replacement only after tests and isolated bundle
-acceptance checks succeed. It skips distribution DMG generation. A failure
-keeps the current app running and leaves diagnostics visible. Success replaces
-the complete app and restarts its dev services, preserving its queue, settings,
-and login preference. It does not pull or switch Git branches.
+Run `just dev` to build Carrie On Dev into `dist/dev/`. Install it from the DMG
+alongside Carrie On. To update it later, open Settings and choose
+**Update to <short hash>**. This rebuilds the native interface, bundled Python,
+and backend while displaying the build output.
+
+The action runs `build_bundle.py --profile dev --prepare-app`. Tests and bundle
+checks must pass before it replaces the app and restarts Dev's services. It
+preserves the queue, settings, and login preference. A build failure leaves the
+current app running and keeps the error output open. This command does not
+create a DMG, pull commits, or switch branches.
 
 Older dev builds need a fresh `just dev` build installed once to gain this
 action and its saved checkout/interpreter paths. Reinstall from a new location
