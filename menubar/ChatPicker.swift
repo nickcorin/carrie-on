@@ -511,24 +511,30 @@ struct ChatPickerView: View {
                         .font(.system(size: 18, weight: .semibold))
                     Spacer()
                     Menu {
-                        Toggle("Launch at Login", isOn: Binding(
+                        Toggle(isOn: Binding(
                             get: { lifecycle.launchAtLogin },
-                            set: { lifecycle.setLaunchAtLogin($0) }))
+                            set: { lifecycle.setLaunchAtLogin($0) })) {
+                            Label("Launch at Login", systemImage: "power")
+                        }
+                            .disabled(lifecycle.busy || !lifecycle.ready)
+                        Button { lifecycle.checkForUpdates() } label: {
+                            Label("Check for Updates", systemImage: "arrow.triangle.2.circlepath")
+                        }
                             .disabled(lifecycle.busy || !lifecycle.ready)
                         Divider()
-                        Button(lifecycle.updateStatus ?? "Check for Updates…") { lifecycle.checkForUpdates() }
-                            .disabled(lifecycle.busy || !lifecycle.ready)
-                        Divider()
-                        Button("Quit Carrie On") { lifecycle.quit() }
+                        Button { lifecycle.quit() } label: {
+                            Label("Quit", systemImage: "power.circle")
+                        }
                             .disabled(lifecycle.busy)
                     } label: {
                         Image(systemName: "gearshape")
                             .font(.system(size: 15, weight: .medium))
-                            .frame(width: 24, height: 24)
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
                     }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                    .accessibilityLabel("Settings")
-                    .help("Settings")
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                    .accessibilityLabel("Carrie On menu")
+                    .help("Carrie On menu")
                 }
                 if model.connection == .connected { usageSummary }
             }.padding(20)
