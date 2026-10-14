@@ -13,7 +13,7 @@ just setup
 just
 ```
 
-`.python-version` pins the build interpreter and `requirements-build.txt` pins the packaging dependencies. The justfile pins Ruff and actionlint versions. Setup and the first tool runs download dependencies. Later checks run on your Mac without GitHub CI credits. Use uv-managed Python because some Homebrew runtimes require a newer macOS version than the app targets.
+`.python-version` pins the build interpreter. `requirements.txt` pins runtime dependencies; `requirements-build.txt` includes them and pins packaging dependencies. The justfile pins Ruff and actionlint versions. Setup and the first tool runs download dependencies. Later checks run on your Mac without GitHub CI credits. Use uv-managed Python because some Homebrew runtimes require a newer macOS version than the app targets.
 
 ## Check, build, and package
 

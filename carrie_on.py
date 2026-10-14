@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from codex_bridge import AppServer, Desktop
-from resume_queue import Chat, Entry, Queue, Usage, check_queue, locked_queue
+from resume_queue import Entry, Queue, Usage, check_queue, locked_queue
 from app_runtime import PROFILE, RUNTIME, VERSION
 from app_lifecycle import remove_agent, write_agent
 
@@ -152,8 +152,9 @@ def enroll(args, usage_observation=None):
         with AppServer(args.codex) as server:
             resolve_chat(server, thread_id)
 
-    with Desktop(args.socket, open_if_needed=True) as desktop:
-        chat = Chat.parse(desktop.snapshot(thread_id, before_open=validate_before_open))
+    with AppServer(args.codex) as server, Desktop(args.socket, open_if_needed=True) as desktop:
+        desktop.settings(thread_id, before_open=validate_before_open)
+        chat = server.read_chat(thread_id, desktop)
     if chat.thread_id != thread_id:
         raise ValueError("Desktop returned a different chat")
     if (usage_observation is not None and usage_observation.usable_for_enrollment(time.time())
@@ -190,7 +191,7 @@ def run(args, *, usage_observation=None):
                 report = {"usage_read": "ok", "desktop_ipc": "ok", "model_turns_started": 0,
                           "account_id": raw.get("accountId")}
                 if args.thread:
-                    chat = Chat.parse(desktop.snapshot(args.thread))
+                    chat = server.read_chat(args.thread, desktop)
                     report["chat"] = {"title": chat.title, "status": chat.status, "model": chat.model}
                 return report
 
@@ -230,7 +231,7 @@ def run(args, *, usage_observation=None):
                     if args.dry_run:
                         return [{"title": e.title, "state": e.state,
                                  "reset_ready": e.reset_ready(Usage.parse(server.usage(), e.limit_id), time.time()),
-                                 "chat_status": Chat.parse(desktop.snapshot(e.thread_id)).status} for e in due]
+                                 "chat_status": server.read_chat(e.thread_id, desktop).status} for e in due]
                     outcomes = check_queue(queue, server, desktop)
                     queue.data["last_error"] = None
                     queue.save()

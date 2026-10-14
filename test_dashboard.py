@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from test_carrie_on import snapshot, usage
 from carrie_on_ui import Dashboard, DashboardServer
-from resume_queue import Usage, UsageObservation, locked_queue
+from resume_queue import Chat, Usage, UsageObservation, locked_queue
 from codex_bridge import AppServer
 
 
@@ -47,6 +47,12 @@ class LocalCodex:
         result["id"] = thread_id
         result["title"] = self.threads()[0]["name"]
         return result
+
+    def settings(self, thread_id, *, before_open=None):
+        return {"model": "model-a", "resumeState": "resumed"}
+
+    def read_chat(self, thread_id, _desktop, *, include_goal=False):
+        return Chat.parse(self.snapshot(thread_id))
 
 
 class DashboardBehavior(unittest.TestCase):
@@ -275,9 +281,9 @@ class DashboardBehavior(unittest.TestCase):
         self.assertIsNotNone(summary["usage"])
         self.assertTrue(self.request("/api/menu")[1]["connected"])
 
-    def test_recent_usage_enrolls_without_starting_an_app_server(self):
+    def test_recent_usage_enrolls_without_refetching_quota(self):
         self.assertEqual(self.request("/api/menu")[0], 200)
-        with patch("carrie_on.AppServer", side_effect=AssertionError("Cached enrollment must not start a helper")):
+        with patch.object(LocalCodex, "usage", side_effect=AssertionError("Cached enrollment must not refetch quota")):
             status, result = self.request("/api/queue", {"chat": CHAT_ID, "prompt": "Continue tests"})
         self.assertEqual(status, 200)
         entry = result["entry"]
@@ -314,7 +320,7 @@ class DashboardBehavior(unittest.TestCase):
             status, result = self.request("/api/queue", {"chat": CHAT_ID})
             self.assertEqual(status, 400)
             self.assertIn("Choose --limit-id", result["error"])
-            with patch("carrie_on.AppServer", side_effect=AssertionError("Selected cached bucket should suffice")):
+            with patch.object(LocalCodex, "usage", side_effect=AssertionError("Selected cached bucket should suffice")):
                 status, result = self.request("/api/queue", {"chat": CHAT_ID, "limit_id": "other"})
             self.assertEqual(status, 200)
             self.assertEqual(result["entry"]["limit_id"], "other")
@@ -339,7 +345,7 @@ class DashboardBehavior(unittest.TestCase):
                 release.set()
                 worker.join(5)
         self.assertEqual(results[0][1]["accountId"], "old-account")
-        with patch("carrie_on.AppServer", side_effect=AssertionError("Use the newer cached account")):
+        with patch.object(LocalCodex, "usage", side_effect=AssertionError("Use the newer cached account")):
             status, result = self.request("/api/queue", {"chat": CHAT_ID})
         self.assertEqual(status, 200)
         self.assertEqual(result["entry"]["account_id"], "account-a")

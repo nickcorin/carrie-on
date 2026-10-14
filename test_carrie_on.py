@@ -27,7 +27,7 @@ def snapshot(status="failed", message_id="original", runtime="idle", error="usag
         "latestModel": "model-a", "resumeState": "resumed", "requests": [],
         "threadRuntimeStatus": {"type": runtime},
         "turnHistory": {"kind": "canonical", "history": {"entitiesByKey": {
-            "latest": {"turnId": "turn-a", "status": status, "error": {"codexErrorInfo": error},
+            "latest": {"turnId": message_id, "status": status, "error": {"codexErrorInfo": error},
                        "params": {"clientUserMessageId": message_id}},
         }}},
     }
@@ -49,6 +49,9 @@ class CodexFixture:
     def snapshot(self, _thread):
         return self.chat
 
+    def read_chat(self, _thread, _desktop, *, include_goal=False):
+        return Chat.parse(self.chat)
+
     def threads(self, _search):
         return [{"id": "thread-a"}]
 
@@ -57,7 +60,7 @@ class CodexFixture:
         if self.lose_reply:
             raise BridgeError("Reply lost")
         self.chat = snapshot("inProgress", message_id, "active")
-        return {"result": {"turn": {"id": "continued"}}}
+        return {"turn_id": "continued"}
 
 
 class QueueBehavior(unittest.TestCase):
@@ -99,6 +102,7 @@ class QueueBehavior(unittest.TestCase):
             entry = carrie_on.run(args)["entries"][0]
             self.assertEqual((entry["state"], entry["processing_until"]), ("sending", 230))
             self.assertEqual((thread_id, prompt, message_id), ("thread-a", "Finish tests", self.entry_id))
+            return {"turn_id": "continued"}
 
         with patch.object(self.codex, "usage", side_effect=read_usage), \
                 patch.object(self.codex, "continue_chat", side_effect=send):
@@ -272,15 +276,14 @@ class QueueBehavior(unittest.TestCase):
         self.assertEqual(self.codex.delivered[0]["prompt"], "Wait for approval")
         self.assertEqual(self.state()["history"][0]["outcome"], "resumed")
 
-    def test_lost_reply_does_not_duplicate_on_restart(self):
+    def test_lost_reply_does_not_infer_delivery_from_a_later_turn(self):
         self.codex.lose_reply = True
         self.tick()
         self.assertEqual(self.state()["entries"][0]["state"], "sending")
         self.assertEqual(self.state()["entries"][0]["reactivation_error"], "Reply lost")
         self.codex.chat = snapshot("inProgress", self.entry_id, "active")
         self.tick()
-        self.assertEqual(self.state()["history"][0]["outcome"], "resumed")
-        self.assertIsNone(self.state()["history"][0]["reactivation_error"])
+        self.assertEqual(self.state()["entries"][0]["state"], "needs_attention")
         self.assertEqual(len(self.codex.delivered), 1)
 
     def test_uncertain_delivery_requires_human_resolution(self):
@@ -299,6 +302,23 @@ class QueueBehavior(unittest.TestCase):
         self.tick()
         self.assertEqual(self.state()["entries"][0]["state"], "needs_attention")
         self.assertEqual(len(self.codex.delivered), 1)
+
+    def test_legacy_anchor_is_converted_once_without_changing_the_instruction(self):
+        with locked_queue(self.path) as queue:
+            queue.entries[0].anchor_turn_id = None
+            queue.save()
+        self.assertEqual(self.tick(), ["Continuation accepted: Finish feature"])
+        history = self.state()["history"][0]
+        self.assertEqual((history["anchor_turn_id"], history["prompt"], history["outcome"]),
+                         ("original", "Finish tests", "resumed"))
+
+    def test_persisted_receipt_finishes_after_restart_without_another_send(self):
+        with locked_queue(self.path) as queue:
+            entry = queue.entries[0]
+            entry.state, entry.attempted_at, entry.accepted_turn_id = "sending", 100, "accepted-turn"
+            queue.save()
+        self.assertEqual(self.tick(), ["Confirmed continuation: Finish feature"])
+        self.assertEqual((self.state()["history"][0]["outcome"], self.codex.delivered), ("resumed", []))
 
     def test_global_pause_keeps_queue_then_resume_delivers(self):
         with locked_queue(self.path) as queue:

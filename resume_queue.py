@@ -100,6 +100,32 @@ class Chat:
     blocked: bool
     quota_failed: bool
     seen_message_ids: frozenset[str]
+    turn_id: str | None = None
+
+    @classmethod
+    def from_headers(cls, metadata, turns, settings, goal):
+        """Interpret persisted turn completion, never process-local idle status.
+
+        Missing completion evidence means still busy or unknown. A synthetic
+        interrupted status from an unloaded app-server cannot authorize a send.
+        Approval requests keep their turn unfinished; their bodies are not read.
+        """
+        if len(turns) != 1:
+            raise ValueError("Chat has no identifiable latest turn; open it in Codex first")
+        turn = turns[0]
+        thread_id, turn_id, model = metadata.get("id"), turn.get("id"), settings.get("model")
+        if not all(isinstance(value, str) and value for value in (thread_id, turn_id, model)):
+            raise ValueError("Chat has no identifiable latest turn or model")
+        status = turn.get("status")
+        if status not in {"inProgress", "completed", "failed", "interrupted"}:
+            raise ValueError("Unsupported Codex turn status")
+        completed = turn.get("completedAt")
+        busy = status == "inProgress" or type(completed) is not int or completed <= 0
+        blocked = (settings.get("resumeState") != "resumed"
+                   or (goal or {}).get("status") in {"paused", "budgetLimited", "blocked"})
+        return cls(thread_id, metadata.get("name") or thread_id, turn_id, model, status,
+                   busy, blocked, (turn.get("error") or {}).get("codexErrorInfo") == "usageLimitExceeded",
+                   frozenset(), turn_id)
 
     @classmethod
     def parse(cls, snapshot):
@@ -134,7 +160,7 @@ class Chat:
                    or snapshot.get("resumeState") != "resumed")
         return cls(thread_id, snapshot.get("title") or thread_id, message_id, model, status,
                    runtime.get("type") == "active" or status == "inProgress",
-                   blocked, quota_failed, ids)
+                   blocked, quota_failed, ids, turn.get("turnId"))
 
 
 @dataclass
@@ -156,6 +182,8 @@ class Entry:
     attempted_at: float | None = None
     reactivation_error: str | None = None
     processing_until: float | None = None
+    anchor_turn_id: str | None = None
+    accepted_turn_id: str | None = None
 
     @classmethod
     def enroll(cls, chat, usage, prompt, now):
@@ -169,7 +197,7 @@ class Entry:
         selected = exhausted or [min(future, key=lambda w: w.reset_at)]
         return cls(str(uuid.uuid4()), chat.thread_id, chat.title, usage.account_id,
                    usage.limit_id, chat.message_id, chat.model, prompt,
-                   {w.name: w.reset_at for w in selected}, chat.busy)
+                   {w.name: w.reset_at for w in selected}, chat.busy, anchor_turn_id=chat.turn_id)
 
     @classmethod
     def parse(cls, raw):
@@ -192,6 +220,9 @@ class Entry:
             raise ValueError("Invalid reset windows")
         if type(entry.enrolled_while_busy) is not bool:
             raise ValueError("Invalid enrollment state")
+        for identifier in (entry.anchor_turn_id, entry.accepted_turn_id):
+            if identifier is not None and (not isinstance(identifier, str) or not identifier):
+                raise ValueError("Invalid Codex turn identifier")
         if entry.reactivation_error is not None and (
                 not isinstance(entry.reactivation_error, str) or not entry.reactivation_error.strip()):
             raise ValueError("Invalid reactivation error")
@@ -311,7 +342,7 @@ def locked_queue(path):
 def check_queue(queue, server, desktop, now=None):
     """Check reset eligibility; never retry an uncertain send automatically.
 
-    Dependencies expose usage(), snapshot(id), and continue_chat(id, text, id).
+    The SDK reads headers; desktop dispatch retains settings, tools and approvals.
     No dependency evaluates a prompt to choose an action.
     """
     now = time.time() if now is None else now
@@ -335,17 +366,32 @@ def check_queue(queue, server, desktop, now=None):
                 if not any(t["id"] == entry.thread_id for t in server.threads(entry.title)):
                     entry.require_attention("Chat is archived, renamed, or absent from the local catalog")
                     continue
-            chat = Chat.parse(desktop.snapshot(entry.thread_id))
-            if chat.thread_id != entry.thread_id:
-                raise ValueError("Desktop returned a different chat")
             if entry.state == "sending":
-                if entry.id in chat.seen_message_ids:
+                confirmed = entry.accepted_turn_id is not None
+                if not confirmed and entry.anchor_turn_id is None:
+                    legacy = Chat.parse(desktop.snapshot(entry.thread_id))
+                    if legacy.thread_id != entry.thread_id:
+                        raise ValueError("Desktop returned a different chat")
+                    confirmed = entry.id in legacy.seen_message_ids
+                if confirmed:
                     queue.finish(entry, "resumed", now)
                     outcomes.append(f"Confirmed continuation: {entry.title}")
                 else:
                     entry.require_attention("Delivery uncertain; inspect the chat before removing and re-enrolling")
                 continue
-            if chat.message_id != entry.anchor_message_id or chat.model != entry.model:
+            if entry.anchor_turn_id is None:
+                legacy = Chat.parse(desktop.snapshot(entry.thread_id))
+                if legacy.thread_id != entry.thread_id or legacy.message_id != entry.anchor_message_id:
+                    entry.require_attention("Chat changed after enrollment; remove and re-enroll if still wanted")
+                    continue
+                if not legacy.turn_id:
+                    raise ValueError("The enrolled task has no accepted Codex turn ID")
+                entry.anchor_turn_id = legacy.turn_id
+                queue.save()
+            chat = server.read_chat(entry.thread_id, desktop, include_goal=True)
+            if chat.thread_id != entry.thread_id:
+                raise ValueError("Codex returned a different chat")
+            if chat.turn_id != entry.anchor_turn_id or chat.model != entry.model:
                 entry.require_attention("Chat changed after enrollment; remove and re-enroll if still wanted")
                 continue
             if chat.busy or chat.blocked:
@@ -365,7 +411,9 @@ def check_queue(queue, server, desktop, now=None):
             entry.processing_until = now + 120
             entry.note = "Continuation dispatch started"
             queue.save()
-            desktop.continue_chat(entry.thread_id, entry.prompt, entry.id)
+            receipt = desktop.continue_chat(entry.thread_id, entry.prompt, entry.id)
+            entry.accepted_turn_id = receipt["turn_id"]
+            queue.save()
             queue.finish(entry, "resumed", now)
             outcomes.append(f"Continuation accepted: {entry.title}")
         except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:

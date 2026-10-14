@@ -7,14 +7,22 @@ Both clients own their connection and must be used as context managers.
 
 import json
 import os
-import select
+import shutil
 import socket
 import stat
 import struct
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
+
+from openai_codex.client import CodexClient, CodexConfig
+from openai_codex.errors import CodexError
+from openai_codex.generated.v2_all import (
+    GetAccountRateLimitsResponse, ThreadReadResponse, ThreadListResponse,
+    ThreadTurnsListResponse, ThreadGoalGetResponse,
+)
 
 from app_runtime import VERSION
 
@@ -23,72 +31,129 @@ class BridgeError(RuntimeError):
     """Unavailable or incompatible Codex connection; a send may be uncertain."""
 
 
+MAX_RESPONSE_BYTES = 1024 * 1024
+
+
+class BoundedCodexClient(CodexClient):
+    """SDK transport with a byte circuit breaker and per-request deadline.
+
+    The pinned SDK owns JSON-RPC routing and process lifecycle. These overrides
+    bound reads before decoding and terminate only this client's subprocess on
+    timeout. Callers must serialize requests on this client.
+    """
+
+    def __init__(self, executable, timeout):
+        super().__init__(CodexConfig(codex_bin=shutil.which(executable) or executable,
+                                    client_name="carrie_on", client_version=VERSION))
+        self.timeout = timeout
+
+    def _read_message(self):
+        line = self._proc.stdout.buffer.readline(MAX_RESPONSE_BYTES + 1)
+        if len(line) > MAX_RESPONSE_BYTES:
+            raise BridgeError("Codex response exceeded 1 MiB; connection closed")
+        if not line:
+            raise BridgeError("Codex app-server disconnected or timed out")
+        message = json.loads(line)
+        if not isinstance(message, dict):
+            raise BridgeError("Invalid Codex response")
+        return message
+
+    def close(self):
+        process = self._proc
+        super().close()
+        if process is not None:
+            process.wait(timeout=2)
+            process.stdout.close()
+            process.stderr.close()
+
+    def _request_raw(self, method, params=None):
+        process = self._proc
+        expired = threading.Event()
+
+        def expire():
+            expired.set()
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+
+        timer = threading.Timer(self.timeout, expire)
+        timer.daemon = True
+        timer.start()
+        try:
+            return super()._request_raw(method, params)
+        finally:
+            timer.cancel()
+            timer.join()
+            if expired.is_set():
+                raise BridgeError(f"{method} timed out")
+
+    def _handle_server_request(self, message):
+        raise BridgeError("The monitoring app-server cannot answer approvals or run tools")
+
+
 class AppServer:
     """Read account limits and stored chat summaries without running inference."""
 
     def __init__(self, executable="codex", timeout=30):
         self.executable = executable
         self.timeout = timeout
-        self.buffer = b""
-        self.process = None
+        self.client = None
 
     def __enter__(self):
-        self.process = subprocess.Popen(
-            [self.executable, "app-server"], stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        )
+        self.client = BoundedCodexClient(self.executable, self.timeout)
         try:
-            self.request("initialize", {
-                "clientInfo": {"name": "carrie_on", "version": VERSION},
-            })
-            self._send({"method": "initialized"})
-        except BaseException:
+            self.client.start()
+            self.client.initialize()
+        except BaseException as error:
             self.__exit__(None, None, None)
+            if isinstance(error, CodexError):
+                raise BridgeError(f"Codex SDK initialization failed: {error}") from error
             raise
         return self
 
     def __exit__(self, *_):
-        if self.process is not None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-            self.process.stdin.close()
-            self.process.stdout.close()
-
-    def _send(self, message):
-        self.process.stdin.write(json.dumps(message).encode() + b"\n")
-        self.process.stdin.flush()
+        if self.client is not None:
+            self.client.close()
 
     def request(self, method, params=None):
         """Return a read RPC result, raising on timeout or RPC failure."""
-        if method not in {"initialize", "account/rateLimits/read", "thread/list", "thread/read"}:
+        responses = {
+            "account/rateLimits/read": GetAccountRateLimitsResponse,
+            "thread/list": ThreadListResponse,
+            "thread/read": ThreadReadResponse,
+            "thread/turns/list": ThreadTurnsListResponse,
+            "thread/goal/get": ThreadGoalGetResponse,
+        }
+        if method not in responses:
             raise ValueError("The monitoring app-server is read-only")
-        request_id = str(uuid.uuid4())
-        self._send({"id": request_id, "method": method, "params": params or {}})
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            if b"\n" not in self.buffer:
-                remaining = max(0, deadline - time.monotonic())
-                if not select.select([self.process.stdout], [], [], remaining)[0]:
-                    break
-                chunk = os.read(self.process.stdout.fileno(), 65536)
-                if not chunk:
-                    raise BridgeError("Codex app-server closed; check Codex login and configuration")
-                self.buffer += chunk
-                if len(self.buffer) > 32 * 1024 * 1024:
-                    raise BridgeError("Codex response exceeded 32 MiB")
-                continue
-            line, self.buffer = self.buffer.split(b"\n", 1)
-            message = json.loads(line)
-            if message.get("id") != request_id:
-                continue
-            if "error" in message:
-                raise BridgeError(f"{method}: {message['error'].get('message', 'RPC failed')}")
-            return message["result"]
-        raise BridgeError(f"{method} timed out")
+        if method == "thread/read" and (params or {}).get("includeTurns") is not False:
+            raise ValueError("Monitoring reads must exclude turn history")
+        if method == "thread/turns/list" and (
+                (params or {}).get("limit") != 1 or (params or {}).get("itemsView") != "notLoaded"):
+            raise ValueError("Monitoring reads require a single turn header without items")
+        try:
+            result = self.client.request(method, params or {}, response_model=responses[method])
+            return result.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        except CodexError as error:
+            raise BridgeError(f"{method}: {error}") from error
+
+    def read_chat(self, thread_id, desktop, *, include_goal=False):
+        """Read only metadata and the latest turn header; never hydrate history.
+
+        An unloaded process can label a running turn interrupted. Only a
+        persisted completion timestamp proves it ended. The desktop supplies
+        current model settings and retains ownership of every continuation.
+        """
+        from resume_queue import Chat
+        metadata = self.request("thread/read", {"threadId": thread_id, "includeTurns": False})["thread"]
+        settings = desktop.settings(thread_id)
+        turns = self.request("thread/turns/list", {
+            "threadId": thread_id, "limit": 1, "sortDirection": "desc", "itemsView": "notLoaded",
+        })["data"]
+        goal = self.request("thread/goal/get", {"threadId": thread_id}).get("goal") if include_goal else None
+        return Chat.from_headers(metadata, turns, settings, goal)
 
     def usage(self):
         """Fetch fresh quota metadata; this does not start a model turn."""
@@ -204,16 +269,15 @@ class Desktop:
                 raise BridgeError("Codex desktop response method mismatch")
             return reply["result"]
 
-    def snapshot(self, thread_id, *, before_open=None):
-        """Get live state, optionally opening an explicitly selected dormant chat.
+    def settings(self, thread_id, *, before_open=None):
+        """Get current model settings, optionally opening a selected dormant chat.
 
         Opening uses the app's ordinary deep link and can change the visible tab.
         It does not submit a prompt. Callers must exclude archived chats first,
         or supply before_open to validate only when opening is necessary.
         """
-        self.snapshots.pop(thread_id, None)
         try:
-            self.request("thread-follower-read-model-settings", {"conversationId": thread_id})
+            reply = self.request("thread-follower-read-model-settings", {"conversationId": thread_id})
         except BridgeError as error:
             if not self.open_if_needed or "no-client-found" not in str(error):
                 raise
@@ -225,12 +289,21 @@ class Desktop:
             deadline = time.monotonic() + 20
             while True:
                 try:
-                    self.request("thread-follower-read-model-settings", {"conversationId": thread_id})
+                    reply = self.request("thread-follower-read-model-settings", {"conversationId": thread_id})
                     break
                 except BridgeError:
                     if time.monotonic() >= deadline:
                         raise BridgeError("Open the queued chat in Codex; its owner is unavailable") from error
                     time.sleep(0.5)
+        settings = reply.get("settings")
+        if not isinstance(settings, dict):
+            raise BridgeError("Codex desktop model settings are unavailable")
+        return settings
+
+    def snapshot(self, thread_id, *, before_open=None):
+        """Read legacy anchors only, bounded by the existing 32 MiB circuit breaker."""
+        self.snapshots.pop(thread_id, None)
+        self.settings(thread_id, before_open=before_open)
         self._send({"type": "broadcast", "sourceClientId": self.client_id, "version": 1,
                     "method": "thread-stream-following-changed",
                     "params": {"conversationId": thread_id, "hostId": "local", "following": True}})

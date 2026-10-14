@@ -110,6 +110,15 @@ class DesktopProtocol(unittest.TestCase):
                 desktop.snapshot("thread-a")
         self.finish()
 
+    def test_settings_and_dispatch_do_not_require_a_history_subscription(self):
+        self.worker.start()
+        with Desktop(self.path, timeout=2) as desktop:
+            self.assertEqual(desktop.settings("thread-a"), {"model": "model-a"})
+            self.assertEqual(desktop.continue_chat("thread-a", "Finish tests", "message-a"),
+                             {"turn_id": "accepted-turn"})
+        self.finish()
+        self.assertEqual(self.requests[0]["params"]["turnStart"]["context"], {"inheritThreadSettings": True})
+
     def test_missing_turn_receipt_is_uncertain_not_success(self):
         self.receipt = {"result": {}}
         self.worker.start()

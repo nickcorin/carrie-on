@@ -1,6 +1,6 @@
 # Contributing
 
-Use an Apple Silicon Mac with Apple's command-line tools, just 1.58 or later, uv, Node.js, and Go. The application uses Python's standard library. Build dependencies and lint tools are pinned. See [build setup](RELEASING.md#toolchain).
+Use an Apple Silicon Mac with Apple's command-line tools, just 1.58 or later, uv, Node.js, and Go. Python dependencies, including the official Codex SDK, are pinned in `requirements.txt`; packaging dependencies are pinned in `requirements-build.txt`. See [build setup](RELEASING.md#toolchain).
 
 ```sh
 git clone https://github.com/nickcorin/carrie-on.git
@@ -18,7 +18,7 @@ Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix socket
 | Component | Responsibility |
 | --- | --- |
 | `resume_queue.py` | Queue persistence, enrollment anchors, quota eligibility, and uncertain-send recovery |
-| `codex_bridge.py` | Read-only app-server calls and desktop-owned continuation over IPC |
+| `codex_bridge.py` | Bounded Codex SDK reads and desktop-owned continuation over IPC |
 | `carrie_on.py` | CLI and scheduled worker |
 | `carrie_on_ui.py` | Loopback HTTP API for the native card |
 | `menubar/` | Native AppKit menu, chat picker, setup, and lifecycle |

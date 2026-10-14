@@ -51,7 +51,7 @@ test: setup
 
 # Exercise the documented minimum Python version.
 test-minimum:
-    uv run --no-project --python 3.10 python -m unittest discover -v
+    uv run --no-project --python 3.10 --with-requirements requirements.txt python -m unittest discover -v
 
 # Build, test, ad-hoc sign, package, and verify the app. Accepts builder flags.
 package *args: setup

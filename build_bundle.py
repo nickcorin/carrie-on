@@ -113,6 +113,13 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
         pyinstaller = package_distribution("pyinstaller")
         license_file = next(file for file in pyinstaller.files if str(file).endswith("licenses/COPYING.txt"))
         shutil.copy2(pyinstaller.locate_file(license_file), licenses / "PyInstaller.txt")
+        shutil.copy2(ROOT / "third_party/openai-codex-LICENSE", licenses / "OpenAI-Codex.txt")
+        for package in ("pydantic", "pydantic-core", "annotated-types", "typing-extensions",
+                        "typing-inspection", "packaging"):
+            distribution = package_distribution(package)
+            for file in distribution.files:
+                if ".dist-info/licenses/" in str(file):
+                    shutil.copy2(distribution.locate_file(file), licenses / f"{package}-{file.name}")
         metadata = {"version": release.version, "profile": profile.name,
                     "build_id": str(uuid.uuid4()), "architecture": architecture,
                     "minimum_macos": MINIMUM_MACOS, "built_on_macos": platform.mac_ver()[0],
