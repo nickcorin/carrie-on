@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Loopback-only dashboard using the same commands and queue as the worker."""
+"""Loopback API for the native menu card and worker."""
 
 import argparse
 import json
 import os
-import plistlib
 import shutil
 import subprocess
 import sys
@@ -22,7 +21,6 @@ from app_runtime import PROFILE, RUNTIME, VERSION
 from app_lifecycle import write_agent
 
 
-ROOT = Path(__file__).resolve().parent
 LABEL = PROFILE.labels[1]
 PORT = PROFILE.port
 
@@ -48,7 +46,7 @@ class Dashboard:
                               usage_observation=usage_observation)
 
     def read_usage(self):
-        """Keep validated observations from ordinary UI reads for enrollment only."""
+        """Keep validated observations from native card reads for enrollment only."""
         observed_at = time.time()
         observations = {}
         try:
@@ -119,7 +117,7 @@ class Dashboard:
             return result
         if route == "/api/usage":
             return self.read_usage()
-        raise ValueError("Unknown dashboard endpoint")
+        raise ValueError("Unknown local API endpoint")
 
     def desktop_connected(self):
         """Observe desktop availability without opening a chat or starting a turn."""
@@ -172,7 +170,7 @@ class Dashboard:
         if route in {"/api/pause", "/api/resume"}:
             return self.command(route.rsplit("/", 1)[1])
         if route not in {"/api/queue", "/api/remove", "/api/instruction"}:
-            raise ValueError("Unknown dashboard action")
+            raise ValueError("Unknown local API action")
         chat = body.get("chat")
         if not isinstance(chat, str):
             raise ValueError("Select a chat first")
@@ -250,13 +248,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.trusted_request(url.path.startswith("/api/")):
             self.respond(403, {"error": "Open Carrie On directly on this Mac"})
             return
-        assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
-                  "/style.css": ("style.css", "text/css"), "/app-icon.png": ("app-icon.png", "image/png")}
         try:
-            if url.path in assets:
-                name, mime = assets[url.path]
-                self.respond(200, (ROOT / "web" / name).read_bytes(), mime)
-            elif url.path in {"/api/health", "/api/connection", "/api/status", "/api/chats", "/api/chat-page", "/api/queued-chats", "/api/usage", "/api/menu"}:
+            if url.path in {"/api/health", "/api/connection", "/api/status", "/api/chats", "/api/chat-page", "/api/queued-chats", "/api/usage", "/api/menu"}:
                 self.respond(200, self.server.dashboard.read(url.path, parse_qs(url.query)))
             else:
                 self.respond(404, {"error": "Page not found"})
@@ -265,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if not self.trusted_request(api=True):
-            self.respond(403, {"error": "Request must come from the local dashboard"})
+            self.respond(403, {"error": "Request must come from the local app"})
             return
         try:
             if self.headers.get_content_type() != "application/json":
@@ -285,43 +278,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def install(args):
-    """Install the dashboard at login and an ordinary macOS app launcher."""
+    """Install the native card's local API service at login."""
     executable = shutil.which(args.codex)
     if not executable:
         raise ValueError("Codex CLI not found")
-    app = RUNTIME.app if RUNTIME.bundled else Path.home() / "Applications" / "Carrie On.app"
-    previous = app.with_name("Tokenmaxxer.app")
-    if not RUNTIME.bundled and not app.exists() and previous.exists():
-        info = plistlib.loads((previous / "Contents/Info.plist").read_bytes())
-        if info.get("CFBundleIdentifier") == LABEL:
-            previous.rename(app)
-    if not RUNTIME.bundled and app.exists():
-        info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
-        if info.get("CFBundleIdentifier") != LABEL:
-            raise ValueError("A different Carrie On.app already exists")
-    elif not RUNTIME.bundled:
-        app.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["/usr/bin/osacompile", "-o", str(app), "-e",
-                        f'open location "http://127.0.0.1:{args.port}"'], check=True)
-        info_path = app / "Contents" / "Info.plist"
-        info = plistlib.loads(info_path.read_bytes())
-        info["CFBundleIdentifier"] = LABEL
-        info["CFBundleName"] = "Carrie On"
-        info_path.write_bytes(plistlib.dumps(info))
-
-    # Refresh the launch URL on reinstall and sign after changing bundle files.
-    if not RUNTIME.bundled:
-        resources = app / "Contents/Resources"
-        shutil.copy2(RUNTIME.resources / "assets/CarrieOn.icns", resources / "CarrieOn.icns")
-        info_path = app / "Contents/Info.plist"
-        info = plistlib.loads(info_path.read_bytes())
-        info.update({"CFBundleName": "Carrie On", "CFBundleDisplayName": "Carrie On",
-                     "CFBundleIconFile": "CarrieOn.icns"})
-        info_path.write_bytes(plistlib.dumps(info))
-        subprocess.run(["/usr/bin/osacompile", "-o", str(app / "Contents/Resources/Scripts/main.scpt"),
-                        "-e", f'open location "http://127.0.0.1:{args.port}"'], check=True)
-        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(app)], check=True)
-
     logs = RUNTIME.logs
     logs.mkdir(mode=0o700, exist_ok=True)
     command = RUNTIME.command("dashboard") + ["--state", str(args.state.resolve()),
@@ -343,7 +303,7 @@ def install(args):
     if getattr(args, "start", True):
         subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}"], capture_output=True)
         subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], check=True)
-    return {"url": f"http://127.0.0.1:{args.port}", "app": str(app)}
+    return {"port": args.port}
 
 
 def main():
@@ -364,7 +324,7 @@ def main():
                 server.serve_forever()
         return 0
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
-        print(f"Carrie On dashboard: {error}", file=sys.stderr)
+        print(f"Carrie On local API: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

@@ -1,7 +1,0 @@
-# Dashboard
-
-Open Carrie On from Applications or visit `http://127.0.0.1:8766`. The dashboard uses the same cobalt C-arrow icon as the app. Search and select local chats, optionally set a continuation instruction, and queue the selection. Inspect reset deadlines and waiting/attention messages, remove enrollments, pause or resume the queue, and review recent history. Status refreshes every second while visible; Refresh also updates usage and chat search. Queued cards use an amber clock; sending cards use a blue spinner and subtle border pulse (static with Reduce Motion). Held or failed cards use a red warning icon. Hover the state icon for the schedule, sending status, or failure reason and recovery guidance. Closing the browser does not stop the worker.
-
-Install using `python3 tokenmaxxer_ui.py install`; see the [usage guide](../USAGE.md#use-the-interface) for repair and removal. The UI service is separate from the dispatch worker. Mutations use the locked queue through CLI command functions; status reads the atomic snapshot without waiting on the worker lock. The UI service never dispatches a turn itself.
-
-`python3 -m unittest -v` includes real HTTP tests against an isolated queue and synthetic Codex responses. These cover enrollment, duplicate rejection, prompt preservation, pause/resume, removal/history, malformed requests, cross-origin rejection, and static-file boundaries. Browser checks should use synthetic chat data; preserve the production queue.

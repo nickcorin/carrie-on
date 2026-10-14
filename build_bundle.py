@@ -57,7 +57,7 @@ def build(output, replace=False, profile=PROFILES["release"]):
             "--name", "tokenmaxxer", "--target-arch", architecture,
             "--osx-bundle-identifier", profile.identifier,
             "--distpath", str(work / "dist"), "--workpath", str(work / "build"),
-            "--specpath", str(work), "--add-data", f"{ROOT / 'web'}:web",
+            "--specpath", str(work),
             "--add-data", f"{ROOT / 'VERSION'}:.",
             "--add-data", f"{profile_file}:.", str(ROOT / "bundle_entry.py"),
         ], check=True, cwd=ROOT, env=environment)

@@ -1,6 +1,6 @@
 {
   "openapi": "3.1.0",
-  "info": {"title": "Tokenmaxxer queued-instruction edit", "version": "1.0.0", "description": "Contract for the queued-instruction action; other dashboard endpoints are outside this document."},
+  "info": {"title": "Tokenmaxxer queued-instruction edit", "version": "1.0.0", "description": "Contract for the queued-instruction action; other local API endpoints are outside this document."},
   "servers": [{"url": "http://127.0.0.1:8766"}],
   "paths": {
     "/api/instruction": {

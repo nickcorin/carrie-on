@@ -236,12 +236,11 @@ class DashboardBehavior(unittest.TestCase):
         self.assertEqual(self.request("/api/queue", raw="{")[0], 400)
         self.assertEqual(self.request("/api/queue", {"chat": CHAT_ID})[0], 200)
 
-    def test_static_allowlist_search_and_usage(self):
+    def test_native_api_has_no_browser_view(self):
         self.assertEqual(self.request("/resume-queue.json")[0], 404)
         self.assertEqual(self.request("/../resume-queue.json")[0], 404)
-        status, page = self.request("/")
-        self.assertEqual(status, 200)
-        self.assertIn(b"Choose chats", page)
+        for path in ("/", "/app.js", "/style.css", "/app-icon.png"):
+            self.assertEqual(self.request(path)[0], 404)
         self.assertEqual(self.request("/api/chats?search=absent")[1], [])
         self.assertEqual(self.request("/api/chats?search=quotes")[1][0]["id"], CHAT_ID)
         self.assertEqual(self.request("/api/usage")[1]["rateLimitsByLimitId"]["codex"]["primary"]["usedPercent"], 25)

@@ -26,7 +26,7 @@ alias check := ci
 alias build := package
 
 # Check Python, JavaScript, workflows, and release metadata.
-lint: lint-just lint-python lint-web lint-workflows release-check
+lint: lint-just lint-python lint-workflows release-check
 
 lint-just:
     just --fmt --check
@@ -37,9 +37,6 @@ secrets:
 
 lint-python:
     uvx --from ruff==0.17.0 ruff check --select F,E9 .
-
-lint-web:
-    node --check web/app.js
 
 lint-workflows:
     go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
@@ -108,7 +105,7 @@ publish: release-ready
     {{ python }} release.py --check-assets dist --check-draft --check-tag
     gh release edit {{ quote(tag) }} --draft=false
 
-# Regenerate app and dashboard icons from the master artwork.
+# Regenerate app and menu bar icons from the master artwork.
 icons:
     python3 build_icons.py
 

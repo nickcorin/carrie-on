@@ -90,8 +90,6 @@ def build_icons():
                                stdout=subprocess.DEVNULL)
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o",
                         str(ASSETS / "CarrieOn.icns")], check=True)
-    subprocess.run(["sips", "-z", "128", "128", str(ASSETS / "app-icon.png"), "--out",
-                    str(ROOT / "web/app-icon.png")], check=True, stdout=subprocess.DEVNULL)
 
 
 if __name__ == "__main__":

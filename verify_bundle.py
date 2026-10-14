@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -134,17 +135,20 @@ def verify(archive, profile=None):
                         logs.seek(0)
                         raise RuntimeError(logs.read().decode())
                     try:
-                        with urllib.request.urlopen(url, timeout=1) as response:
-                            assert b"Carrie On" in response.read()
+                        with urllib.request.urlopen(urllib.request.Request(
+                                url + "/api/health", headers={"X-Tokenmaxxer": "1"}), timeout=1) as response:
+                            assert json.load(response)["version"] == metadata["version"]
                         break
                     except OSError:
                         if attempt == 49:
                             raise
                         time.sleep(0.1)
-                for path, content in (("/app.js", b"fetch"), ("/style.css", b"body"),
-                                      ("/app-icon.png", b"\x89PNG")):
-                    with urllib.request.urlopen(url + path, timeout=2) as response:
-                        assert content in response.read(), path
+                try:
+                    urllib.request.urlopen(url, timeout=2)
+                except urllib.error.HTTPError as error:
+                    assert error.code == 404
+                else:
+                    raise AssertionError("Browser view is still available")
                 request = urllib.request.Request(url + "/api/health", headers={"X-Tokenmaxxer": "1"})
                 with urllib.request.urlopen(request, timeout=2) as response:
                     health = json.load(response)
@@ -159,7 +163,7 @@ def verify(archive, profile=None):
         assert not any((agents / f"{label}.plist").exists() for label in other.labels)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
         print("PASS: archive integrity, compatibility, isolated native setup, immutable app, persisted settings, "
-              "relocated runtime, queue, service paths, signatures, native self-tests, and dashboard assets")
+              "relocated runtime, queue, service paths, signatures, native self-tests, and local API")
 
 
 if __name__ == "__main__":

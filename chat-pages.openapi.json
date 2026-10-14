@@ -6,7 +6,7 @@
     "/api/chat-page": {
       "get": {
         "summary": "Read up to 25 recent unarchived local chat summaries",
-        "description": "Read-only, newest activity first. Pass next_cursor unchanged with the same search to continue; null means exhausted, including when a nonfinal page is empty. Omit cursor to restart after changing search or if a cursor is rejected. Results are live, so concurrent activity can move chats between pages; clients should deduplicate IDs. Requires a loopback Host, no foreign Origin or cross-site request, and the local-client header. Responses are not cached. Only search and cursor query parameters are accepted, each at most once. The existing /api/chats array response remains available to the dashboard and older clients.",
+        "description": "Read-only, newest activity first. Pass next_cursor unchanged with the same search to continue; null means exhausted, including when a nonfinal page is empty. Omit cursor to restart after changing search or if a cursor is rejected. Results are live, so concurrent activity can move chats between pages; clients should deduplicate IDs. Requires a loopback Host, no foreign Origin or cross-site request, and the local-client header. Responses are not cached. Only search and cursor query parameters are accepted, each at most once.",
         "parameters": [
           {"in": "header", "name": "X-Tokenmaxxer", "required": true, "schema": {"type": "string", "const": "1"}},
           {"in": "query", "name": "search", "description": "Title substring; omitted or empty means all titles.", "schema": {"type": "string", "maxLength": 500}},

@@ -87,7 +87,7 @@ class Runtime:
         return self.data / "resume-queue.json"
 
     def command(self, component):
-        """Return argv for the worker or dashboard, without requiring external Python when bundled."""
+        """Return argv for the worker or local API, without requiring external Python when bundled."""
         if self.bundled:
             return [str(self.executable)] + (["dashboard"] if component == "dashboard" else [])
         script = "tokenmaxxer_ui.py" if component == "dashboard" else "tokenmaxxer.py"
