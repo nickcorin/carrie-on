@@ -55,9 +55,11 @@ Signing is **ad-hoc**, not Developer ID signing or notarization. `just sign` mod
 
 ### Local development app
 
+Dev checks the saved local checkout's `HEAD` once on startup. If the installed commit is behind, the action reads **Update to <short hash>** and uses the local rebuild-and-restart flow. Otherwise it reads **Check for Updates**, which checks again on demand and reports when no update is available. It does not fetch or pull from GitHub. Rebuilding includes the checkout's uncommitted edits.
+
 Run `just dev` to build **Carrie On Dev** into `dist/dev/`. Install its app from
-the DMG into Applications alongside Carrie On. Use **Settings → Rebuild and
-Restart…** to rebuild the entire app from its saved checkout, including the
+the DMG into Applications alongside Carrie On. Use **Settings → Update to
+<short hash>** when an update is available to rebuild from its saved checkout, including the
 native interface, bundled Python runtime, and backend. The action runs the same
 `build_bundle.py --profile dev` pipeline with `--prepare-app`, streams build
 output, and stages a signed replacement only after tests and isolated bundle

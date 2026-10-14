@@ -159,6 +159,22 @@ class UpdateTests(unittest.TestCase):
 
 @unittest.skipUnless(platform.system() == "Darwin", "Atomic app replacement requires macOS")
 class NativeUpdateTests(unittest.TestCase):
+    def test_startup_discovery(self):
+        with tempfile.TemporaryDirectory(prefix="carrie-discovery-test-") as temporary:
+            root = Path(temporary)
+            main = root / "main.swift"
+            shutil.copyfile(ROOT / "tests/UpdateDiscovery.swift", main)
+            executable = root / "UpdateDiscoveryTests"
+            sources = [ROOT / "menubar" / name for name in
+                       ("AppUpdate.swift", "AppLifecycle.swift", "AppSetup.swift")]
+            result = subprocess.run(["/usr/bin/swiftc", "-module-cache-path", str(root / "cache"),
+                                     "-o", str(executable), *map(str, sources), str(main)],
+                                    capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Update discovery checks passed", result.stdout)
+
     def test_install_rollback_and_retry(self):
         with tempfile.TemporaryDirectory(prefix="carrie-update-test-") as temporary:
             root = Path(temporary)

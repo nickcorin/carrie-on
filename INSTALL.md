@@ -15,9 +15,11 @@ Setup runs as your login user, without administrator privileges. Settings, queue
 
 ## Updates
 
-**Carrie On Dev** uses **Rebuild and Restart…** to rebuild its entire local app instead of checking GitHub releases. See [development builds](RELEASING.md#local-development-app) for progress, failure handling, and initial installation. The release-update flow below applies to **Carrie On**.
+**Carrie On Dev** shows **Update to <short hash>** when behind its local checkout, or **Check for Updates** when current. Updating rebuilds its entire local app. See [development builds](RELEASING.md#local-development-app) for progress, failure handling, and initial installation. The release-update flow below applies to **Carrie On**.
 
-Open the menu bar popover, choose **Settings → Check for Updates…**, then **Install and Restart**. Carrie On checks the latest published stable GitHub release, downloads the version you accepted, and verifies its size, SHA-256 checksum, compatibility, bundle identity, and code signature before replacing the app. The settings action reports checking, downloading, and installation progress. Checks happen only when requested; no GitHub account or token is needed. **Not Now** leaves the app unchanged, and **Release Notes** opens that version's GitHub page.
+Carrie On quietly checks the latest published stable GitHub release on startup. When an update is available, the settings button reads **Update to <version>**. Open the menu bar popover, choose that action, then **Install and Restart**. Otherwise, choose **Settings → Check for Updates** to check manually. A failed startup check leaves manual checking available without interrupting you.
+
+Carrie On downloads the version you accepted and verifies its size, SHA-256 checksum, compatibility, bundle identity, and code signature before replacing the app. The settings action reports checking, downloading, and installation progress. No GitHub account or token is needed. **Not Now** leaves the update available for later, and **Release Notes** opens that version's GitHub page. Downloads and installation require your confirmation.
 
 The app restarts its worker and local API from the replacement bundle. It preserves the saved CLI path, port, interval, socket, Codex home, queue/history, and launch-at-login preference. Reopening the same build leaves healthy services running. Quit stops the app and its background services; reopening restarts them. The settings menu's **Launch at Login** setting controls automatic startup independently of manual launches. See [startup and quit](features/app-lifecycle.md).
 

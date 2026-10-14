@@ -527,6 +527,8 @@ struct ChatPickerView: View {
                         .font(.system(size: 18, weight: .semibold))
                     Spacer()
                     Menu {
+                        Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown")")
+                        Divider()
                         Toggle(isOn: Binding(
                             get: { lifecycle.launchAtLogin },
                             set: { lifecycle.setLaunchAtLogin($0) })) {

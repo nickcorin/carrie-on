@@ -46,6 +46,8 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
     release = Release.read(ROOT)
     check_source(ROOT)
     commit = source_commit(ROOT)
+    dev_commit = (subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+                  if profile.name == "dev" else None)
     architecture = platform.machine()
     name = f"{profile.app_name.replace(' ', '-')}-{release.version}-macos-{architecture}"
     archive = output / f"{name}.zip"
@@ -88,6 +90,7 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
         if profile.name == "dev":
             info["CarrieOnSourceRoot"] = str(ROOT)
             info["CarrieOnBuildPython"] = sys.executable
+            info["CarrieOnSourceCommit"] = dev_commit
         info_path.write_bytes(plistlib.dumps(info))
         resources = contents / "Resources"
         shutil.copy2(ROOT / "assets/CarrieOn.icns", resources / "CarrieOn.icns")

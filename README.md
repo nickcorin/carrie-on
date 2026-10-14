@@ -12,7 +12,7 @@ The bundle includes Python. You need an Apple Silicon Mac, the Codex desktop app
 
 See the [installation guide](INSTALL.md) for first launch, updates, troubleshooting, and removal.
 
-Release builds offer **Settings → Check for Updates…** in the menu bar, with verified downloads and **Install and Restart**. Updates preserve your queue and settings. **Carrie On Dev** offers **Rebuild and Restart…** to rebuild the entire app locally; see [development builds](RELEASING.md#local-development-app).
+Release builds check for updates on startup and show **Settings → Update to <version>** when a release is available. You can also check manually with **Check for Updates**. Verified downloads and **Install and Restart** preserve your queue and settings. See [updates](INSTALL.md#updates). **Carrie On Dev** offers **Update to <short hash>** when behind its local checkout and **Check for Updates** when current; see [development builds](RELEASING.md#local-development-app).
 
 ## How it works
 

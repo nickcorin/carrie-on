@@ -13,12 +13,25 @@ struct UpdateFailure: Decodable, LocalizedError {
     var errorDescription: String? { message }
 }
 
+enum AvailableUpdate {
+    case release(UpdateReply.Release)
+    case sourceCommit(String)
+
+    var title: String {
+        switch self {
+        case .release(let release): return "Update to \(release.version)"
+        case .sourceCommit(let commit): return "Update to \(commit.prefix(7))"
+        }
+    }
+}
+
 struct SourceBuild {
     enum Kind { case menu, bundledDev }
     let root: URL
     let python: URL
     let port: Int
     let kind: Kind
+    let commit: String?
 
     init(bundle: Bundle) throws {
         guard let root = bundle.object(forInfoDictionaryKey: "CarrieOnSourceRoot") as? String,
@@ -30,7 +43,32 @@ struct SourceBuild {
         self.root = URL(fileURLWithPath: root)
         self.python = URL(fileURLWithPath: python)
         self.port = port
+        commit = bundle.object(forInfoDictionaryKey: "CarrieOnSourceCommit") as? String
         kind = bundle.object(forInfoDictionaryKey: "CarrieOnBuildProfile") as? String == "dev" ? .bundledDev : .menu
+    }
+
+    func checkoutCommit() throws -> String? {
+        guard let commit, [40, 64].contains(commit.count), commit.allSatisfy({ $0.isHexDigit }) else { return nil }
+        let head = try git(["rev-parse", "HEAD"])
+        guard head.status == 0, [40, 64].contains(head.output.count),
+              head.output.allSatisfy({ $0.isHexDigit }) else { return nil }
+        guard head.output != commit else { return nil }
+        let ancestry = try git(["merge-base", "--is-ancestor", commit, head.output])
+        return ancestry.status == 0 ? head.output : nil
+    }
+
+    private func git(_ arguments: [String]) throws -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.currentDirectoryURL = root
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     func prepare(at app: URL, output: @Sendable (String) async -> Void) async throws {
@@ -139,6 +177,13 @@ final class BuildProgressWindow {
 }
 
 enum AppUpdate {
+    static func check() throws -> AvailableUpdate? {
+        if Bundle.main.object(forInfoDictionaryKey: "CarrieOnBuildProfile") as? String == "dev" {
+            return try SourceBuild(bundle: .main).checkoutCommit().map(AvailableUpdate.sourceCommit)
+        }
+        return try run(["check"]).release.map(AvailableUpdate.release)
+    }
+
     static func run(_ arguments: [String]) throws -> UpdateReply {
         let process = Process()
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/carrie_on")

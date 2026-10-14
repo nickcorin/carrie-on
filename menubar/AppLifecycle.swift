@@ -78,7 +78,9 @@ enum LifecycleServices {
 
     /// Start or stop only Carrie On's worker and interface. The app exits itself.
     static func setRunning(_ running: Bool, files: LifecycleFiles,
-                           run: ([String]) throws -> (Int32, String) = launchctl) throws {
+                           run: ([String]) throws -> (Int32, String) = launchctl,
+                           attempts: Int = 100,
+                           pause: () -> Void = { Thread.sleep(forTimeInterval: 0.1) }) throws {
         let domain = "gui/\(getuid())"
         for label in LifecycleFiles.labels.prefix(2) {
             let target = "\(domain)/\(label)"
@@ -86,10 +88,16 @@ enum LifecycleServices {
             if loaded == running { continue }
             let arguments = running ? ["bootstrap", domain, files.savedAgent(label).path] : ["bootout", target]
             let result = try run(arguments)
-            let nowLoaded = try run(["print", target]).0 == 0
+            var nowLoaded = try run(["print", target]).0 == 0
+            // launchd acknowledges bootout before the exiting service disappears.
+            for _ in 1..<max(1, attempts) {
+                if nowLoaded == running { break }
+                pause()
+                nowLoaded = try run(["print", target]).0 == 0
+            }
             guard nowLoaded == running else {
-                throw NSError(domain: "Carrie On", code: Int(result.0), userInfo: [NSLocalizedDescriptionKey:
-                    "Could not \(running ? "start" : "stop") \(label). \(result.1)"])
+                throw NSError(domain: "Carrie On", code: result.0 == 0 ? Int(ETIMEDOUT) : Int(result.0), userInfo: [NSLocalizedDescriptionKey:
+                    "Timed out waiting to \(running ? "start" : "stop") \(label). \(result.1)"])
             }
         }
     }
@@ -133,6 +141,32 @@ func lifecycleSelfTest() throws {
     try LifecycleServices.setRunning(false, files: files, run: run)
     try LifecycleServices.setRunning(false, files: files, run: run)
     guard loaded.isEmpty else { fatalError("Quit left background services running") }
+    var remainingChecks = 0
+    var delayedLoaded = true
+    var stops = 0
+    let delayedStop: ([String]) throws -> (Int32, String) = { args in
+        switch args[0] {
+        case "bootout":
+            stops += 1
+            remainingChecks = 3
+            return (0, "")
+        case "print":
+            if remainingChecks > 0 {
+                remainingChecks -= 1
+                if remainingChecks == 0 { delayedLoaded = false }
+            }
+            return (delayedLoaded ? 0 : 113, "")
+        default: fatalError("Unexpected shutdown command")
+        }
+    }
+    try LifecycleServices.setRunning(false, files: files, run: delayedStop, attempts: 5, pause: {})
+    guard !delayedLoaded, stops == 1 else { fatalError("Asynchronous shutdown was not awaited") }
+    do {
+        try LifecycleServices.setRunning(false, files: files, run: { _ in (0, "") }, attempts: 3, pause: {})
+        fatalError("A service that never stopped was accepted")
+    } catch let error as NSError {
+        guard error.code == Int(ETIMEDOUT) else { throw error }
+    }
     guard try files.reconcile(launchAtLogin: true) else { fatalError("Startup could not be enabled") }
     for label in LifecycleFiles.labels {
         guard FileManager.default.fileExists(atPath: files.loginAgent(label).path)
@@ -146,10 +180,25 @@ final class AppLifecycle: ObservableObject {
     @Published private(set) var busy = false
     @Published private(set) var updateStatus: String?
     @Published private(set) var ready = false
+    @Published private(set) var availableUpdate: AvailableUpdate?
+    private var updateCheck: Task<AvailableUpdate?, Error>?
+    private let isStandalone: Bool
+    private let isDevelopment: Bool
+    private let checkUpdate: @Sendable () throws -> AvailableUpdate?
     private var rebuildWindow: BuildProgressWindow?
 
+    init(isStandalone: Bool = AppSetup.isStandalone,
+         isDevelopment: Bool = AppSetup.isDevelopment,
+         checkUpdate: @escaping @Sendable () throws -> AvailableUpdate? = { try AppUpdate.check() }) {
+        self.isStandalone = isStandalone
+        self.isDevelopment = isDevelopment
+        self.checkUpdate = checkUpdate
+    }
+
     var updateActionTitle: String {
-        AppSetup.isStandalone && !AppSetup.isDevelopment ? "Check for Updates" : "Rebuild and Restart…"
+        if let update = availableUpdate { return update.title }
+        guard isStandalone else { return "Rebuild and Restart…" }
+        return "Check for Updates"
     }
 
     func start() async {
@@ -204,10 +253,30 @@ final class AppLifecycle: ObservableObject {
 }
 
 extension AppLifecycle {
+    func checkForUpdatesAtStartup() async {
+        guard isStandalone else { return }
+        // Startup discovery is silent and does not block other lifecycle actions.
+        _ = try? await findAvailableUpdate()
+    }
+
+    private func findAvailableUpdate() async throws -> AvailableUpdate? {
+        if let check = updateCheck { return try await check.value }
+        let check = Task.detached { [checkUpdate] in try checkUpdate() }
+        updateCheck = check
+        defer { updateCheck = nil }
+        let update = try await check.value
+        availableUpdate = update
+        return update
+    }
+
     func checkForUpdates() {
         guard !busy, ready else { return }
-        if !AppSetup.isStandalone || AppSetup.isDevelopment {
+        if !isStandalone {
             rebuildAndRestart()
+            return
+        }
+        if isDevelopment {
+            checkDevelopmentUpdates()
             return
         }
         busy = true
@@ -216,9 +285,12 @@ extension AppLifecycle {
             do {
                 let metadataURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/release.json")
                 let originalMetadata = try Data(contentsOf: metadataURL)
-                updateStatus = "Checking for Updates…"
-                let reply = try await Task.detached { try AppUpdate.run(["check"]) }.value
-                guard let release = reply.release else {
+                var update = availableUpdate
+                if update == nil {
+                    updateStatus = "Checking for Updates…"
+                    update = try await findAvailableUpdate()
+                }
+                guard case .release(let release) = update else {
                     showUpdate(message: "No update available", detail: "You’re running Carrie On \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""). No newer published stable release is available.")
                     return
                 }
@@ -272,6 +344,27 @@ extension AppLifecycle {
                 }
                 NSApp.terminate(nil)
             } catch { showUpdate(message: "Carrie On couldn’t update", detail: error.localizedDescription) }
+        }
+    }
+
+    private func checkDevelopmentUpdates() {
+        busy = true
+        updateStatus = "Checking for Updates…"
+        Task {
+            do {
+                let update = try await findAvailableUpdate()
+                busy = false
+                updateStatus = nil
+                if case .sourceCommit = update {
+                    rebuildAndRestart()
+                } else {
+                    showUpdate(message: "No update available", detail: "Carrie On Dev is not behind the local checkout’s HEAD.")
+                }
+            } catch {
+                busy = false
+                updateStatus = nil
+                showUpdate(message: "Carrie On couldn’t check for updates", detail: error.localizedDescription)
+            }
         }
     }
 

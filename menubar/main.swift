@@ -154,6 +154,8 @@ final class MenuApp: NSObject, NSApplicationDelegate {
         Task {
             await lifecycle.start()
             refresh()
+            await lifecycle.checkForUpdatesAtStartup()
+            writeDiagnostics()
         }
         timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -216,6 +218,7 @@ final class MenuApp: NSObject, NSApplicationDelegate {
             "queue_available": snapshot?.queue != nil,
             "refreshing": refreshing,
             "connection": String(describing: picker.model.connection),
+            "update_action": lifecycle.updateActionTitle,
             "updated_at": picker.model.lastUpdatedAt?.timeIntervalSince1970 as Any? ?? NSNull(),
             "rendered_at": Date().timeIntervalSince1970
         ]
