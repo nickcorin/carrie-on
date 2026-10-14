@@ -15,11 +15,11 @@ from urllib.parse import urlparse
 
 from codex_bridge import AppServer, Desktop
 from resume_queue import Chat, Entry, Usage, check_queue, locked_queue
-from app_runtime import RUNTIME, VERSION
+from app_runtime import PROFILE, RUNTIME, VERSION
 from app_lifecycle import remove_agent, write_agent
 
 
-LABEL = "com.nickcorin.tokenmaxxer"
+LABEL = PROFILE.labels[0]
 DEFAULT_PROMPT = "Continue the unfinished work already requested in this chat."
 
 

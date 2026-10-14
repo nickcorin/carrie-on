@@ -4,9 +4,12 @@ import Darwin
 import Foundation
 
 struct LifecycleFiles {
-    static let labels = ["com.nickcorin.tokenmaxxer", "com.nickcorin.tokenmaxxer.ui", "com.nickcorin.tokenmaxxer.menu"]
+    static let labels = Bundle.main.object(forInfoDictionaryKey: "CarrieOnServiceLabels") as? [String]
+        ?? ["com.nickcorin.tokenmaxxer", "com.nickcorin.tokenmaxxer.ui", "com.nickcorin.tokenmaxxer.menu"]
+    static let dataDirectory = Bundle.main.object(forInfoDictionaryKey: "CarrieOnDataDirectory") as? String ?? "Tokenmaxxer"
     let home: URL
-    private var root: URL { home.appendingPathComponent("Library/Application Support/Tokenmaxxer/Lifecycle") }
+    var data: URL { home.appendingPathComponent("Library/Application Support/\(Self.dataDirectory)") }
+    private var root: URL { data.appendingPathComponent("Lifecycle") }
     private var preferences: URL { root.appendingPathComponent("preferences.plist") }
 
     func savedAgent(_ label: String) -> URL { root.appendingPathComponent("Agents/\(label).plist") }
@@ -236,8 +239,7 @@ extension AppLifecycle {
                 do {
                     try await Task.detached {
                         let files = LifecycleFiles(home: FileManager.default.homeDirectoryForCurrentUser)
-                        let lockURL = FileManager.default.homeDirectoryForCurrentUser
-                            .appendingPathComponent("Library/Application Support/Tokenmaxxer/install.lock")
+                        let lockURL = files.data.appendingPathComponent("install.lock")
                         let lock = Darwin.open(lockURL.path, O_CREAT | O_RDWR, 0o600)
                         guard lock >= 0 else { throw UpdateFailure(message: "Could not lock the installation. Reopen Carrie On and retry.") }
                         defer { Darwin.close(lock) }

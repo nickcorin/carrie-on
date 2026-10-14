@@ -75,6 +75,7 @@ def check_assets(directory, release, commit):
     if not isinstance(metadata, dict):
         raise ValueError("Invalid release manifest; rebuild with just ci")
     if (not commit or metadata.get("source_commit") != commit
+            or metadata.get("profile", "release") != "release"
             or metadata.get("version") != release.version
             or metadata.get("architecture") != "arm64"
             or metadata.get("archive") != archive.name):

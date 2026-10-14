@@ -14,14 +14,14 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from app_runtime import APP_IDENTIFIER, RUNTIME, VERSION
+from app_runtime import APP_IDENTIFIER, PROFILE, RUNTIME, VERSION
 from app_lifecycle import agent_path, remove_agent, write_agent
 from macos_compatibility import version_tuple
 import tokenmaxxer
 import tokenmaxxer_ui
 
 
-MENU_LABEL = "com.nickcorin.tokenmaxxer.menu"
+MENU_LABEL = PROFILE.labels[2]
 LABELS = (tokenmaxxer.LABEL, tokenmaxxer_ui.LABEL, MENU_LABEL)
 
 
@@ -34,7 +34,7 @@ class SetupError(ValueError):
 @dataclass(frozen=True)
 class Settings:
     codex: str
-    port: int = 8766
+    port: int = PROFILE.port
     interval: int = 60
     socket: str | None = None
     codex_home: str | None = None
@@ -51,7 +51,7 @@ class Settings:
         values = {name: getattr(args, name, None) if getattr(args, name, None) is not None else saved.get(name)
                   for name in ("codex", "port", "interval", "socket", "codex_home")}
         values["codex"] = resolve_codex(values["codex"])
-        values["port"] = values["port"] if values["port"] is not None else 8766
+        values["port"] = values["port"] if values["port"] is not None else PROFILE.port
         values["interval"] = values["interval"] if values["interval"] is not None else 60
         if values["codex_home"] is None and "codex_home" not in saved:
             values["codex_home"] = os.environ.get("CODEX_HOME")

@@ -16,7 +16,7 @@ import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 
-from app_runtime import APP_BUNDLE_NAME, APP_IDENTIFIER, RUNTIME, VERSION
+from app_runtime import APP_BUNDLE_NAME, APP_IDENTIFIER, PROFILE, RUNTIME, VERSION
 from macos_compatibility import version_tuple
 
 
@@ -107,6 +107,8 @@ class UpdateRelease:
 
 def check_update(version=None):
     """Check latest, or revalidate the exact version the user accepted before download."""
+    if PROFILE.name == "dev":
+        raise ValueError("Carrie On Dev is updated by rebuilding locally. GitHub releases update Carrie On.")
     if version is not None:
         release_version(version)
     try:

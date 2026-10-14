@@ -185,8 +185,9 @@ final class MenuApp: NSObject, NSApplicationDelegate {
             usage.nextReset(after: now).map { "Next reset \($0.formatted(date: .abbreviated, time: .shortened))" }
                 ?? "Reset due; checking automatically"
         } ?? "Reset unavailable"
-        statusItem.button?.toolTip = "Carrie On · \(queueText) · \(resetText) · \(usageText)"
-        statusItem.button?.setAccessibilityLabel("Carrie On, \(queueText), \(resetText)")
+        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Carrie On"
+        statusItem.button?.toolTip = "\(appName) · \(queueText) · \(resetText) · \(usageText)"
+        statusItem.button?.setAccessibilityLabel("\(appName), \(queueText), \(resetText)")
         picker.model.summary = snapshot
         writeDiagnostics()
     }

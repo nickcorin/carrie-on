@@ -56,6 +56,10 @@ test-minimum:
 package *args: setup
     {{ python }} build_bundle.py "$@"
 
+# Build the same optimized app in an isolated development namespace.
+dev: setup
+    {{ python }} build_bundle.py --profile dev --replace --output dist/dev
+
 # Sign an existing app; repackage afterwards because signing changes its bytes.
 sign app: setup
     {{ python }} build_bundle.py --sign-app {{ quote(app) }}

@@ -7,13 +7,14 @@ import fcntl
 import os
 import plistlib
 from pathlib import Path
+from app_runtime import PROFILE
 
 
-LABELS = ("com.nickcorin.tokenmaxxer", "com.nickcorin.tokenmaxxer.ui", "com.nickcorin.tokenmaxxer.menu")
+LABELS = PROFILE.labels
 
 
 def directory():
-    return Path.home() / "Library/Application Support/Tokenmaxxer/Lifecycle"
+    return PROFILE.data_path(Path.home()) / "Lifecycle"
 
 
 def launch_at_login():

@@ -51,6 +51,40 @@ Signing is **ad-hoc**, not Developer ID signing or notarization. `just sign` mod
 
 ## Create a release
 
+### Local development app
+
+Run `just dev` to build **Carrie On Dev** into `dist/dev/`. Install its app from
+the DMG into Applications alongside Carrie On. To update it, quit Carrie On Dev,
+build again, replace only Carrie On Dev.app, and reopen it. This preserves its
+own queue and settings. No GitHub release or push is needed.
+
+Both profiles use the same optimized native executable, bundled backend, setup
+flow, polling interval, dispatch rules, and acceptance checks. The signed build
+profile changes installation resources, not feature behavior:
+
+| Resource | Release | Development |
+| --- | --- | --- |
+| App | Carrie On.app | Carrie On Dev.app |
+| Application Support folder | Tokenmaxxer | Carrie On Dev |
+| Service prefix | com.nickcorin.tokenmaxxer | com.nickcorin.tokenmaxxer.dev |
+| Default local port | 8766 | 8767 |
+| Updates | Versioned GitHub releases | Local rebuilds |
+
+Queues, connection settings, login preferences, logs, and installation locks are
+independent. Dev starts with an empty queue and the same automatic processing
+behavior as release. It does not copy production data. Both apps can connect to
+the same live Codex account; use different chats when testing, or quit the other
+app before enrolling the same chat. Separate application data does not isolate
+the external Codex chats or account quota.
+
+The release commands still build the release profile and reject development
+artifacts. Publish versioned GitHub prereleases for beta testing, then mark the
+validated release stable; there is no rolling beta feed. The existing in-app
+updater offers stable releases only, so beta installation is manual. Dev never
+installs a production update over itself.
+
+### Publish a versioned release
+
 Update `VERSION` and add exactly one nonempty `## MAJOR.MINOR.PATCH` section to `CHANGELOG.md`. Commit all source changes with signed Conventional Commits, then push the reviewed commits to `master`. A new published build always gets a new version.
 
 ```sh

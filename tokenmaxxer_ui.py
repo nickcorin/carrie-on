@@ -18,13 +18,13 @@ from urllib.parse import parse_qs, urlsplit
 
 import tokenmaxxer
 from resume_queue import Usage, UsageObservation, locked_queue
-from app_runtime import RUNTIME, VERSION
+from app_runtime import PROFILE, RUNTIME, VERSION
 from app_lifecycle import write_agent
 
 
 ROOT = Path(__file__).resolve().parent
-LABEL = "com.nickcorin.tokenmaxxer.ui"
-PORT = 8766
+LABEL = PROFILE.labels[1]
+PORT = PROFILE.port
 
 
 class Dashboard:

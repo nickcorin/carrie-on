@@ -6,7 +6,6 @@ import tempfile
 import time
 from pathlib import Path
 
-from app_runtime import APP_BUNDLE_NAME, APP_NAME
 from verify_bundle import app_contents
 
 
@@ -25,12 +24,12 @@ def build_disk_image(app, image, version):
                         str(ROOT / "assets/DMGBackground.swift"), "-o", str(renderer)], check=True)
         subprocess.run([str(renderer), str(background), "1"], check=True)
         subprocess.run([str(renderer), str(work / "background@2x.png"), "2"], check=True)
-        dmgbuild.build_dmg(str(image), f"{APP_NAME} {version}", settings={
+        dmgbuild.build_dmg(str(image), f"{app.stem} {version}", settings={
             "format": "UDZO", "filesystem": "HFS+",
             "files": [str(app)], "symlinks": {"Applications": "/Applications"},
             "background": str(background), "icon": str(app / "Contents/Resources/CarrieOn.icns"),
             "window_rect": ((200, 160), (640, 440)), "icon_size": 112,
-            "text_size": 14, "icon_locations": {APP_BUNDLE_NAME: (160, 170), "Applications": (480, 170)},
+            "text_size": 14, "icon_locations": {app.name: (160, 170), "Applications": (480, 170)},
             "default_view": "icon-view", "include_icon_view_settings": True,
             "include_list_view_settings": False, "show_status_bar": False,
             "show_tab_view": False, "show_toolbar": False, "show_pathbar": False,
@@ -54,12 +53,12 @@ def verify_disk_image(image, original):
                         "-mountpoint", str(mount)], check=True, capture_output=True)
         try:
             visible = {path.name for path in mount.iterdir() if not path.name.startswith(".")}
-            if visible != {APP_BUNDLE_NAME, "Applications"}:
+            if visible != {original.name, "Applications"}:
                 raise ValueError("The disk image must contain only the app and Applications shortcut")
             if not (mount / "Applications").is_symlink() or os.readlink(mount / "Applications") != "/Applications":
                 raise ValueError("The disk image Applications shortcut has an invalid target")
-            copied = root / "Copied" / APP_BUNDLE_NAME
-            subprocess.run(["/usr/bin/ditto", str(mount / APP_BUNDLE_NAME), str(copied)], check=True)
+            copied = root / "Copied" / original.name
+            subprocess.run(["/usr/bin/ditto", str(mount / original.name), str(copied)], check=True)
             if app_contents(copied) != app_contents(original):
                 raise ValueError("The disk image app differs from the updater app")
             subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(copied)],

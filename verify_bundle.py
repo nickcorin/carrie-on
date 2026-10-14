@@ -17,7 +17,7 @@ import zipfile
 from pathlib import Path
 
 from macos_compatibility import audit
-from app_runtime import APP_BUNDLE_NAME, APP_NAME
+from app_runtime import PROFILES
 
 
 def app_contents(app):
@@ -27,13 +27,18 @@ def app_contents(app):
             for path in app.rglob("*") if path.is_symlink() or path.is_file()}
 
 
-def verify(archive):
+def verify(archive, profile=None):
     expected = archive.with_suffix(".zip.sha256").read_text().split()[0]
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected, "Archive checksum mismatch"
     with zipfile.ZipFile(archive) as bundle:
+        if profile is None:
+            profiles = [candidate for candidate in PROFILES.values()
+                        if f"{candidate.bundle_name}/Contents/Info.plist" in bundle.namelist()]
+            assert len(profiles) == 1, "Archive must contain exactly one supported app"
+            profile = profiles[0]
         for name in bundle.namelist():
             parts = Path(name).parts
-            assert parts[0] in {APP_BUNDLE_NAME, "__MACOSX"}, name
+            assert parts[0] in {profile.bundle_name, "__MACOSX"}, name
             assert not {".runtime", ".codex", "resume-queue.json", "resume-queue.lock"}.intersection(parts), name
             assert not name.startswith("/") and ".." not in parts, name
     with tempfile.TemporaryDirectory(prefix="tokenmaxxer release check ") as temporary:
@@ -41,12 +46,16 @@ def verify(archive):
         home = root / "Fresh Home"
         home.mkdir()
         subprocess.run(["/usr/bin/ditto", "-x", "-k", str(archive), str(root / "Extracted")], check=True)
-        extracted = root / "Extracted" / APP_BUNDLE_NAME
-        app = home / "Applications" / APP_BUNDLE_NAME
+        extracted = root / "Extracted" / profile.bundle_name
+        app = home / "Applications" / profile.bundle_name
         subprocess.run(["/usr/bin/ditto", str(extracted), str(app)], check=True)
         metadata = json.loads((app / "Contents/Resources/release.json").read_text())
         info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-        assert info["CFBundleDisplayName"] == APP_NAME
+        assert info["CFBundleDisplayName"] == profile.app_name
+        assert info["CFBundleIdentifier"] == profile.identifier
+        assert info["CarrieOnServiceLabels"] == list(profile.labels)
+        assert info["CarrieOnDataDirectory"] == profile.data_directory
+        assert metadata["profile"] == profile.name
         assert (app / "Contents/Resources" / info["CFBundleIconFile"]).read_bytes()[:4] == b"icns"
         assert audit(app, metadata["minimum_macos"]) == metadata["binary_audit"]
         documentation = app / "Contents/Resources/Documentation"
@@ -95,7 +104,7 @@ def verify(archive):
         failure = json.loads(run(extracted / "Contents/MacOS/tokenmaxxer", "setup", "--json", success=False))
         assert failure["code"] == "move_app"
         extracted.rename(root / "Moved Transfer.app")
-        data = home / "Library/Application Support/Tokenmaxxer"
+        data = profile.data_path(home)
         assert json.loads(run(cli, "--json", "list"))["entries"] == []
         run(cli, "pause")
         assert json.loads(run(cli, "--json", "list"))["paused"] is True
@@ -103,18 +112,18 @@ def verify(archive):
         settings = json.loads((data / "settings.json").read_text())
         assert settings["codex"] == str(fake_codex) and settings["port"] == port
         agents = home / "Library/LaunchAgents"
-        for label in ("com.nickcorin.tokenmaxxer", "com.nickcorin.tokenmaxxer.ui", "com.nickcorin.tokenmaxxer.menu"):
+        for label in profile.labels:
             config = plistlib.loads((agents / f"{label}.plist").read_bytes())
             assert Path(config["ProgramArguments"][0]).is_file(), config
             assert str(root / "Extracted") not in json.dumps(config), config
             assert config["StandardErrorPath"].startswith(str(data)), config
-        worker = plistlib.loads((agents / "com.nickcorin.tokenmaxxer.plist").read_bytes())
+        worker = plistlib.loads((agents / f"{profile.labels[0]}.plist").read_bytes())
         assert worker["ProgramArguments"] == [str(cli), "--state", str(data / "resume-queue.json"),
                                                "--codex", str(fake_codex), "tick"]
-        ui = plistlib.loads((agents / "com.nickcorin.tokenmaxxer.ui.plist").read_bytes())
+        ui = plistlib.loads((agents / f"{profile.labels[1]}.plist").read_bytes())
         assert ui["ProgramArguments"] == [str(cli), "dashboard", "--state", str(data / "resume-queue.json"),
                                            "--codex", str(fake_codex), "--port", str(port), "serve"]
-        menu = plistlib.loads((agents / "com.nickcorin.tokenmaxxer.menu.plist").read_bytes())
+        menu = plistlib.loads((agents / f"{profile.labels[2]}.plist").read_bytes())
         assert menu["ProgramArguments"] == ["/usr/bin/open", "-g", str(app), "--args", "--background"]
         with tempfile.TemporaryFile() as logs:
             server = subprocess.Popen(ui["ProgramArguments"], cwd=root, env=environment, stdout=logs, stderr=logs)
@@ -145,6 +154,9 @@ def verify(archive):
                 server.wait(timeout=10)
         assert (data / "resume-queue.json").read_bytes() == queue_before
         assert app_contents(app) == before, "Setup or runtime modified the signed app"
+        other = PROFILES["release" if profile.name == "dev" else "dev"]
+        assert not other.data_path(home).exists(), "Setup wrote to the other app's data"
+        assert not any((agents / f"{label}.plist").exists() for label in other.labels)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
         print("PASS: archive integrity, compatibility, isolated native setup, immutable app, persisted settings, "
               "relocated runtime, queue, service paths, signatures, native self-tests, and dashboard assets")

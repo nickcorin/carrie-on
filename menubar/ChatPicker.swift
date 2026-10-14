@@ -490,7 +490,8 @@ struct ChatPickerView: View {
                     Image(nsImage: Brand.trayIcon).renderingMode(.template).resizable()
                         .frame(width: 22, height: 22).foregroundStyle(Color.accentColor)
                         .accessibilityHidden(true)
-                    Text("Carrie On").font(.system(size: 18, weight: .semibold))
+                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Carrie On")
+                        .font(.system(size: 18, weight: .semibold))
                     Spacer()
                     Menu {
                         Toggle("Launch at Login", isOn: Binding(

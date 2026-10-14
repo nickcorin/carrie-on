@@ -16,7 +16,7 @@ import uuid
 from importlib.metadata import distribution as package_distribution
 from pathlib import Path
 
-from app_runtime import APP_BUNDLE_NAME, APP_IDENTIFIER, APP_NAME, MINIMUM_MACOS
+from app_runtime import MINIMUM_MACOS, PROFILES
 from install_menubar import build_menu
 from macos_compatibility import audit
 from verify_bundle import verify
@@ -34,13 +34,13 @@ def sign_app(app):
     subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
 
 
-def build(output, replace=False):
+def build(output, replace=False, profile=PROFILES["release"]):
     if sys.platform != "darwin":
         raise ValueError("Build on a Mac with Python 3.10+ and Apple's Swift command-line tools")
     release = Release.read(ROOT)
     commit = source_commit(ROOT)
     architecture = platform.machine()
-    name = f"Carrie-On-{release.version}-macos-{architecture}"
+    name = f"{profile.app_name.replace(' ', '-')}-{release.version}-macos-{architecture}"
     archive = output / f"{name}.zip"
     suffixes = (".zip", ".zip.sha256", ".json", ".dmg", ".dmg.sha256")
     if not replace and any((output / f"{name}{suffix}").exists() for suffix in suffixes):
@@ -48,25 +48,31 @@ def build(output, replace=False):
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-v"], cwd=ROOT, check=True)
     with tempfile.TemporaryDirectory(prefix="tokenmaxxer-build-") as temporary:
         work = Path(temporary)
+        profile_file = work / "build-profile.json"
+        profile_file.write_text(json.dumps({"profile": profile.name}) + "\n")
         menu = build_menu(work / "menu")
         environment = dict(os.environ, PYINSTALLER_CONFIG_DIR=str(work / "cache"))
         subprocess.run([
             sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--windowed",
             "--name", "tokenmaxxer", "--target-arch", architecture,
-            "--osx-bundle-identifier", APP_IDENTIFIER,
+            "--osx-bundle-identifier", profile.identifier,
             "--distpath", str(work / "dist"), "--workpath", str(work / "build"),
             "--specpath", str(work), "--add-data", f"{ROOT / 'web'}:web",
-            "--add-data", f"{ROOT / 'VERSION'}:.", str(ROOT / "bundle_entry.py"),
+            "--add-data", f"{ROOT / 'VERSION'}:.",
+            "--add-data", f"{profile_file}:.", str(ROOT / "bundle_entry.py"),
         ], check=True, cwd=ROOT, env=environment)
-        app = work / APP_BUNDLE_NAME
+        app = work / profile.bundle_name
         shutil.move(str(work / "dist/tokenmaxxer.app"), app)
         contents = app / "Contents"
         native = contents / "MacOS/TokenmaxxerMenu"
         shutil.copy2(menu, native)
         info_path = contents / "Info.plist"
         info = plistlib.loads(info_path.read_bytes())
-        info.update({"CFBundleIdentifier": APP_IDENTIFIER, "CFBundleExecutable": "TokenmaxxerMenu",
-                     "CFBundleName": APP_NAME, "CFBundleDisplayName": APP_NAME,
+        info.update({"CFBundleIdentifier": profile.identifier, "CFBundleExecutable": "TokenmaxxerMenu",
+                     "CFBundleName": profile.app_name, "CFBundleDisplayName": profile.app_name,
+                     "CarrieOnDataDirectory": profile.data_directory,
+                     "CarrieOnServiceLabels": list(profile.labels),
+                     "TokenmaxxerPort": str(profile.port),
                      "CFBundleIconFile": "CarrieOn.icns",
                      "CFBundleVersion": release.version, "CFBundleShortVersionString": release.version,
                      "LSUIElement": True, "LSMinimumSystemVersion": MINIMUM_MACOS,
@@ -90,7 +96,8 @@ def build(output, replace=False):
         pyinstaller = package_distribution("pyinstaller")
         license_file = next(file for file in pyinstaller.files if str(file).endswith("licenses/COPYING.txt"))
         shutil.copy2(pyinstaller.locate_file(license_file), licenses / "PyInstaller.txt")
-        metadata = {"version": release.version, "build_id": str(uuid.uuid4()), "architecture": architecture,
+        metadata = {"version": release.version, "profile": profile.name,
+                    "build_id": str(uuid.uuid4()), "architecture": architecture,
                     "minimum_macos": MINIMUM_MACOS, "built_on_macos": platform.mac_ver()[0],
                     "python": platform.python_version(), "signing": "ad-hoc", "source_commit": commit,
                     "binary_audit": audit(app, MINIMUM_MACOS)}
@@ -100,7 +107,7 @@ def build(output, replace=False):
         subprocess.run(["/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(staged)], check=True)
         digest = hashlib.sha256(staged.read_bytes()).hexdigest()
         staged.with_suffix(".zip.sha256").write_text(f"{digest}  {archive.name}\n")
-        verify(staged)
+        verify(staged, profile)
         image = work / f"{name}.dmg"
         build_disk_image(app, image, release.version)
         image_digest = hashlib.sha256(image.read_bytes()).hexdigest()
@@ -121,13 +128,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "dist", help="Release directory")
     parser.add_argument("--replace", action="store_true", help="Overwrite this version's local release artifacts")
+    parser.add_argument("--profile", choices=PROFILES, default="release", help="Isolated installation namespace")
     parser.add_argument("--sign-app", type=Path, metavar="APP", help="Ad-hoc sign and verify an existing app instead of building")
     args = parser.parse_args()
     try:
         if args.sign_app:
             sign_app(args.sign_app.resolve())
         else:
-            build(args.output.resolve(), args.replace)
+            build(args.output.resolve(), args.replace, PROFILES[args.profile])
         return 0
     except (OSError, ValueError, RuntimeError, AssertionError, subprocess.SubprocessError) as error:
         print(f"Carrie On build: {error}", file=sys.stderr)

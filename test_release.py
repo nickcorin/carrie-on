@@ -86,6 +86,12 @@ class ReleaseArtifactTests(unittest.TestCase):
             with self.subTest(commit=commit), self.assertRaisesRegex(ValueError, "clean commit"):
                 check_assets(self.root, self.release, commit)
 
+    def test_dev_artifacts_cannot_be_published_as_release(self):
+        self.metadata["profile"] = "dev"
+        self.manifest.write_text(json.dumps(self.metadata))
+        with self.assertRaisesRegex(ValueError, "clean commit"):
+            check_assets(self.root, self.release, "abc123")
+
     def test_corrupted_archive_is_rejected(self):
         self.archive.write_bytes(b"tampered")
         with self.assertRaisesRegex(ValueError, "checksum or size"):

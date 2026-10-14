@@ -9,6 +9,7 @@
 - Build versioned releases with automated acceptance checks, checksums, and release manifests.
 - Offer a DMG with an illustrated drag-to-Applications window and the same signed app as the updater ZIP.
 - Remove login services while preserving personal data.
+- Build Carrie On Dev with isolated settings, queue, login services, logs, and port using the same runtime behavior as release.
 
 ## Setup and usage
 
@@ -17,6 +18,12 @@ Follow the [installation guide](../INSTALL.md) for setup, updates, release comma
 First launch discovers or asks for the CLI executable, saves settings in Application Support, registers services, and checks dashboard readiness before opening the menu. It never modifies the signed app. Fresh installations contain no enrolled chats or builder credentials. Replacing and reopening the app refreshes services based on its build identity; ordinary reopening preserves running services.
 
 ## Verification
+
+`just dev` builds and verifies the development profile with the same acceptance
+pipeline as release. `python3 -m unittest test_build_profiles -v` exercises both
+profiles in the same isolated home, including independent queue state, worker
+definitions, ports, and startup preferences. See the
+[development build instructions](../RELEASING.md#local-development-app).
 
 `build_bundle.py` runs unit tests, native self-tests, linkage audits, code-signature checks, and `verify_bundle.py` before publishing artifacts to `dist/`. The verifier exercises the native setup helper in an isolated home without loading login services. Tests cover interrupted setup, updates, stable reopening, settings and queue preservation, legacy connection migration, and invalid install locations. See the installation guide for real-Mac release acceptance checks.
 
