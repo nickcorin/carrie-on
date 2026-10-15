@@ -65,7 +65,7 @@ class Client:
         headers = {"X-Carrie-On": "1", "Accept": "application/json"}
         data = None
         if body is not None:
-            data = json.dumps(body).encode()
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
 
@@ -86,7 +86,7 @@ class Client:
                 detail = json.load(error).get("detail", str(error))
             except (ValueError, AttributeError):
                 detail = str(error)
-            code = {404: 3, 409: 4, 422: 2, 400: 2}.get(error.code, 5)
+            code = {404: 3, 409: 4, 422: 2, 413: 2, 400: 2}.get(error.code, 5)
             raise ClientError(detail, code) from error
         except (OSError, ValueError) as error:
             raise ClientError(f"Local service unavailable: {error}") from error

@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import signal
 import socket
 import subprocess
@@ -17,11 +18,13 @@ from uuid import UUID, uuid4
 import uvicorn
 
 from carrie_on.codex.client import CodexConnections
+from carrie_on.codex.models import CodexUnavailable
 from carrie_on.macos.lifecycle import control_service
 from carrie_on.macos.runtime import PROFILES
 from carrie_on.server import create_application
 from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 from tests.fixtures import CHAT_ID, LocalCodex
+from tests.test_chat_pagination import ROOT, build_native_test
 
 
 class CliContract(unittest.TestCase):
@@ -151,6 +154,42 @@ class CliContract(unittest.TestCase):
         )
         self.assertEqual(self.store.get_entry(UUID(item_id)).revision, 2)
 
+    def test_long_unicode_instructions_round_trip_through_add_and_edit(self):
+        item_id = str(uuid4())
+        created = json.loads(
+            self.cli(
+                "--json",
+                "queue",
+                "add",
+                CHAT_ID,
+                "--id",
+                item_id,
+                "--instruction-file",
+                "-",
+                stdin="界" * 26_000,
+            ).stdout
+        )
+        self.assertEqual(created["instruction"], "界" * 26_000)
+        self.cli("queue", "edit", item_id, "--instruction-file", "-", stdin="語" * 26_000)
+        self.assertEqual(self.store.get_entry(UUID(item_id)).instructions, "語" * 26_000)
+
+    def test_body_size_rejection_is_known_invalid_input(self):
+        item_id = str(uuid4())
+        result = self.cli(
+            "queue",
+            "add",
+            CHAT_ID,
+            "--id",
+            item_id,
+            "--instruction-file",
+            "-",
+            stdin="x" + "\u0000" * 26_000,
+            code=2,
+        )
+        self.assertIn("150,000 bytes", result.stderr)
+        self.assertNotIn("outcome is unknown", result.stderr)
+        self.assertIsNone(self.store.get_entry(UUID(item_id)))
+
     def test_exit_codes_and_stderr_are_scriptable(self):
         self.assertEqual(self.cli("queue", "show", str(uuid4()), code=3).stdout, "")
         self.assertEqual(self.cli("queue", "show", "bad-id", code=2).stdout, "")
@@ -255,6 +294,31 @@ class CliContract(unittest.TestCase):
         self.cli("queue", "add", CHAT_ID)
         self.cli("--json", "queue", "check", "--limit", "1")
         self.assertEqual(self.store.get_queue_summary().dispatching, 0)
+
+    @unittest.skipUnless(platform.system() == "Darwin", "The native client requires macOS")
+    def test_native_and_cli_share_persisted_queue_operations(self):
+        executable = build_native_test(self.home, ROOT / "tests/NativeQueue.swift")
+        enqueue = self.service.enqueue
+
+        def committed_without_reply(*args, **kwargs):
+            enqueue(*args, **kwargs)
+            raise CodexUnavailable("Creation response unavailable")
+
+        with patch.object(self.service, "enqueue", side_effect=committed_without_reply):
+            result = subprocess.run(
+                [str(executable), self.url, sys.executable],
+                env=dict(os.environ, HOME=str(self.home)),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Native and CLI queue operations passed", result.stdout)
+        entries, _ = self.store.list_entries(states=None)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(
+            (entries[0].state, entries[0].instructions), ("cancelled", "Saved by native")
+        )
 
     def test_interrupt_exits_130_without_a_traceback(self):
         reading, release = threading.Event(), threading.Event()

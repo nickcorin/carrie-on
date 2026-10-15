@@ -580,7 +580,8 @@ final class ChatPickerModel: ObservableObject {
             activities[chat.id] = .failed("Resolve previous queue requests before creating more.")
             return false
         }
-        let creation = pendingCreations[chat.id]?.request ?? QueueCreation(id: UUID().uuidString.lowercased(),
+        let previous = pendingCreations[chat.id]
+        let creation = previous?.request ?? QueueCreation(id: UUID().uuidString.lowercased(),
             chatID: chat.id, instruction: prompt, limitID: bucket.isEmpty ? nil : bucket)
         queueRevision += 1
         pendingCreations[chat.id] = PendingCreation(request: creation, outcome: .submitting)
@@ -596,7 +597,7 @@ final class ChatPickerModel: ObservableObject {
             finish(chat.id, result: .complete(entry.state == "queued" ? "Queued" : "Previous request: \(entry.state)."))
             return true
         } catch {
-            if let problem = error as? ServiceProblem, (400..<500).contains(problem.status),
+            if previous == nil, let problem = error as? ServiceProblem, (400..<500).contains(problem.status),
                problem.code != "id_reused", problem.code != "invalid_response", problem.status != 408 {
                 pendingCreations.removeValue(forKey: chat.id)
                 try? savePendingCreations()

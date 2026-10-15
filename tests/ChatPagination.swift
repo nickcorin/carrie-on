@@ -204,13 +204,13 @@ func testUncertainCreationRecovery() async throws {
     let retrying = try await ChatPageProtocol.next()
     guard retrying.request.httpMethod == "POST" else { fatalError("Original retry received \(retrying.request)") }
     guard try requestBody(retrying.request) == original else { fatalError("Retry used changed instruction, bucket, or identity") }
-    retrying.reply(#"{"code":"id_reused","detail":"This UUID belongs to another chat"}"#, status: 409)
-    guard await retry.value == false else { fatalError("Conflicting identity was reported as confirmed") }
+    retrying.reply(#"{"code":"invalid_bucket","detail":"Choose a usage bucket"}"#, status: 422)
+    guard await retry.value == false else { fatalError("Rejected replay was reported as confirmed") }
     let stillUnknown = try await ChatPageProtocol.next()
-    guard stillUnknown.request.url!.path == "/api/v1/queue/\(itemID)" else { fatalError("id_reused discarded recovery identity") }
+    guard stillUnknown.request.url!.path == "/api/v1/queue/\(itemID)" else { fatalError("A rejected replay discarded the earlier unresolved identity") }
     stillUnknown.reply(#"{"code":"unavailable","detail":"Read failed again"}"#, status: 503)
     try await waitForQueueRead(model)
-    guard !model.canQueue(chat.id) else { fatalError("id_reused enabled creation with a fresh UUID") }
+    guard !model.canQueue(chat.id) else { fatalError("A rejected replay enabled creation with a fresh UUID") }
 
     let restarted = ChatPickerModel(baseURL: baseURL, session: session, recoveryDefaults: defaults, didQueue: {})
     restarted.connection = .connected

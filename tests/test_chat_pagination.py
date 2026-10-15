@@ -19,6 +19,48 @@ from tests.fixtures import instant, queue_entry
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def build_native_test(build: Path, source: Path) -> Path:
+    """Compile the app declarations with a test entry point without launching the app."""
+    # Use the app's declarations and replace its startup entry point for the test.
+    declarations = (
+        (ROOT / "menubar/main.swift")
+        .read_text()
+        .split('if CommandLine.arguments.contains("--self-test") {', 1)[0]
+    )
+    main = build / "main.swift"
+    main.write_text(declarations + source.read_text())
+    executable = build / f"{source.stem}Tests"
+    sources = [
+        ROOT / "menubar" / name
+        for name in (
+            "ChatPicker.swift",
+            "AppSetup.swift",
+            "AppLifecycle.swift",
+            "AppUpdate.swift",
+            "Brand.swift",
+        )
+    ]
+    compile_result = subprocess.run(
+        [
+            "/usr/bin/swiftc",
+            "-target",
+            f"{platform.machine()}-apple-macosx13.0",
+            "-module-cache-path",
+            str(build / "cache"),
+            "-o",
+            str(executable),
+            *map(str, sources),
+            str(main),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if compile_result.returncode:
+        raise RuntimeError(compile_result.stderr)
+    return executable
+
+
 def queue_contract_fixtures(directory: Path) -> Path:
     """Record API responses for native decoding and queue-action tests."""
 
@@ -106,42 +148,7 @@ class NativeChatPagination(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="carrie-pagination-") as temporary:
             build = Path(temporary)
             fixtures = queue_contract_fixtures(build)
-            # Use the app's declarations and replace its startup entry point for the test.
-            declarations = (
-                (ROOT / "menubar/main.swift")
-                .read_text()
-                .split('if CommandLine.arguments.contains("--self-test") {', 1)[0]
-            )
-            main = build / "main.swift"
-            main.write_text(declarations + (ROOT / "tests/ChatPagination.swift").read_text())
-            executable = build / "ChatPaginationTests"
-            sources = [
-                ROOT / "menubar" / name
-                for name in (
-                    "ChatPicker.swift",
-                    "AppSetup.swift",
-                    "AppLifecycle.swift",
-                    "AppUpdate.swift",
-                    "Brand.swift",
-                )
-            ]
-            compile_result = subprocess.run(
-                [
-                    "/usr/bin/swiftc",
-                    "-target",
-                    f"{platform.machine()}-apple-macosx13.0",
-                    "-module-cache-path",
-                    str(build / "cache"),
-                    "-o",
-                    str(executable),
-                    *map(str, sources),
-                    str(main),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            executable = build_native_test(build, ROOT / "tests/ChatPagination.swift")
             result = subprocess.run(
                 [str(executable), str(fixtures)], capture_output=True, text=True, timeout=30
             )
