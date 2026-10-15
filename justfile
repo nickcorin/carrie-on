@@ -29,8 +29,8 @@ alias build := package
 lint: lint-just lint-python lint-workflows release-check branding
 
 # Reject retired app names in current source inputs.
-branding:
-    python3 branding.py
+branding: setup
+    {{ python }} branding.py
 
 lint-just:
     just --fmt --check
