@@ -79,16 +79,16 @@ The service binds to `127.0.0.1`. Requests require the exact configured Host and
 | `GET /api/v1/chats/resolve?query=...` | Resolve UUID, deep link, or exact unique title |
 | `GET /api/v1/queue` | Paginated visible items; filter by state/chat or request all history |
 | `POST /api/v1/queue` | Create using a caller-provided UUID, chat ID, instruction, and optional quota bucket |
-| `GET /api/v1/queue/{id}` | Read an item and its ETag |
-| `PATCH /api/v1/queue/{id}` | Edit the instruction with merge-patch JSON and `If-Match` |
+| `GET /api/v1/queue/{id}` | Read an item and its current revision |
+| `PATCH /api/v1/queue/{id}` | Edit the instruction with its current revision in the JSON body |
 | `POST /api/v1/queue/{id}/cancel` | Cancel/dismiss with an empty JSON object, preserving history |
 | `GET /api/v1/queue/metadata` | Independent queued-chat metadata, with offline fallback |
 | `GET /api/v1/queue/check` | Paginated read-only readiness inspection |
 | `GET /api/v1/diagnostics` | Read-only connectivity/usage checks, optionally for a chat |
 
-Creation returns 201 and Location, or 200 with the current entry when its UUID is replayed. The HTTP boundary resolves concurrent creation conflicts by reading that UUID. Replays never change instructions, quota selection, or state; the first successful creation wins. Using an existing UUID for another chat returns 409. Replay remains valid after edits, terminal outcomes, and server restarts. Clients retain the UUID after an unknown result and use PATCH for instruction edits. Active deliveries block edits and cancellation with 409. Missing `If-Match` returns 428; stale revisions return 412. A sent instruction cannot be cancelled. Repeated cancellation is safe.
+Creation returns 201 and Location, or 200 with the current entry when its UUID is replayed. The HTTP boundary resolves concurrent creation conflicts by reading that UUID. Replays never change instructions, quota selection, or state; the first successful creation wins. Using an existing UUID for another chat returns 409. Replay remains valid after edits, terminal outcomes, and server restarts. Clients retain the UUID after an unknown result and use PATCH for instruction edits. Active deliveries block edits and cancellation with 409. Edits require a positive integer revision in the JSON body. Missing or invalid revisions return 422; stale revisions return 409. Storage checks the revision and active delivery inside the same transaction as the instruction update. A sent instruction cannot be cancelled. Repeated cancellation is safe.
 
-For example, read the item before editing and copy its exact ETag into the update:
+For example, read the item before editing and include its current revision in the update:
 
 ```http
 GET /api/v1/queue/8edbfa77-c329-48dd-ad72-121987f7f940 HTTP/1.1
@@ -96,19 +96,18 @@ Host: 127.0.0.1:8766
 X-Carrie-On: 1
 ```
 
-A response with `ETag: "revision-7"` permits this conditional update:
+A response containing `"revision": 7` permits this update if the entry remains editable:
 
 ```http
 PATCH /api/v1/queue/8edbfa77-c329-48dd-ad72-121987f7f940 HTTP/1.1
 Host: 127.0.0.1:8766
 X-Carrie-On: 1
-Content-Type: application/merge-patch+json
-If-Match: "revision-7"
+Content-Type: application/json
 
-{"instruction":"Finish the remaining tests."}
+{"instruction":"Finish the remaining tests.","revision":7}
 ```
 
-After a 412 response, read the item again before deciding whether to apply the edit. After an uncertain creation, get the original UUID or repeat the exact original POST payload. A failed read does not establish that creation failed. Health returns a health representation with 503 when its worker fails; database unavailability returns a 503 Problem. Both representations are declared in OpenAPI.
+After a 409 response with `stale_revision`, read the item again before deciding whether to apply the edit. The API does not emit ETags or accept `If-Match` as an edit precondition. Clients must send the revision in the body with `Content-Type: application/json`. After an uncertain creation, get the original UUID or repeat the exact original POST payload. A failed read does not establish that creation failed. Health returns a health representation with 503 when its worker fails; database unavailability returns a 503 Problem. Both representations are declared in OpenAPI.
 
 Lists use opaque query-scoped cursors and bounded page sizes. Cursors are not snapshots: concurrent changes can move items, so clients deduplicate UUIDs. The default queue view includes pending and stale entries; `state=all` retains every outcome. Stale warnings can be dismissed without deleting history. Attempts have no public read or mutation endpoints. Clients store their own refresh/check time.
 

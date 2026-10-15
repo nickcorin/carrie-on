@@ -142,6 +142,11 @@ private struct QueueCreation: Codable, Equatable {
     }
 }
 
+private struct InstructionEdit: Encodable {
+    let instruction: String
+    let revision: Int
+}
+
 private struct ServiceProblem: Decodable, LocalizedError {
     let code: String
     let detail: String
@@ -329,8 +334,8 @@ final class ChatPickerModel: ObservableObject {
             && (pendingCreations[id] != nil || buckets.count <= 1 || !bucket.isEmpty)
     }
 
-    private func request(_ path: String, query: String? = nil, cursor: String? = nil, body: [String: String]? = nil,
-                         method: String = "POST", revision: Int? = nil, timeout: Double = 120) async throws -> Data {
+    private func request(_ path: String, query: String? = nil, cursor: String? = nil, body: (any Encodable)? = nil,
+                         method: String = "POST", timeout: Double = 120) async throws -> Data {
         var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         if let query { components.queryItems = [URLQueryItem(name: "search", value: query)] }
         if let cursor { components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "cursor", value: cursor)] }
@@ -340,10 +345,9 @@ final class ChatPickerModel: ObservableObject {
         request.timeoutInterval = timeout
         if let body {
             request.httpMethod = method
-            request.setValue(method == "PATCH" ? "application/merge-patch+json" : "application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(body)
         }
-        if let revision { request.setValue("\"revision-\(revision)\"", forHTTPHeaderField: "If-Match") }
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 503
         guard (200..<300).contains(status) else {
@@ -615,15 +619,17 @@ final class ChatPickerModel: ObservableObject {
             case .instruction(let text, let expected):
                 guard entry.prompt == expected else { throw MenuError.invalidData }
                 let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let data = try await request("api/v1/queue/\(entry.enrollmentID)", body: [
-                    "instruction": prompt.isEmpty ? Self.defaultInstruction : prompt
-                ], method: "PATCH", revision: entry.revision)
+                let body = InstructionEdit(
+                    instruction: prompt.isEmpty ? Self.defaultInstruction : prompt,
+                    revision: entry.revision
+                )
+                let data = try await request("api/v1/queue/\(entry.enrollmentID)", body: body, method: "PATCH")
                 let saved = try JSONDecoder().decode(PickerQueue.Entry.self, from: data)
                 if let index = queuedEntries.firstIndex(where: { $0.enrollmentID == entry.enrollmentID }) {
                     queuedEntries[index] = saved
                 }
             case .remove:
-                _ = try await request("api/v1/queue/\(entry.enrollmentID)/cancel", body: [:])
+                _ = try await request("api/v1/queue/\(entry.enrollmentID)/cancel", body: [String: String]())
                 instructions[entry.thread_id] = entry.prompt
                 queuedEntries.removeAll { $0.enrollmentID == entry.enrollmentID }
             }

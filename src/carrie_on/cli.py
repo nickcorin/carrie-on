@@ -55,9 +55,8 @@ class Client:
         body: dict[str, object] | None = None,
         *,
         params: dict[str, object] | None = None,
-        etag: str | None = None,
-    ) -> tuple[dict[str, Any], str | None]:
-        """Return a JSON response and ETag; transport errors leave mutations uncertain."""
+    ) -> dict[str, Any]:
+        """Return a JSON response. Transport errors leave mutations uncertain."""
         url = self.url.rstrip("/") + "/api/v1/" + path.lstrip("/")
         if params:
             url += "?" + urlencode(
@@ -67,11 +66,7 @@ class Client:
         data = None
         if body is not None:
             data = json.dumps(body).encode()
-            headers["Content-Type"] = (
-                "application/merge-patch+json" if method == "PATCH" else "application/json"
-            )
-        if etag:
-            headers["If-Match"] = etag
+            headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
 
         # Local traffic must never inherit an HTTP proxy or follow a redirect.
@@ -85,13 +80,13 @@ class Client:
                 value = json.load(response)
                 if not isinstance(value, dict):
                     raise ValueError("The service returned an invalid response")
-                return value, response.headers.get("ETag")
+                return value
         except urllib.error.HTTPError as error:
             try:
                 detail = json.load(error).get("detail", str(error))
             except (ValueError, AttributeError):
                 detail = str(error)
-            code = {404: 3, 409: 4, 412: 4, 428: 4, 422: 2, 400: 2}.get(error.code, 5)
+            code = {404: 3, 409: 4, 422: 2, 400: 2}.get(error.code, 5)
             raise ClientError(detail, code) from error
         except (OSError, ValueError) as error:
             raise ClientError(f"Local service unavailable: {error}") from error
@@ -183,19 +178,19 @@ def read_instruction(text: str | None, file: str | None, *, required: bool = Fal
 @app.command()
 def status(ctx: typer.Context):
     """Show connection, usage, and queue status."""
-    ctx.obj.show(ctx.obj.request("GET", "status")[0])
+    ctx.obj.show(ctx.obj.request("GET", "status"))
 
 
 @app.command()
 def usage(ctx: typer.Context):
     """Read usage without starting a model turn."""
-    ctx.obj.show(ctx.obj.request("GET", "usage")[0])
+    ctx.obj.show(ctx.obj.request("GET", "usage"))
 
 
 @app.command()
 def doctor(ctx: typer.Context, chat: Optional[UUID] = typer.Option(None, "--chat", "--thread")):
     """Check usage and desktop connectivity without sending or opening chats."""
-    ctx.obj.show(ctx.obj.request("GET", "diagnostics", params={"chat_id": chat})[0])
+    ctx.obj.show(ctx.obj.request("GET", "diagnostics", params={"chat_id": chat}))
 
 
 @chats.command("list")
@@ -207,9 +202,7 @@ def list_chats(
 ):
     """Browse recent chats, with optional title search."""
     ctx.obj.show(
-        ctx.obj.request(
-            "GET", "chats", params={"search": search, "limit": limit, "cursor": cursor}
-        )[0]
+        ctx.obj.request("GET", "chats", params={"search": search, "limit": limit, "cursor": cursor})
     )
 
 
@@ -225,13 +218,13 @@ def add(
     """Queue an exact title, chat UUID, or codex://threads/UUID link."""
     text = read_instruction(instruction, instruction_file)
     item_id = str(id or uuid4())
-    chat_id = ctx.obj.request("GET", "chats/resolve", params={"query": chat})[0]["id"]
+    chat_id = ctx.obj.request("GET", "chats/resolve", params={"query": chat})["id"]
     body = {"id": item_id, "chat_id": chat_id, "limit_id": limit_id}
     if text is not None:
         body["instruction"] = text
     typer.echo(f"Queue item ID: {item_id}", err=True)
     try:
-        ctx.obj.show(ctx.obj.request("POST", "queue", body)[0])
+        ctx.obj.show(ctx.obj.request("POST", "queue", body))
     except ClientError as error:
         if error.exit_code == 5:
             typer.echo(
@@ -265,14 +258,14 @@ def list_queue(
                 "limit": limit,
                 "cursor": cursor,
             },
-        )[0]
+        )
     )
 
 
 @queue.command("show")
 def show(ctx: typer.Context, item_id: UUID):
     """Inspect an item by its stable UUID."""
-    ctx.obj.show(ctx.obj.request("GET", f"queue/{item_id}")[0])
+    ctx.obj.show(ctx.obj.request("GET", f"queue/{item_id}"))
 
 
 @queue.command("edit")
@@ -282,16 +275,20 @@ def edit(
     instruction: Optional[str] = None,
     instruction_file: Optional[str] = None,
 ):
-    """Change an unclaimed queued instruction using a version precondition."""
+    """Change an unclaimed queued instruction using its current revision."""
     text = read_instruction(instruction, instruction_file, required=True)
-    _, etag = ctx.obj.request("GET", f"queue/{item_id}")
-    ctx.obj.show(ctx.obj.request("PATCH", f"queue/{item_id}", {"instruction": text}, etag=etag)[0])
+    entry = ctx.obj.request("GET", f"queue/{item_id}")
+    ctx.obj.show(
+        ctx.obj.request(
+            "PATCH", f"queue/{item_id}", {"instruction": text, "revision": entry["revision"]}
+        )
+    )
 
 
 @queue.command("cancel")
 def cancel(ctx: typer.Context, item_id: UUID):
     """Remove an item from the queue, retaining its history. Repetition is safe."""
-    ctx.obj.show(ctx.obj.request("POST", f"queue/{item_id}/cancel", {})[0])
+    ctx.obj.show(ctx.obj.request("POST", f"queue/{item_id}/cancel", {}))
 
 
 @queue.command("check")
@@ -301,9 +298,7 @@ def check(
     cursor: Optional[str] = None,
 ):
     """Inspect readiness without claiming, changing state, opening chats, or sending."""
-    ctx.obj.show(
-        ctx.obj.request("GET", "queue/check", params={"limit": limit, "cursor": cursor})[0]
-    )
+    ctx.obj.show(ctx.obj.request("GET", "queue/check", params={"limit": limit, "cursor": cursor}))
 
 
 @service.command("status")

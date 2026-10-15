@@ -64,11 +64,7 @@ class ApiBehavior(unittest.TestCase):
     def edit(self, item_id, text, revision):
         return self.client.patch(
             f"/api/v1/queue/{item_id}",
-            json={"instruction": text},
-            headers={
-                "Content-Type": "application/merge-patch+json",
-                "If-Match": f'"revision-{revision}"',
-            },
+            json={"instruction": text, "revision": revision},
         )
 
     def test_health_openapi_and_absent_pause_or_legacy_api(self):
@@ -81,7 +77,7 @@ class ApiBehavior(unittest.TestCase):
         schema = self.client.get("/openapi.json").json()
         self.assertIn("/api/v1/queue", schema["paths"])
         self.assertIn(
-            "application/merge-patch+json",
+            "application/json",
             schema["paths"]["/api/v1/queue/{item_id}"]["patch"]["requestBody"]["content"],
         )
         for path in ("pause", "resume", "queue-settings", "tick"):
@@ -93,7 +89,8 @@ class ApiBehavior(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         item = response.json()
         self.assertEqual(response.headers["Location"], f"/api/v1/queue/{item['id']}")
-        self.assertEqual(response.headers["ETag"], '"revision-1"')
+        self.assertEqual(item["revision"], 1)
+        self.assertNotIn("ETag", response.headers)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertTrue(item["queued_at"].endswith("Z"))
         self.assertEqual(self.get("queue").json()["items"][0]["instruction"], "--finish tests")
@@ -159,37 +156,67 @@ class ApiBehavior(unittest.TestCase):
         self.assertEqual(self.add().status_code, 409)
         self.cancel(first["id"])
         second = self.add(instruction="Replacement").json()
-        self.assertEqual(self.edit(first["id"], "Stale edit", first["revision"]).status_code, 412)
+        self.assertEqual(self.edit(first["id"], "Stale edit", first["revision"]).status_code, 409)
         self.cancel(first["id"])
         self.assertEqual(self.get("queue").json()["items"][0]["id"], second["id"])
 
-    def test_edits_preserve_anchors_and_require_current_etag(self):
+    def test_edits_preserve_anchors_and_require_current_revision(self):
         item = self.add().json()
         with patch(
             "carrie_on.codex.client.AppServer", side_effect=AssertionError("Edit contacted Codex")
         ):
             response = self.edit(item["id"], "--new instruction", 1)
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["instruction"], "--new instruction")
+        self.assertEqual(response.json()["revision"], 2)
+        self.assertNotIn("ETag", response.headers)
         for key in ("id", "chat_id", "queued_at", "anchor_message_id", "model", "reset_windows"):
             self.assertEqual(response.json()[key], item[key])
         stale = self.edit(item["id"], "Overwrite", 1)
-        self.assertEqual(stale.status_code, 412)
+        self.assertEqual(stale.status_code, 409)
         self.assertEqual(stale.headers["content-type"], "application/problem+json")
         self.assertEqual(stale.json()["code"], "stale_revision")
         missing = self.client.patch(
             f"/api/v1/queue/{item['id']}",
             json={"instruction": "x"},
-            headers={"Content-Type": "application/merge-patch+json"},
+            headers={"If-Match": '"revision-2"'},
         )
-        self.assertEqual(missing.status_code, 428)
+        self.assertEqual(missing.status_code, 422)
+        self.assertEqual(missing.json()["code"], "invalid_request")
+        saved = self.get(f"queue/{item['id']}")
+        self.assertEqual(saved.json()["instruction"], "--new instruction")
+        self.assertEqual(saved.json()["revision"], 2)
+        self.assertNotIn("ETag", saved.headers)
+
+    def test_concurrent_edits_with_same_revision_only_save_one_instruction(self):
+        item = self.add().json()
+        barrier = threading.Barrier(2)
+
+        def edit(text):
+            barrier.wait(timeout=5)
+            return self.edit(item["id"], text, item["revision"])
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(edit, ("First edit", "Second edit")))
+        self.assertCountEqual([response.status_code for response in responses], [200, 409])
+        saved = self.get(f"queue/{item['id']}").json()
+        winner = next(response.json() for response in responses if response.status_code == 200)
+        conflict = next(response.json() for response in responses if response.status_code == 409)
+        self.assertEqual(conflict["code"], "stale_revision")
+        self.assertEqual(saved["instruction"], winner["instruction"])
+        self.assertEqual(saved["revision"], 2)
 
     def test_active_delivery_blocks_edit_cancel_but_not_reads(self):
         item = self.add().json()
         claimed = self.store.create_delivery_attempt().entry
-        self.assertEqual(self.edit(item["id"], "Change", claimed.revision).status_code, 409)
+        response = self.edit(item["id"], "Change", claimed.revision)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "delivery_active")
         self.assertEqual(self.cancel(item["id"]).status_code, 409)
         self.assertEqual(self.get("queue").status_code, 200)
         self.assertTrue(self.get(f"queue/{item['id']}").json()["dispatching"])
+        self.assertEqual(self.get(f"queue/{item['id']}").json()["instruction"], "Continue tests")
+        self.assertEqual(self.get(f"queue/{item['id']}").json()["revision"], item["revision"])
         self.assertEqual(self.get(f"queue/{item['id']}/deliveries").status_code, 404)
 
     def test_local_security_and_no_arbitrary_file_or_command_access(self):
@@ -439,7 +466,7 @@ class ApiBehavior(unittest.TestCase):
         self.assertEqual(self.store.get_entry(UUID(item["id"])), before)
         self.assertEqual(self.store.get_queue_summary().dispatching, 0)
 
-    def test_declared_headers_match_required_runtime_contract(self):
+    def test_declared_revision_and_headers_match_runtime_contract(self):
         schema = self.app.openapi()
         for path, operations in schema["paths"].items():
             for operation in operations.values():
@@ -451,12 +478,16 @@ class ApiBehavior(unittest.TestCase):
                 self.assertTrue(headers["x-carrie-on"]["required"], path)
         item_path = schema["paths"]["/api/v1/queue/{item_id}"]
         headers = {parameter["name"]: parameter for parameter in item_path["patch"]["parameters"]}
-        self.assertTrue(headers["if-match"]["required"])
+        self.assertNotIn("if-match", headers)
+        edit_schema = item_path["patch"]["requestBody"]["content"]["application/json"]["schema"]
+        edit_fields = schema["components"]["schemas"][edit_schema["$ref"].rsplit("/", 1)[1]]
+        self.assertEqual(set(edit_fields["required"]), {"instruction", "revision"})
+        self.assertEqual(edit_fields["properties"]["revision"]["type"], "integer")
         for method in ("get", "patch"):
-            self.assertIn("ETag", item_path[method]["responses"]["200"]["headers"])
+            self.assertNotIn("ETag", item_path[method]["responses"]["200"].get("headers", {}))
         creation = schema["paths"]["/api/v1/queue"]["post"]["responses"]
         for status in ("200", "201"):
-            self.assertEqual(set(creation[status]["headers"]), {"Location", "ETag"})
+            self.assertEqual(set(creation[status]["headers"]), {"Location"})
         unhealthy = schema["paths"]["/api/v1/health"]["get"]["responses"]["503"]["content"]
         self.assertEqual(set(unhealthy), {"application/json", "application/problem+json"})
         self.assertEqual(
@@ -493,18 +524,21 @@ class ApiBehavior(unittest.TestCase):
         self.assertEqual(response.json()["instruction"], "\x00Edited")
         self.assertEqual(self.get(f"queue/{item['id']}").json()["instruction"], "\x00Edited")
 
-    def test_overlong_revision_is_a_problem_and_method_errors_retain_allow(self):
+    def test_invalid_revisions_do_not_change_instructions(self):
         item = self.add().json()
-        response = self.client.patch(
-            f"/api/v1/queue/{item['id']}",
-            json={"instruction": "Changed"},
-            headers={
-                "Content-Type": "application/merge-patch+json",
-                "If-Match": '"revision-' + "9" * 5000 + '"',
-            },
-        )
-        self.assertEqual(response.status_code, 412)
+        for revision in (None, True, False, 0, -1, 1.0, "1", "9" * 5000, {}, []):
+            with self.subTest(revision=revision):
+                response = self.edit(item["id"], "Changed", revision)
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.json()["code"], "invalid_request")
+        response = self.edit(item["id"], "Changed", 10**1000)
+        self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["code"], "stale_revision")
+        saved = self.get(f"queue/{item['id']}").json()
+        self.assertEqual(saved["instruction"], "Continue tests")
+        self.assertEqual(saved["revision"], 1)
+
+    def test_method_errors_retain_allow(self):
         response = self.client.put("/api/v1/queue", json={})
         self.assertEqual(response.status_code, 405)
         self.assertIn("Allow", response.headers)

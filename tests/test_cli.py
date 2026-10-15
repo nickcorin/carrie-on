@@ -122,6 +122,35 @@ class CliContract(unittest.TestCase):
         self.assertEqual(history["items"][0]["state"], "cancelled")
         self.assertIn("No such command", self.cli("queue", "deliveries", item_id, code=2).stderr)
 
+    def test_edit_conflicts_preserve_saved_text_and_report_exit_4(self):
+        created = json.loads(self.cli("--json", "queue", "add", CHAT_ID).stdout)
+        item_id = created["id"]
+        read_entry = self.store.get_entry
+
+        def read_before_competing_edit(entry_id):
+            entry = read_entry(entry_id)
+            self.store.update_instructions(
+                entry_id, "Saved by another client", revision=entry.revision
+            )
+            return entry
+
+        with patch.object(self.store, "get_entry", side_effect=read_before_competing_edit):
+            conflict = self.cli("queue", "edit", item_id, "--instruction", "Stale edit", code=4)
+        self.assertEqual(conflict.stdout, "")
+        self.assertIn("The entry changed", conflict.stderr)
+        saved = self.store.get_entry(UUID(item_id))
+        self.assertEqual(saved.instructions, "Saved by another client")
+        self.assertEqual(saved.revision, 2)
+
+        self.store.create_delivery_attempt()
+        blocked = self.cli("queue", "edit", item_id, "--instruction", "Busy edit", code=4)
+        self.assertEqual(blocked.stdout, "")
+        self.assertIn("A delivery is active", blocked.stderr)
+        self.assertEqual(
+            self.store.get_entry(UUID(item_id)).instructions, "Saved by another client"
+        )
+        self.assertEqual(self.store.get_entry(UUID(item_id)).revision, 2)
+
     def test_exit_codes_and_stderr_are_scriptable(self):
         self.assertEqual(self.cli("queue", "show", str(uuid4()), code=3).stdout, "")
         self.assertEqual(self.cli("queue", "show", "bad-id", code=2).stdout, "")

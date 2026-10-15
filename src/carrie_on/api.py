@@ -1,12 +1,11 @@
 """Expose the local queue service through HTTP."""
 
-import re
 from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import Body, Depends, FastAPI, Header, Query, Response
+from fastapi import Depends, FastAPI, Header, Query, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
@@ -45,6 +44,10 @@ class Enqueue(Instruction):
     chat_id: UUID
     instruction: StrictStr = Field(default=DEFAULT_INSTRUCTION, min_length=1, max_length=32000)
     limit_id: StrictStr | None = Field(default=None, min_length=1, max_length=200)
+
+
+class EditInstruction(Instruction):
+    revision: int = Field(strict=True, ge=1)
 
 
 class QueueEntryResponse(BaseModel):
@@ -211,7 +214,6 @@ def problem(code, detail, status):
 
 
 def queue_response(entry: QueueEntry) -> dict:
-    """Convert an entry to an HTTP response with instructions named instruction."""
     fields = asdict(entry)
     fields["instruction"] = fields.pop("instructions")
     return fields
@@ -245,14 +247,7 @@ def local_client(
     """Document the required header that the middleware checks on each request."""
 
 
-ETAG_HEADER = {
-    "ETag": {
-        "description": "Strong ETag for the entry's revision. Send it as If-Match when editing.",
-        "schema": {"type": "string", "example": '"revision-1"'},
-    }
-}
 CREATION_HEADERS = {
-    **ETAG_HEADER,
     "Location": {
         "description": "URL of the entry. Repeated creation requests return the same URL.",
         "schema": {"type": "string"},
@@ -272,12 +267,13 @@ def create_app(
     """Create HTTP routes for the supplied queue service.
 
     Construction does not access storage or start processes. The caller supplies
-    a lifespan handler to initialize storage and start and stop the worker.
-    Without a worker, clients can read and edit the queue, but no messages are sent.
+    a lifespan handler to initialize storage and manage the worker. Routes read
+    and edit entries but do not send messages. The worker argument supplies health
+    reporting and wakeups after enrollment. This function does not start it.
     """
     errors: dict[int | str, dict[str, Any]] = {
         status: {"content": {"application/problem+json": {"schema": Problem.model_json_schema()}}}
-        for status in (403, 404, 409, 412, 413, 415, 422, 428, 503)
+        for status in (403, 404, 409, 413, 415, 422, 503)
     }
     app = FastAPI(
         title="Carrie On",
@@ -289,8 +285,8 @@ def create_app(
         dependencies=[Depends(local_client)],
         description="Manage queued instructions through the local HTTP service. "
         "Set X-Carrie-On to 1 on every request. Supply a UUID when creating an entry. "
-        "Repeating that UUID returns the existing entry without changing it. "
-        "Before editing, read the entry's ETag and send it as If-Match. "
+        "Repeating that UUID for the same chat returns the current entry without changing it. "
+        "When editing, include the entry's current revision in the JSON body. "
         "See ARCHITECTURE.md for examples.",
     )
     app.state.worker = worker
@@ -311,11 +307,7 @@ def create_app(
         else:
             response = None
             if request.method in {"POST", "PATCH", "PUT"}:
-                expected = (
-                    "application/merge-patch+json"
-                    if request.method == "PATCH"
-                    else "application/json"
-                )
+                expected = "application/json"
                 if headers.get("content-type", "").split(";", 1)[0] != expected:
                     response = problem("media_type", f"Expected {expected}", 415)
                 else:
@@ -346,8 +338,6 @@ def create_app(
         status = {
             "not_found": 404,
             "invalid_cursor": 422,
-            "stale_revision": 412,
-            "precondition_required": 428,
             "invalid_chat": 422,
             "invalid_bucket": 422,
             "chat_absent": 422,
@@ -356,11 +346,6 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(_, error):
-        if any(
-            value["loc"] == ("header", "if-match") and value["type"] == "missing"
-            for value in error.errors()
-        ):
-            return problem("precondition_required", "Include the item's ETag in If-Match", 428)
         details = "; ".join(
             f"{'.'.join(str(part) for part in value['loc'])}: {value['msg']}"
             for value in error.errors()
@@ -500,11 +485,13 @@ def create_app(
         },
     )
     def enqueue(body: Enqueue, response: Response):
-        """Create an entry or return the entry already saved with the supplied UUID.
+        """Create an entry or return the current entry saved with the supplied UUID.
 
-        Repeated requests leave the existing entry unchanged. A UUID cannot be
-        reused for a different chat. Use PATCH to edit instructions and a new UUID
-        to enqueue more work.
+        A valid request for the same UUID and chat returns the stored entry without
+        changing its instructions or quota bucket, even if those inputs differ.
+        Creation returns 201 and a replay returns 200. Reusing the UUID for another
+        chat returns 409. Use PATCH to edit pending instructions and a new UUID
+        to enqueue work after an entry has finished.
         """
         entry = service.store.get_entry(body.id)
         created = False
@@ -524,44 +511,25 @@ def create_app(
             raise QueueError("id_reused", "This UUID belongs to another chat")
         response.status_code = 201 if created else 200
         response.headers["Location"] = f"/api/v1/queue/{entry.id}"
-        response.headers["ETag"] = f'"revision-{entry.revision}"'
         if created and app.state.worker:
             app.state.worker.wakeup.set()
         return queue_response(entry)
 
-    @app.get(
-        "/api/v1/queue/{item_id}",
-        response_model=QueueEntryResponse,
-        responses={200: {"headers": ETAG_HEADER}},
-    )
-    def item(item_id: UUID, response: Response):
+    @app.get("/api/v1/queue/{item_id}", response_model=QueueEntryResponse)
+    def item(item_id: UUID):
         value = service.store.get_entry(item_id)
         if value is None:
             raise QueueError("not_found", "Queue entry not found")
-        response.headers["ETag"] = f'"revision-{value.revision}"'
         return queue_response(value)
 
-    @app.patch(
-        "/api/v1/queue/{item_id}",
-        response_model=QueueEntryResponse,
-        responses={200: {"headers": ETAG_HEADER}},
-    )
-    def edit(
-        item_id: UUID,
-        body: Annotated[Instruction, Body(media_type="application/merge-patch+json")],
-        response: Response,
-        if_match: Annotated[
-            str,
-            Header(description="Send the strong ETag from the entry's latest GET response."),
-        ],
-    ):
-        matched = re.fullmatch(r'"revision-([1-9][0-9]{0,18})"', if_match)
-        if not matched:
-            raise QueueError("stale_revision", "Read the item and use its current ETag")
-        value = service.store.update_instructions(
-            item_id, body.instruction, revision=int(matched[1])
-        )
-        response.headers["ETag"] = f'"revision-{value.revision}"'
+    @app.patch("/api/v1/queue/{item_id}", response_model=QueueEntryResponse)
+    def edit(item_id: UUID, body: EditInstruction):
+        """Replace instructions if the revision matches and no delivery is active.
+
+        Send the revision from the last read in the JSON body. A stale revision
+        or active delivery returns 409 without changing the entry.
+        """
+        value = service.store.update_instructions(item_id, body.instruction, revision=body.revision)
         return queue_response(value)
 
     @app.post("/api/v1/queue/{item_id}/cancel", response_model=QueueEntryResponse)

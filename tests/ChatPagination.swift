@@ -53,7 +53,7 @@ final class ChatPageProtocol: URLProtocol {
     }
 }
 
-func requestBody(_ request: URLRequest) throws -> [String: String] {
+func requestData(_ request: URLRequest) throws -> Data {
     var data = request.httpBody ?? Data()
     if let stream = request.httpBodyStream {
         stream.open()
@@ -66,7 +66,16 @@ func requestBody(_ request: URLRequest) throws -> [String: String] {
         }
     }
     guard !data.isEmpty else { fatalError("Missing body for \(request.httpMethod ?? "GET") \(request.url!)") }
-    return try JSONDecoder().decode([String: String].self, from: data)
+    return data
+}
+
+func requestBody(_ request: URLRequest) throws -> [String: String] {
+    try JSONDecoder().decode([String: String].self, from: requestData(request))
+}
+
+struct InstructionEditBody: Decodable {
+    let instruction: String
+    let revision: Int
 }
 
 @MainActor
@@ -118,8 +127,10 @@ func testQueueActions() async throws {
 
     let edit = Task { await model.changeQueued(entry, change: .instruction("Revised", expected: entry.prompt)) }
     let editing = try await ChatPageProtocol.next()
-    guard editing.request.httpMethod == "PATCH", editing.request.value(forHTTPHeaderField: "If-Match") == "\"revision-1\"",
-          editing.request.value(forHTTPHeaderField: "Content-Type") == "application/merge-patch+json" else {
+    let edited = try JSONDecoder().decode(InstructionEditBody.self, from: requestData(editing.request))
+    guard editing.request.httpMethod == "PATCH", editing.request.value(forHTTPHeaderField: "If-Match") == nil,
+          editing.request.value(forHTTPHeaderField: "Content-Type") == "application/json",
+          edited.instruction == "Revised", edited.revision == 1 else {
         fatalError("Native edits lost their revision or content type: \(editing.request.httpMethod ?? "nil") \(editing.request.url!) \(editing.request.allHTTPHeaderFields ?? [:])")
     }
     let saved = try item(id, instruction: "Revised", revision: 2)
@@ -316,9 +327,10 @@ func testQueueHTTPContract() async throws {
     }
     let edit = Task { await model.changeQueued(expired, change: .instruction("Recovered edit", expected: expired.prompt)) }
     let editing = try await ChatPageProtocol.next()
+    let edited = try JSONDecoder().decode(InstructionEditBody.self, from: requestData(editing.request))
     guard editing.request.httpMethod == "PATCH",
           editing.request.url!.path == "/api/v1/queue/\(expired.enrollmentID)",
-          try requestBody(editing.request)["instruction"] == "Recovered edit" else {
+          edited.instruction == "Recovered edit", edited.revision == expired.revision else {
         fatalError("An expired delivery remained locked or edited the wrong queue item")
     }
     var response = (fixture["delivery_states"] as! [String: Any])["items"] as! [[String: Any]]

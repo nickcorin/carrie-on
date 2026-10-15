@@ -15,7 +15,7 @@ The automated checks cover the product behaviors below through the current stora
 | Fresh enrollment usage, resets before enrollment, failed reads, out-of-order observations | API tests |
 | Slow enrollment does not block unrelated queue actions | Concurrent API test with held Codex reads |
 | Queue read, instruction edit, cancellation, history, and repeat cancellation | API/CLI/storage tests |
-| Conflicting edits and stale item identities | ETag API tests and native action checks; cancel/re-enroll between actual HTTP pages retains distinct queue identities |
+| Conflicting edits and stale item identities | Concurrent HTTP edits with the same body revision permit only one write; API and native checks verify revision conflicts and active delivery protection; cancel/re-enroll between actual HTTP pages retains distinct queue identities |
 | Read-only diagnostics and dry-run readiness | API/CLI tests assert no deliveries or sends |
 | Delivery failures remain visible and temporary failures retry | Dispatch and native state mapping |
 | Lost send reply, already-observed message, and changed conversation | Dispatch tests plus real HTTP, lifespan worker, app-server subprocess, desktop socket, and persisted entry/restart acceptance |
@@ -40,7 +40,7 @@ The automated checks cover the product behaviors below through the current stora
 | Source rebuild output, failure isolation, successful replacement, local commit discovery | Native/Python source-build tests |
 | Release/Dev independent settings, state, ports, preferences, service targets | Build-profile, migration, and CLI service tests |
 | Branding, release metadata, signed app, ZIP/DMG, relocation, no system Python | Build/release tests and packaged acceptance pipeline |
-| Loopback/Host/Origin/header restrictions, body bounds, validation, error schema | HTTP contract tests including required OpenAPI headers, health failure media, bounded cursors/revisions, and 405 Allow preservation |
+| Loopback/Host/Origin/header restrictions, body bounds, validation, error schema | HTTP contract tests including required OpenAPI headers, health failure media, bounded cursors, positive integer revisions, and 405 Allow preservation |
 | CLI help/version, structured stdout, stderr/errors, exit codes, explicit server | CLI subprocess tests and installed frozen Dev CLI reads against its own HTTP service |
 | Python module ownership and callable contracts | Dependency-boundary tests, Ruff formatting/import checks, mypy on shared contracts, and generated Python/native reference inspection |
 
