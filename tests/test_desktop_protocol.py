@@ -119,7 +119,7 @@ class DesktopProtocol(unittest.TestCase):
         )
         self.assertEqual(self.requests[0]["version"], 3)
 
-    def test_expired_attempt_cannot_send_a_message(self):
+    def test_elapsed_transport_deadline_prevents_request(self):
         self.worker.start()
         with Desktop(self.path, timeout=2) as desktop:
             desktop.read_settings("thread-a")

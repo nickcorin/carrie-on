@@ -21,6 +21,7 @@ from carrie_on.codex.models import (
     CodexUnavailable,
     UsageSnapshot,
 )
+from carrie_on.codex.sdk import AppServer
 from carrie_on.dispatch import DispatchWorker
 from carrie_on.server import create_application
 from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
@@ -84,6 +85,18 @@ class ApiBehavior(unittest.TestCase):
             self.assertEqual(self.client.post("/api/v1/" + path, json={}).status_code, 404)
         self.assertEqual(self.client.get("/api/status").status_code, 404)
 
+    def test_missing_codex_executable_keeps_partial_status_and_queue_available(self):
+        item = self.add().json()
+        self.service.connections = CodexConnections(str(self.path.parent / "missing-codex"))
+        with patch("carrie_on.codex.client.AppServer", AppServer):
+            response = self.get("status")
+        self.assertEqual(response.status_code, 200, response.text)
+        status = response.json()
+        self.assertIsNone(status["usage"])
+        self.assertIn("missing-codex", status["usage_error"])
+        self.assertEqual(status["queue"]["count"], 1)
+        self.assertEqual(self.get("queue").json()["items"][0]["id"], item["id"])
+
     def test_create_list_cancel_history_and_response_headers(self):
         response = self.add(instruction="--finish tests")
         self.assertEqual(response.status_code, 201, response.text)
@@ -100,7 +113,7 @@ class ApiBehavior(unittest.TestCase):
         self.assertEqual(self.get("queue?state=all").json()["items"][0]["state"], "cancelled")
 
     def test_chat_resolution_accepts_ids_links_and_exact_unique_titles(self):
-        title = LocalCodex().threads()[0].title
+        title = LocalCodex().list_all_chats()[0].title
         for query in (CHAT_ID.upper(), f"codex://threads/{CHAT_ID}", title):
             response = self.get("chats/resolve", params={"query": query})
             self.assertEqual(response.status_code, 200, response.text)
@@ -108,7 +121,7 @@ class ApiBehavior(unittest.TestCase):
         self.assertEqual(self.get("chats/resolve", params={"query": title[:6]}).status_code, 422)
         with patch.object(
             LocalCodex,
-            "threads",
+            "list_all_chats",
             return_value=[
                 ChatSummary(id=CHAT_ID, title=title, cwd=None, last_activity=None),
                 ChatSummary(id=str(uuid4()), title=title, cwd=None, last_activity=None),
@@ -298,14 +311,14 @@ class ApiBehavior(unittest.TestCase):
         self.add()
         self.assertEqual(self.get("queue/metadata").json()["items"], catalog)
         self.assertEqual(self.get("chats?search=absent").json()["items"], [])
-        with patch.object(LocalCodex, "read_chat", side_effect=CodexUnavailable("Absent")):
+        with patch.object(LocalCodex, "get_chat_summary", side_effect=CodexUnavailable("Absent")):
             fallback = self.get("queue/metadata").json()["items"][0]
         self.assertEqual(fallback["title"], catalog[0]["title"])
         self.assertIsNone(fallback["last_activity"])
 
     def test_chat_pagination_beyond_100_search_and_cursor_scope(self):
         class PagedCodex(LocalCodex):
-            def thread_page(self, search="", cursor=None, limit=25):
+            def list_chats(self, search="", cursor=None, limit=25):
                 chats = [
                     ChatSummary(id=str(index), title=f"Chat {index}", cwd=None, last_activity=index)
                     for index in reversed(range(125))
@@ -333,7 +346,7 @@ class ApiBehavior(unittest.TestCase):
             self.assertTrue(all("Chat 1" in chat["title"] for chat in page["items"]))
 
     def test_chat_page_failure_is_retryable(self):
-        with patch.object(LocalCodex, "thread_page", side_effect=CodexUnavailable("Try again")):
+        with patch.object(LocalCodex, "list_chats", side_effect=CodexUnavailable("Try again")):
             self.assertEqual(self.get("chats").status_code, 503)
         self.assertEqual(self.get("chats").status_code, 200)
 
@@ -393,14 +406,14 @@ class ApiBehavior(unittest.TestCase):
     def test_slow_enrollment_allows_other_queue_actions(self):
         existing = self.add().json()
         entered, release = threading.Event(), threading.Event()
-        original = LocalCodex.snapshot
+        original = LocalCodex.get_chat
 
         def slow_snapshot(client, *args, **kwargs):
             entered.set()
             self.assertTrue(release.wait(5))
             return original(client, *args, **kwargs)
 
-        with ThreadPoolExecutor(1) as pool, patch.object(LocalCodex, "snapshot", slow_snapshot):
+        with ThreadPoolExecutor(1) as pool, patch.object(LocalCodex, "get_chat", slow_snapshot):
             future = pool.submit(self.add, chat_id=str(uuid4()))
             try:
                 self.assertTrue(entered.wait(3))
@@ -411,7 +424,7 @@ class ApiBehavior(unittest.TestCase):
 
     def test_concurrent_enrollment_rechecks_membership_and_identity_at_commit(self):
         barrier = threading.Barrier(2)
-        original = LocalCodex.snapshot
+        original = LocalCodex.get_chat
 
         def simultaneous(client, *args, **kwargs):
             barrier.wait(timeout=5)
@@ -419,7 +432,7 @@ class ApiBehavior(unittest.TestCase):
 
         for same_id in (True, False):
             item_id = str(uuid4())
-            with ThreadPoolExecutor(2) as pool, patch.object(LocalCodex, "snapshot", simultaneous):
+            with ThreadPoolExecutor(2) as pool, patch.object(LocalCodex, "get_chat", simultaneous):
                 futures = [
                     pool.submit(
                         self.add,

@@ -2,9 +2,7 @@
 
 import logging
 import threading
-import time
 from collections.abc import Callable
-from datetime import datetime, timezone
 
 from carrie_on.application import observe_eligibility
 from carrie_on.codex.client import CodexConnections
@@ -24,11 +22,9 @@ class DispatchWorker:
         connections: CodexConnections,
         interval: float = 60,
         on_failure: Callable[[], None] = lambda: None,
-        *,
-        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ):
         self.store, self.connections = store, connections
-        self.interval, self.on_failure, self.clock = interval, on_failure, clock
+        self.interval, self.on_failure = interval, on_failure
         self.stopping, self.wakeup = threading.Event(), threading.Event()
         self.error: str | None = None
         self.thread = threading.Thread(target=self.run, name="queue-dispatch", daemon=True)
@@ -45,21 +41,15 @@ class DispatchWorker:
         if attempt is None:
             return False
         entry = attempt.entry
-        remaining = (attempt.expires_at - self.clock()).total_seconds()
-        if remaining <= 0:
-            return True
-        deadline = time.monotonic() + min(100, remaining)
         state: EntryState
         error = ""
         try:
             with (
-                self.connections.app_server(deadline=deadline) as server,
-                self.connections.desktop(open_if_needed=True, deadline=deadline) as desktop,
+                self.connections.app_server() as server,
+                self.connections.desktop(open_if_needed=True) as desktop,
             ):
                 decision = observe_eligibility(entry, server, desktop)
                 if decision.outcome == "ready":
-                    if time.monotonic() >= deadline:
-                        raise CodexUnavailable("Delivery attempt expired before sending")
                     desktop.continue_chat(str(entry.chat_id), entry.instructions, str(entry.id))
                     state = "sent"
                 else:

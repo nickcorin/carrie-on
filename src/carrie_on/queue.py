@@ -139,7 +139,7 @@ class QueueEntry:
             self.anchor_message_id is None or chat.message_id == self.anchor_message_id
         )
 
-    def assess(self, usage: Usage, chat: Chat | None) -> "Eligibility":
+    def assess(self, usage: Usage, chat: Chat | None, *, accepted: bool) -> "Eligibility":
         """Check whether Codex accepted the message or the entry is ready to send."""
         if chat is None:
             return Eligibility(
@@ -147,7 +147,7 @@ class QueueEntry:
             )
         if chat.thread_id != str(self.chat_id):
             raise QueueError("chat_mismatch", "Desktop returned a different chat")
-        if str(self.id) in chat.seen_message_ids:
+        if accepted:
             return Eligibility("sent", "Confirmed the previously accepted instruction")
         if not self.matches_anchor(chat):
             return Eligibility("stale", "Conversation continued after enrollment")

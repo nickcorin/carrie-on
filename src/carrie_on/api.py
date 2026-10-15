@@ -432,11 +432,11 @@ def create_app(
 
     @app.get("/api/v1/chats", response_model=ChatPage)
     def chats(query: Annotated[ChatQuery, Query()]):
-        return asdict(service.chats(**query.model_dump()))
+        return asdict(service.list_chats(**query.model_dump()))
 
     @app.get("/api/v1/queue/metadata", response_model=ChatPage)
     def metadata(query: Annotated[PageQuery, Query()]):
-        return asdict(service.queued_chats(**query.model_dump()))
+        return asdict(service.list_queued_chats(**query.model_dump()))
 
     @app.get("/api/v1/queue/check", response_model=ReadinessPage)
     def inspect(query: Annotated[PageQuery, Query()]):

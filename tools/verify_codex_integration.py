@@ -31,7 +31,7 @@ def verify(mode: str, chat_id: UUID, executable: str):
         SqliteStorageMaintenance(path).initialize()
         store = SqliteQueueStorage(path)
         with connections.app_server() as server, connections.desktop() as desktop:
-            chat = server.snapshot(str(chat_id), desktop)
+            chat = server.get_chat(str(chat_id), desktop)
             if chat.thread_id != str(chat_id) or chat.busy != (mode == "wait") or chat.blocked:
                 raise ValueError(
                     "Select an active unblocked chat for wait, or an idle unblocked disposable chat for sending"

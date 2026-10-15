@@ -16,6 +16,7 @@ import uuid
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
+from types import TracebackType
 from typing import Callable, ParamSpec, TypeVar
 
 from carrie_on.codex.models import (
@@ -79,7 +80,13 @@ class Desktop:
     Never subscribe to conversation history or claim ownership of another chat.
     """
 
-    def __init__(self, path=None, timeout=15, open_if_needed=False, deadline=None):
+    def __init__(
+        self,
+        path: Path | None = None,
+        timeout: float = 15,
+        open_if_needed: bool = False,
+        deadline: float | None = None,
+    ) -> None:
         home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
         self.path = Path(path) if path else home / "ipc" / "ipc.sock"
         self.timeout = timeout
@@ -89,7 +96,7 @@ class Desktop:
         self.socket: socket.socket | None = None
 
     @transport_errors
-    def __enter__(self):
+    def __enter__(self) -> "Desktop":
         info = self.path.lstat()
         parent = self.path.parent.stat()
         if (
@@ -110,7 +117,12 @@ class Desktop:
             raise
         return self
 
-    def __exit__(self, *_):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         if self.socket is not None:
             self.socket.close()
 
@@ -179,7 +191,13 @@ class Desktop:
     def read_settings(
         self, thread_id: str, *, before_open: Callable[[], None] | None = None
     ) -> dict:
-        """Read compact settings; open a dormant chat only after catalog validation."""
+        """Read compact settings, optionally opening a dormant chat.
+
+        With open_if_needed, validate membership in the unarchived local catalog
+        before calling, or supply before_open to validate immediately before the
+        deep link opens. Opening can change the visible chat in Codex. Without
+        open_if_needed, an unavailable owner raises CodexUnavailable.
+        """
         try:
             result = self.request(
                 "thread-follower-read-model-settings", {"conversationId": thread_id}

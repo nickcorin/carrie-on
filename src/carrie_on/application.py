@@ -52,16 +52,14 @@ def observe_eligibility(entry: QueueEntry, server: AppServer, desktop: Desktop) 
         usage = server.usage().select(entry.limit_id)
     except UsageSelectionError as error:
         raise QueueError("quota_changed", str(error)) from error
-    present = any(chat.id == str(entry.chat_id) for chat in server.threads(entry.title))
-    chat = server.snapshot(str(entry.chat_id), desktop) if present else None
-    if (
-        chat is not None
-        and str(entry.id) not in chat.seen_message_ids
-        and not entry.matches_anchor(chat)
-        and server.has_message(str(entry.chat_id), str(entry.id))
-    ):
-        chat = replace(chat, seen_message_ids=chat.seen_message_ids | {str(entry.id)})
-    return entry.assess(usage, chat)
+    present = any(chat.id == str(entry.chat_id) for chat in server.list_all_chats(entry.title))
+    chat = server.get_chat(str(entry.chat_id), desktop) if present else None
+    accepted = False
+    if chat is not None:
+        accepted = chat.message_id == str(entry.id)
+        if not accepted and not entry.matches_anchor(chat):
+            accepted = server.has_message(str(entry.chat_id), str(entry.id))
+    return entry.assess(usage, chat, accepted=accepted)
 
 
 class QueueService:
@@ -89,7 +87,7 @@ class QueueService:
         except ValueError:
             pass
         with self.connections.app_server() as server:
-            matches = [chat for chat in server.threads(query) if chat.title == query]
+            matches = [chat for chat in server.list_all_chats(query) if chat.title == query]
         if len(matches) != 1:
             raise QueueError(
                 "invalid_chat", f"Found {len(matches)} exact title matches; select a chat UUID"
@@ -98,8 +96,8 @@ class QueueService:
 
     def _validate_catalog(self, chat_id: str) -> None:
         with self.connections.app_server() as server:
-            chat = server.read_chat(chat_id)
-            if not any(value.id == chat_id for value in server.threads(chat.title)):
+            chat = server.get_chat_summary(chat_id)
+            if not any(value.id == chat_id for value in server.list_all_chats(chat.title)):
                 raise QueueError("chat_absent", "Chat is archived or absent from the local catalog")
 
     def enqueue(
@@ -113,7 +111,7 @@ class QueueService:
             self.connections.app_server() as server,
             self.connections.desktop(open_if_needed=True) as desktop,
         ):
-            chat = server.snapshot(
+            chat = server.get_chat(
                 str(chat_id),
                 desktop,
                 include_goal=False,
@@ -128,17 +126,17 @@ class QueueService:
         entry = QueueEntry.enroll(entry_id, instructions, chat, usage, datetime.now(timezone.utc))
         return self.store.create_entry(entry)
 
-    def chats(self, search: str = "", cursor: str | None = None, limit: int = 25) -> ChatPage:
+    def list_chats(self, search: str = "", cursor: str | None = None, limit: int = 25) -> ChatPage:
         scope = ["chats", search, limit]
         upstream = decode_cursor(cursor, scope) if cursor else None
         if upstream is not None and not isinstance(upstream, str):
             raise QueueError("invalid_cursor", "Invalid chat cursor")
         with self.connections.app_server() as server:
-            page = server.thread_page(search, cursor=upstream, limit=limit)
+            page = server.list_chats(search, cursor=upstream, limit=limit)
         next_cursor = encode_cursor(scope, page.next_cursor) if page.next_cursor else None
         return ChatPage(page.items, next_cursor)
 
-    def queued_chats(self, cursor: str | None = None, limit: int = 50) -> ChatPage:
+    def list_queued_chats(self, cursor: str | None = None, limit: int = 50) -> ChatPage:
         """Read queued chat details from Codex, using saved titles if Codex is unavailable."""
         entries, next_cursor = self.store.list_entries(limit=limit, cursor=cursor)
         result = [
@@ -151,7 +149,7 @@ class QueueService:
             with self.connections.app_server() as server:
                 for index, entry in enumerate(entries):
                     try:
-                        chat = server.read_chat(str(entry.chat_id))
+                        chat = server.get_chat_summary(str(entry.chat_id))
                         result[index] = replace(chat, title=chat.title or entry.title)
                     except (CodexUnavailable, CodexProtocolError):
                         pass
@@ -188,7 +186,7 @@ class QueueService:
         with self.connections.app_server() as server, self.connections.desktop() as desktop:
             usage = server.usage()
             return Diagnostic(
-                usage.account_id, server.snapshot(chat_id, desktop) if chat_id else None
+                usage.account_id, server.get_chat(chat_id, desktop) if chat_id else None
             )
 
     def inspect(

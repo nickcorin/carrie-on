@@ -6,9 +6,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from uuid import UUID
 
+from carrie_on.application import observe_eligibility
 from carrie_on.codex.models import CodexProtocolError, CodexUnavailable
 from carrie_on.codex.sdk import AppServer
+from tests.fixtures import CHAT_ID, queue_entry
 
 
 class Settings:
@@ -24,8 +27,8 @@ class SDKProtocol(unittest.TestCase):
         self.state = Path(directory.name) / "queue.json"
         self.request_log = Path(directory.name) / "requests.jsonl"
 
-    def fixture(self, mode="normal", *, turn=None):
-        self.executable.write_text(
+    def fixture(self, mode="normal", *, turn=None, chat_id="thread-a"):
+        source = (
             f"#!{sys.executable}\n"
             + """
 import json, sys
@@ -100,7 +103,7 @@ for line in sys.stdin:
             cursor = "opening-message"
         if mode == "legacy_missing": item["clientId"] = None
         if mode == "legacy_changed": item["clientId"] = "new-message"
-        if mode == "legacy_recovery" and turn_id != "earlier-turn": item["clientId"] = "later-message"
+        if mode == "legacy_recovery": item["clientId"] = "aaaaaaaa-2222-4222-8222-aaaaaaaaaaaa" if turn_id == "earlier-turn" else "later-message"
         if mode == "legacy_wrong_turn": turn_id = "different-turn"
         if mode == "legacy_non_user": item = {"type":"agentMessage","id":"agent-a","text":"Done"}
         result = {"data":[{"turnId":turn_id,"item":item}],"nextCursor":cursor}
@@ -130,6 +133,7 @@ for line in sys.stdin:
     print(reply,flush=True)
 """
         )
+        self.executable.write_text(source.replace('"thread-a"', repr(chat_id)))
         self.executable.chmod(0o700)
 
     def test_completion_evidence_distinguishes_running_and_ended_work(self):
@@ -138,14 +142,14 @@ for line in sys.stdin:
                 with self.subTest(status=status, completed_at=completed_at):
                     self.fixture(turn={"status": status, "completedAt": completed_at})
                     with AppServer(str(self.executable)) as server:
-                        chat = server.snapshot("thread-a", Settings())
+                        chat = server.get_chat("thread-a", Settings())
                     self.assertEqual(chat.busy, status == "inProgress" or not completed_at)
                     self.assertEqual((chat.message_id, chat.model), ("original", "model-a"))
 
     def test_compact_reads_capture_ended_work_without_loading_history(self):
         self.fixture("quota")
         with AppServer(str(self.executable)) as server:
-            chat = server.snapshot("thread-a", Settings())
+            chat = server.get_chat("thread-a", Settings())
         self.assertEqual(
             (chat.title, chat.busy, chat.blocked, chat.status),
             ("Finish feature", False, False, "failed"),
@@ -172,31 +176,36 @@ for line in sys.stdin:
     def test_goal_blocks_dispatch_without_changing_desktop_state(self):
         self.fixture("paused")
         with AppServer(str(self.executable)) as server:
-            self.assertTrue(server.snapshot("thread-a", Settings()).blocked)
-            self.assertFalse(server.snapshot("thread-a", Settings(), include_goal=False).blocked)
+            self.assertTrue(server.get_chat("thread-a", Settings()).blocked)
+            self.assertFalse(server.get_chat("thread-a", Settings(), include_goal=False).blocked)
 
     def test_catalog_membership_reaches_later_pages(self):
         self.fixture("pages")
         with AppServer(str(self.executable)) as server:
-            self.assertEqual([chat.id for chat in server.threads()], ["another-thread", "thread-a"])
+            self.assertEqual(
+                [chat.id for chat in server.list_all_chats()], ["another-thread", "thread-a"]
+            )
 
     def test_unnamed_chat_uses_preview(self):
         self.fixture("unnamed")
         with AppServer(str(self.executable)) as server:
-            self.assertEqual(server.read_chat("thread-a").title, "Finish feature")
-            self.assertEqual(server.thread_page().items[0].cwd, "/tmp")
+            self.assertEqual(server.get_chat_summary("thread-a").title, "Finish feature")
+            self.assertEqual(server.list_chats().items[0].cwd, "/tmp")
 
     def test_receipt_can_be_found_on_an_older_turn(self):
-        self.fixture("legacy_recovery")
+        self.fixture("legacy_recovery", chat_id=CHAT_ID)
         with AppServer(str(self.executable)) as server:
-            chat = server.snapshot("thread-a", Settings(), receipt_id="original")
-        self.assertEqual(chat.message_id, "later-message")
-        self.assertEqual(chat.seen_message_ids, frozenset({"later-message", "original"}))
+            entry = queue_entry(
+                id=UUID("aaaaaaaa-2222-4222-8222-aaaaaaaaaaaa"),
+                title="Finish feature",
+            )
+            decision = observe_eligibility(entry, server, Settings())
+        self.assertEqual(decision.outcome, "sent")
 
     def test_compaction_marker_does_not_hide_opening_message(self):
         self.fixture("legacy_compaction")
         with AppServer(str(self.executable)) as server:
-            self.assertEqual(server.snapshot("thread-a", Settings()).message_id, "original")
+            self.assertEqual(server.get_chat("thread-a", Settings()).message_id, "original")
 
     def test_unproven_opening_identity_fails_closed(self):
         for mode in ("legacy_wrong_turn", "legacy_cursor"):
@@ -204,20 +213,25 @@ for line in sys.stdin:
                 self.fixture(mode)
                 with AppServer(str(self.executable)) as server:
                     with self.assertRaises(CodexProtocolError):
-                        server.snapshot("thread-a", Settings())
+                        server.get_chat("thread-a", Settings())
         self.fixture("quota")
         with AppServer(str(self.executable)) as server:
-            self.assertEqual(server.snapshot("thread-a", Settings()).message_id, "original")
+            self.assertEqual(server.get_chat("thread-a", Settings()).message_id, "original")
 
     def test_turn_identity_is_available_when_opening_message_has_no_client_id(self):
         for mode in ("legacy_missing", "legacy_non_user", "legacy_empty"):
             with self.subTest(mode=mode):
                 self.fixture(mode)
                 with AppServer(str(self.executable)) as server:
-                    chat = server.snapshot("thread-a", Settings())
+                    chat = server.get_chat("thread-a", Settings())
                 self.assertEqual(chat.turn_id, "turn-a")
                 self.assertIsNone(chat.message_id)
-                self.assertEqual(chat.seen_message_ids, frozenset())
+
+    def test_unaccepted_turn_cannot_supply_a_message_identity(self):
+        self.fixture(turn={"id": ""})
+        with AppServer(str(self.executable)) as server:
+            with self.assertRaisesRegex(CodexProtocolError, "identifiable latest turn"):
+                server.get_chat("thread-a", Settings())
 
     def test_initialization_failure_closes_sdk_process(self):
         self.fixture("initialize_error")
@@ -228,9 +242,20 @@ for line in sys.stdin:
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
 
+    def test_executable_acquisition_errors_are_recoverable(self):
+        for exists in (False, True):
+            with self.subTest(exists=exists):
+                if exists:
+                    self.executable.write_text("not executable")
+                    self.executable.chmod(0o600)
+                with self.assertRaises(CodexUnavailable) as raised:
+                    with AppServer(str(self.executable)):
+                        self.fail("An unavailable executable opened a session")
+                self.assertIsInstance(raised.exception.__cause__, OSError)
+
     def test_rpc_failure_does_not_break_the_next_request(self):
         self.fixture("request_error")
         with AppServer(str(self.executable)) as server:
             with self.assertRaisesRegex(CodexUnavailable, "Missing thread-a"):
-                server.read_chat("thread-a")
-            self.assertEqual(server.read_chat("thread-b").id, "thread-b")
+                server.get_chat_summary("thread-a")
+            self.assertEqual(server.get_chat_summary("thread-b").id, "thread-b")

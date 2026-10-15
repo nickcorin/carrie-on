@@ -10,7 +10,6 @@ from uuid import uuid4
 
 from carrie_on.codex.client import AppServer, CodexConnections
 from carrie_on.codex.models import (
-    Chat,
     CodexProtocolError,
     CodexUnavailable,
     UsageSelectionError,
@@ -19,7 +18,7 @@ from carrie_on.codex.models import (
 from carrie_on.dispatch import DispatchWorker
 from carrie_on.queue import QueueEntry
 from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
-from tests.fixtures import CHAT_ID, CodexFixture, instant, snapshot, usage
+from tests.fixtures import CHAT_ID, CodexFixture, chat, instant, usage
 
 
 class DispatchBehavior(unittest.TestCase):
@@ -36,13 +35,13 @@ class DispatchBehavior(unittest.TestCase):
         self.item = QueueEntry.enroll(
             uuid4(),
             "Finish tests",
-            Chat.parse(snapshot()),
+            chat(),
             UsageSnapshot.parse(usage()).select(),
             instant(50),
         )
         self.store.create_entry(self.item)
         self.connections = CodexConnections("fixture")
-        self.worker = DispatchWorker(self.store, self.connections, clock=lambda: instant(self.now))
+        self.worker = DispatchWorker(self.store, self.connections)
 
     def tick(self, now=None):
         self.now = self.now + 2 if now is None else now
@@ -131,17 +130,17 @@ class DispatchBehavior(unittest.TestCase):
 
     def test_secondary_window_change_after_restart_needs_no_observed_exhaustion(self):
         self.store.update_entry_state(self.item.id, "cancelled")
-        self.codex.chat = snapshot("completed", error=None)
+        self.codex.chat = chat(status="completed")
         self.item = QueueEntry.enroll(
             uuid4(),
             "Finish tests",
-            Chat.parse(self.codex.chat),
+            self.codex.chat,
             UsageSnapshot.parse(usage(20, 100, {"usedPercent": 40, "resetsAt": 500})).select(),
             instant(50),
         )
         self.store.create_entry(self.item)
         self.store = SqliteQueueStorage(self.path, clock=lambda: instant(self.now))
-        self.worker = DispatchWorker(self.store, self.connections, clock=lambda: instant(self.now))
+        self.worker = DispatchWorker(self.store, self.connections)
         self.codex.limits = usage(20, 100, {"usedPercent": 60, "resetsAt": 600})
         self.tick(now=70)
         self.assertEqual(self.item_state().state, "sent")
@@ -204,52 +203,45 @@ class DispatchBehavior(unittest.TestCase):
         self.assertEqual(self.item_state().error, "")
 
     def test_busy_chat_records_failure_then_retries(self):
-        self.codex.chat = snapshot("inProgress", runtime="active")
+        self.codex.chat = chat(status="inProgress", busy=True)
         self.tick()
         self.assertEqual(self.item_state().state, "failed")
         self.assertTrue(self.item_state().error)
-        self.codex.chat = snapshot()
+        self.codex.chat = chat()
         self.tick()
         self.assertEqual(self.item_state().state, "sent")
 
-    def test_approval_input_and_goal_blocks_record_retryable_errors(self):
-        for change in (
-            {"requests": [{}]},
-            {"externalRequests": [{}]},
-            {"threadGoal": {"status": "paused"}},
-            {"threadGoal": {"status": "blocked"}},
-            {"threadGoal": {"status": "budgetLimited"}},
-        ):
-            self.codex.chat = {**snapshot(), **change}
-            self.tick()
-            self.assertEqual(self.item_state().state, "failed")
-            self.assertTrue(self.item_state().error)
+    def test_blocked_chat_records_a_retryable_error(self):
+        self.codex.chat = chat(blocked=True)
+        self.tick()
+        self.assertEqual(self.item_state().state, "failed")
+        self.assertEqual(self.item_state().error, "Chat is active or requires attention")
         self.assertFalse(self.codex.delivered)
 
     def test_changed_task_is_stale_but_model_or_catalog_failures_retry(self):
-        self.codex.chat = {**snapshot(), "latestModel": "new-model"}
+        self.codex.chat = chat(model="new-model")
         self.tick()
         self.assertEqual(self.item_state().state, "failed")
-        self.codex.chat = snapshot(message_id="different-task")
+        self.codex.chat = chat(message_id="different-task")
         self.tick()
         self.assertEqual(self.item_state().state, "stale")
         self.replace_item()
-        self.codex.chat = snapshot()
-        with patch.object(self.codex, "threads", return_value=[]):
+        self.codex.chat = chat()
+        with patch.object(self.codex, "list_all_chats", return_value=[]):
             self.tick()
         self.assertEqual(self.item_state().state, "failed")
         self.assertFalse(self.codex.delivered)
 
     def test_busy_enrollment_completed_normally_is_not_resumed(self):
         self.replace_item(enrolled_while_busy=True)
-        self.codex.chat = snapshot("completed")
+        self.codex.chat = chat(status="completed")
         self.tick()
         self.assertEqual(self.item_state().state, "stale")
         self.assertFalse(self.codex.delivered)
 
     def test_busy_enrollment_can_resume_after_window_change_without_quota_failure(self):
         self.replace_item(enrolled_while_busy=True)
-        self.codex.chat = snapshot("interrupted", error="other")
+        self.codex.chat = chat(status="interrupted")
         self.codex.limits = usage(50, 100)
         self.tick()
         self.assertEqual(self.item_state().state, "failed")
@@ -259,15 +251,11 @@ class DispatchBehavior(unittest.TestCase):
         self.assertEqual(self.item_state().state, "sent")
 
     def test_enrollment_captures_anchors_without_deciding_readiness(self):
-        for changes in (
-            {"requests": [{}]},
-            {"threadGoal": {"status": "paused"}},
-            {"resumeState": "loading"},
-        ):
+        for observation in (chat(blocked=True), chat(busy=True)):
             item = QueueEntry.enroll(
                 uuid4(),
                 "Continue",
-                Chat.parse({**snapshot(), **changes}),
+                observation,
                 UsageSnapshot.parse(usage()).select(),
                 instant(50),
             )
@@ -275,7 +263,7 @@ class DispatchBehavior(unittest.TestCase):
 
     def test_lost_receipt_reconciles_accepted_message_without_resending(self):
         def accepted_but_lost(*_):
-            self.codex.chat = snapshot("inProgress", str(self.item.id), "active")
+            self.codex.chat = chat(status="inProgress", message_id=str(self.item.id), busy=True)
             raise CodexUnavailable("Receipt lost")
 
         with patch.object(self.codex, "continue_chat", side_effect=accepted_but_lost) as send:
@@ -288,7 +276,7 @@ class DispatchBehavior(unittest.TestCase):
         self.assertEqual(self.item_state().state, "sent")
 
     def test_earlier_accepted_message_is_reconciled_before_marking_stale(self):
-        self.codex.chat = snapshot(message_id="later-message")
+        self.codex.chat = chat(message_id="later-message")
         with patch.object(self.codex, "has_message", return_value=True) as find:
             self.tick()
         find.assert_called_once_with(CHAT_ID, str(self.item.id))
@@ -312,13 +300,11 @@ class DispatchBehavior(unittest.TestCase):
             [str(self.item.id), str(self.item.id)],
         )
 
-    def test_provisional_message_is_not_an_acceptance_receipt(self):
-        raw = snapshot(message_id=str(self.item.id))
-        raw["turnHistory"]["history"]["entitiesByKey"]["latest"].pop("turnId")
-        self.assertNotIn(str(self.item.id), Chat.parse(raw).seen_message_ids)
-        self.codex.chat = raw
+    def test_wrong_chat_cannot_supply_an_acceptance_receipt(self):
+        self.codex.chat = chat(thread_id=str(uuid4()), message_id=str(self.item.id))
         self.tick()
-        self.assertEqual(self.item_state().state, "stale")
+        self.assertEqual(self.item_state().state, "failed")
+        self.assertEqual(self.item_state().error, "Desktop returned a different chat")
         self.assertFalse(self.codex.delivered)
 
     def test_connection_failure_is_visible_and_does_not_lose_work(self):
@@ -329,6 +315,21 @@ class DispatchBehavior(unittest.TestCase):
             self.worker.send()
         self.assertEqual(self.item_state().error, "No desktop")
         self.assertEqual(self.item_state().state, "failed")
+
+    def test_missing_executable_leaves_a_retryable_entry(self):
+        self.worker.connections = CodexConnections(str(self.path.parent / "missing-codex"))
+        self.assertTrue(self.worker.send())
+        self.assertEqual(self.item_state().state, "failed")
+        self.assertIn("missing-codex", self.item_state().error)
+        self.assertTrue(self.item_state().dispatching)
+
+    def test_each_send_claims_and_attempts_delivery_once(self):
+        self.codex.lose_reply = True
+        self.assertTrue(self.tick())
+        self.assertEqual(len(self.codex.delivered), 1)
+        self.assertEqual(self.item_state().state, "failed")
+        self.assertFalse(self.tick(now=self.now))
+        self.assertEqual(len(self.codex.delivered), 1)
 
     def test_ambiguous_quota_requires_selection_and_read_client_rejects_execution(self):
         raw = usage()
@@ -352,18 +353,6 @@ class DispatchBehavior(unittest.TestCase):
         self.assertEqual(self.item_state().state, "queued")
 
     def test_malformed_codex_fields_are_protocol_errors_and_never_send(self):
-        invalid_chats = [
-            {"title": {}},
-            {"threadRuntimeStatus": {"type": []}},
-            {"threadGoal": {"status": {}}},
-        ]
-        for changes in invalid_chats:
-            with self.subTest(changes=changes), self.assertRaises(CodexProtocolError):
-                Chat.parse({**snapshot(), **changes})
-        raw = snapshot()
-        raw["turnHistory"]["history"]["entitiesByKey"]["latest"]["status"] = {}
-        with self.assertRaises(CodexProtocolError):
-            Chat.parse(raw)
         for changes in (
             {"spendControlReached": "true"},
             {"primary": {"usedPercent": 10**1000, "resetsAt": 200}},

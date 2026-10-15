@@ -8,6 +8,7 @@ import threading
 import time
 from collections.abc import Callable
 from importlib.metadata import version
+from types import TracebackType
 from typing import TYPE_CHECKING, TypeVar
 
 from openai_codex.client import CodexClient, CodexConfig
@@ -42,7 +43,13 @@ T = TypeVar("T")
 class AppServer:
     """Close the SDK session when a request exceeds its timeout or the supplied deadline."""
 
-    def __init__(self, executable="codex", timeout=30, deadline=None, codex_home=None):
+    def __init__(
+        self,
+        executable: str = "codex",
+        timeout: float = 30,
+        deadline: float | None = None,
+        codex_home: str | None = None,
+    ) -> None:
         self.timeout, self.deadline = timeout, deadline
         self._client = CodexClient(
             CodexConfig(
@@ -54,16 +61,21 @@ class AppServer:
             )
         )
 
-    def __enter__(self):
+    def __enter__(self) -> "AppServer":
         try:
-            self._client.start()
+            self._call(self._client.start)
             self._call(self._client.initialize)
         except BaseException:
             self._client.close()
             raise
         return self
 
-    def __exit__(self, *_):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         self._client.close()
 
     def _call(self, operation: Callable[[], T]) -> T:
@@ -94,7 +106,9 @@ class AppServer:
             response.model_dump(mode="json", by_alias=True, exclude_unset=True)
         )
 
-    def thread_page(self, search=None, *, cursor=None, limit=25) -> ChatPage:
+    def list_chats(
+        self, search: str | None = None, *, cursor: str | None = None, limit: int = 25
+    ) -> ChatPage:
         response = self._call(
             lambda: self._client.request(
                 "thread/list",
@@ -123,13 +137,13 @@ class AppServer:
             last_activity=thread.updated_at,
         )
 
-    def threads(self, search=None) -> tuple[ChatSummary, ...]:
+    def list_all_chats(self, search: str | None = None) -> tuple[ChatSummary, ...]:
         """Read every matching catalog page and reject repeated cursors."""
         entries: list[ChatSummary] = []
         seen: set[str] = set()
         cursor = None
         while True:
-            page = self.thread_page(search, cursor=cursor, limit=100)
+            page = self.list_chats(search, cursor=cursor, limit=100)
             entries.extend(page.items)
             if page.next_cursor is None:
                 return tuple(entries)
@@ -138,7 +152,7 @@ class AppServer:
             seen.add(page.next_cursor)
             cursor = page.next_cursor
 
-    def read_chat(self, chat_id: str) -> ChatSummary:
+    def get_chat_summary(self, chat_id: str) -> ChatSummary:
         response = self._call(
             lambda: self._client.request(
                 "thread/read",
@@ -151,12 +165,11 @@ class AppServer:
         )
         return self._summary(response.thread)
 
-    def snapshot(
+    def get_chat(
         self,
         chat_id: str,
         desktop: "Desktop",
         *,
-        receipt_id: str | None = None,
         include_goal: bool = True,
         before_open: Callable[[], None] | None = None,
     ) -> Chat:
@@ -165,10 +178,13 @@ class AppServer:
         Treat the chat as busy while the turn is in progress or has no positive
         completion timestamp. Turn pages omit items. Read item pages until the
         first item other than context compaction, and use its client ID if it is
-        a user message. Scan older turns only when receipt_id was supplied and
-        is absent from the latest turn.
+        a user message. The turn must have an accepted turn ID.
+
+        An opening-enabled desktop may open a dormant chat and change Codex's
+        visible chat. Validate catalog membership first or supply before_open,
+        as required by Desktop.read_settings. Diagnostics use a non-opening desktop.
         """
-        summary = self.read_chat(chat_id)
+        summary = self.get_chat_summary(chat_id)
         settings = desktop.read_settings(chat_id, before_open=before_open)
         page = self._turns(chat_id, limit=1)
         if len(page.data) != 1 or not page.data[0].id:
@@ -191,9 +207,6 @@ class AppServer:
             if include_goal
             else None
         )
-        seen = {message_id} if message_id else set()
-        if receipt_id and receipt_id not in seen and self.has_message(chat_id, receipt_id):
-            seen.add(receipt_id)
         return Chat(
             thread_id=summary.id,
             title=summary.title or summary.id,
@@ -214,7 +227,6 @@ class AppServer:
                     ThreadGoalStatus.blocked,
                 }
             ),
-            seen_message_ids=frozenset(seen),
         )
 
     def _turns(self, chat_id, *, limit=100, cursor=None):
