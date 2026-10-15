@@ -2,11 +2,20 @@
 
 Resume selected local Codex chats after a usage reset. A Python program checks quota metadata and asks the running desktop app to continue eligible chats. Polling, queue management, and the resume trigger require no model inference. Only the resumed work consumes model usage.
 
-You need macOS, a signed-in Codex CLI, and the Codex desktop app. Source installations also need Python 3.10 or later. Keep the Mac awake and connected. The internal desktop IPC protocol was inspected on version 26.1007.30912, build 20156. Live reads were tested with CLI 0.161.0. Unsupported responses stop dispatch.
+You need macOS, a signed-in Codex CLI, and the Codex desktop app. Source installations also need Python 3.10 or later. Keep the Mac awake and connected. The internal desktop IPC protocol was inspected on version 26.1007.30912, build 20156. The SDK integration was tested with CLI 0.162.0-alpha.17.2. Unsupported responses stop dispatch.
 
 For the bundled app, follow the [installation and update instructions](INSTALL.md). Python is included, and first launch sets up the services. Version 0.5.6 automatically imports data from older bundled installations after you replace the app. Settings, queues, and history remain outside the signed app.
 
-The Terminal commands below run from a source checkout. Bundled installations use the executable and data paths in the [configuration guide](INSTALL.md#configuration-and-recovery).
+The Terminal commands below run from a source checkout. First create and activate a virtual environment, then install the runtime dependencies:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+python3 carrie_on.py --help
+```
+
+Activate `.venv` again in each new terminal before running source commands or installing services. The installers retain this interpreter's path. Contributors can use `just setup` to install the build dependencies too. Bundled installations include Python and dependencies; use the executable and data paths in the [configuration guide](INSTALL.md#configuration-and-recovery).
 
 ## Menu bar
 
@@ -64,11 +73,11 @@ These commands work while model usage is exhausted. You can also ask an agent to
 
 ## Behavior
 
-Enrollment captures the intended task, instruction, account, and reset baseline; chat readiness is checked at resume time. The interface reuses validated usage data up to 60 seconds old when its reset timestamps are still in the future, avoiding another helper startup in the usual enqueue path. A live task snapshot remains necessary to anchor the request to the current work. Slow enrollment reads do not hold the queue lock. Chats awaiting approval or with paused goals may be queued, but cannot resume while blocked. See the [enrollment and resume contract](features/continuation-queue.md) for the data split and fallback behavior.
+Enrollment captures the intended task, instruction, account, and reset baseline; chat readiness is checked at resume time. The interface reuses validated usage data up to 60 seconds old when its reset timestamps are still in the future, avoiding another quota request. Enrollment reads chat metadata and the latest turn header through a shared SDK session, and current model settings from the desktop. Slow enrollment reads do not hold the queue lock. Chats awaiting approval or with paused goals may be queued, but cannot resume while blocked. See the [enrollment and resume contract](features/continuation-queue.md) for the data split and fallback behavior.
 
 The per-user `launchd` job checks every 60 seconds while Carrie On is running. Automatic login startup follows the Launch at Login setting. It makes no network calls with an empty or paused queue. Waiting enrollments fetch fresh usage on every check, including before the recorded reset deadline, so an early manual reset can resume work promptly. The relevant reset timestamps must advance to future times and every reported window in the selected bucket must have headroom. It never buys credits, redeems resets, changes models, or alters permissions.
 
-The app retains ownership of resumed chats and supplies their existing model, tools, directory, and permission settings. A dormant queued chat can be reopened through its ordinary deep link; this may change the visible chat. The monitor never starts a competing app-server turn. Its app-server client only allows read methods.
+The app retains ownership of resumed chats and supplies their existing model, tools, directory, and permission settings. A dormant queued chat can be reopened through its ordinary deep link; this may change the visible chat. The monitor never starts a competing app-server turn. Its SDK adapter issues only read operations; all continuations go through the desktop.
 
 Active chats and chats awaiting approval/input are deferred. A new turn or model change after enrollment holds the entry for review. Work enrolled while running is removed if it finishes normally before reset; interruption or unrelated failure requires review. A chat deliberately enrolled while idle receives its continuation after reset even if its previous turn completed normally. Paused or budget-limited goals are never resumed automatically.
 
@@ -96,7 +105,7 @@ Exit status: 0 for completed commands, 1 for input/connection/service errors, 13
 
 ## Recovery
 
-Queue writes use a process lock, atomic replacement, and disk flushes. A durable `sending` state precedes dispatch. After a crash or lost reply, the next check looks for the enrollment's message ID in desktop history. Confirmed deliveries are removed; unresolved deliveries become `needs_attention` and are never blindly resent. This avoids duplicates under uncertain delivery; it does not promise distributed exactly-once execution.
+Queue writes use a process lock, atomic replacement, and disk flushes. A durable `sending` state precedes dispatch. The worker saves the desktop acceptance receipt before recording success. After a crash, a saved receipt confirms delivery. A missing receipt on a new enrollment requires review; it does not trigger a resend. Older entries without a server-turn anchor use SDK turn headers and opening messages to reconcile delivery. See the [continuation contract](features/continuation-queue.md) for migration and recovery details. This avoids duplicates under uncertain delivery; it does not promise distributed exactly-once execution.
 
 Unavailable usage, a closed app, and network errors leave entries for another check. Missing/invalid quota data, account changes, changed chats, and incompatible history shapes require review. The monitor does not infer completion from prose or bypass approvals. A small race remains between reading live state and sending; the desktop is the final authority on accepting a turn.
 
@@ -120,4 +129,4 @@ python3 -m pydoc codex_bridge resume_queue app_runtime macos_compatibility
 
 Tests cover exhausted/reset quotas, multiple windows, changed accounts/chats, busy or manually stopped work, pauses, corrupt state, and lost replies. `doctor` checks live model-free reads. Synthetic resets do not establish the backend's behavior at a future reset. See [release verification](INSTALL.md#release-verification) for the manual checks and compatibility limits.
 
-`codex_bridge.py` owns protocol adaptation, `resume_queue.py` owns enrollment and durable transitions, and `carrie_on.py` owns CLI and worker installation. `carrie_on_ui.py` adapts local API requests from the native card to those same commands. No third-party packages are required. See the [feature map](features/index.md) and [official App Server reference](https://learn.chatgpt.com/docs/app-server).
+`codex_bridge.py` owns protocol adaptation, `resume_queue.py` owns enrollment and durable transitions, and `carrie_on.py` owns CLI and worker installation. `carrie_on_ui.py` adapts local API requests from the native card to those same commands. The official Codex Python SDK and its dependencies are pinned in `requirements.txt`. See the [feature map](features/index.md) and [official App Server reference](https://learn.chatgpt.com/docs/app-server).

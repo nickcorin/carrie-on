@@ -8,11 +8,13 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from dataclasses import replace
 
-from test_carrie_on import snapshot, usage
+from openai_codex.errors import JsonRpcError
+
+from test_carrie_on import chat, usage
 from carrie_on_ui import Dashboard, DashboardServer
-from resume_queue import Chat, Usage, UsageObservation, locked_queue
-from codex_bridge import AppServer
+from resume_queue import Usage, UsageObservation, locked_queue
 
 
 CHAT_ID = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
@@ -28,31 +30,29 @@ class LocalCodex:
     def __exit__(self, *_):
         pass
 
-    def usage(self):
+    @classmethod
+    def connect(cls, *args, **kwargs):
+        return cls(*args, **kwargs)
+
+    def read_usage(self):
         return usage(25, int(time.time()) + 3600)
 
-    def threads(self, search=None):
+    def list_chats(self, search=None, *, cursor=None, limit=25):
         title = 'A chat with <script> & "quotes"'
-        if search and search not in title:
-            return []
-        return [{"id": CHAT_ID, "name": title, "cwd": "/projects/example", "updatedAt": 1791900000}]
+        chats = [] if search and search not in title else [
+            {"id": CHAT_ID, "title": title, "cwd": "/projects/example", "last_activity": 1791900000}]
+        return {"chats": chats, "next_cursor": None}
 
-    def request(self, method, params):
-        if method != "thread/read" or params["threadId"] != CHAT_ID:
+    def read_chat_summary(self, thread_id, *, fallback_title=None):
+        if thread_id != CHAT_ID:
             raise ValueError("Unknown fixture chat")
-        return {"thread": self.threads()[0]}
+        return self.list_chats()["chats"][0]
 
-    def snapshot(self, thread_id, *, before_open=None):
-        result = snapshot("completed")
-        result["id"] = thread_id
-        result["title"] = self.threads()[0]["name"]
-        return result
+    def contains_chat(self, thread_id, title):
+        return thread_id == CHAT_ID
 
-    def settings(self, thread_id, *, before_open=None):
-        return {"model": "model-a", "resumeState": "resumed"}
-
-    def read_chat(self, thread_id, _desktop, *, include_goal=False):
-        return Chat.parse(self.snapshot(thread_id))
+    def read_chat(self, thread_id, _desktop, *, include_goal=False, open_if_needed=False):
+        return replace(chat("completed"), thread_id=thread_id, title=self.list_chats()["chats"][0]["title"])
 
 
 class DashboardBehavior(unittest.TestCase):
@@ -60,7 +60,7 @@ class DashboardBehavior(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.state = Path(temporary.name) / "queue.json"
-        for target in ("AppServer", "Desktop"):
+        for target in ("CodexClient", "DesktopClient"):
             mock = patch("carrie_on." + target, LocalCodex)
             mock.start()
             self.addCleanup(mock.stop)
@@ -96,7 +96,7 @@ class DashboardBehavior(unittest.TestCase):
     def test_connection_reports_handshake_and_recovers_without_changing_queue(self):
         self.request("/api/queue", {"chat": CHAT_ID, "prompt": "Continue the tests."})
         self.assertEqual(self.request("/api/connection"), (200, {"connected": True}))
-        with patch("carrie_on.Desktop", side_effect=FileNotFoundError("No socket")):
+        with patch("carrie_on.DesktopClient", side_effect=FileNotFoundError("No socket")):
             self.assertEqual(self.request("/api/connection"), (200, {"connected": False}))
             _, queue = self.request("/api/status")
             self.assertEqual(queue["entries"][0]["prompt"], "Continue the tests.")
@@ -138,7 +138,7 @@ class DashboardBehavior(unittest.TestCase):
         _, queued = self.request("/api/queue", {"chat": CHAT_ID, "prompt": "Original instruction"})
         entry = queued["entry"]
         body = {"chat": entry["id"], "prompt": "--finish the revised tests", "expected_prompt": entry["prompt"]}
-        with patch("carrie_on.AppServer", side_effect=AssertionError("Editing must not contact Codex")):
+        with patch("carrie_on.CodexClient", side_effect=AssertionError("Editing must not contact Codex")):
             for _ in range(2):
                 status, edited = self.request("/api/instruction", body)
                 self.assertEqual(status, 200)
@@ -156,27 +156,26 @@ class DashboardBehavior(unittest.TestCase):
         self.assertEqual(queued[0], chats[0])
         self.assertEqual(self.request("/api/chats?search=unmatched")[1], [])
         self.assertEqual(self.request("/api/queued-chats")[1][0]["last_activity"], 1791900000)
-        with patch.object(LocalCodex, "request", side_effect=ValueError("Chat unavailable")):
-            fallback = self.request("/api/queued-chats")[1][0]
-        self.assertEqual(fallback, {"id": CHAT_ID, "title": chats[0]["title"], "cwd": None, "last_activity": None})
+        for error in (ValueError("Chat unavailable"), JsonRpcError(12345, "Chat unavailable")):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(LocalCodex, "read_chat_summary", side_effect=error):
+                    status, fallback = self.request("/api/queued-chats")
+                self.assertEqual((status, fallback),
+                                 (200, [{"id": CHAT_ID, "title": chats[0]["title"], "cwd": None, "last_activity": None}]))
 
     def test_chat_pages_reach_older_results_and_preserve_search(self):
         class PagedCodex(LocalCodex):
-            thread_page = AppServer.thread_page
-
-            def request(self, method, params):
-                if method != "thread/list":
-                    raise ValueError("Unexpected method")
-                chats = [{"id": str(index), "name": f"Chat {index}", "updatedAt": index}
+            def list_chats(self, search=None, *, cursor=None, limit=25):
+                chats = [{"id": str(index), "title": f"Chat {index}", "last_activity": index, "cwd": None}
                          for index in range(125)]
-                if params.get("searchTerm"):
-                    chats = [chat for chat in chats if params["searchTerm"] in chat["name"]]
-                chats.sort(key=lambda chat: chat["updatedAt"], reverse=params["sortDirection"] == "desc")
-                start = int(params.get("cursor", "offset:0").split(":")[1])
-                end = start + params["limit"]
-                return {"data": chats[start:end], "nextCursor": f"offset:{end}" if end < len(chats) else None}
+                if search:
+                    chats = [chat for chat in chats if search in chat["title"]]
+                chats.sort(key=lambda chat: chat["last_activity"], reverse=True)
+                start = int((cursor or "offset:0").split(":")[1])
+                end = start + limit
+                return {"chats": chats[start:end], "next_cursor": f"offset:{end}" if end < len(chats) else None}
 
-        with patch("carrie_on.AppServer", PagedCodex):
+        with patch("carrie_on.CodexClient", PagedCodex):
             status, page = self.request("/api/chat-page")
             self.assertEqual(status, 200)
             self.assertEqual([chat["id"] for chat in page["chats"]], [str(i) for i in range(124, 99, -1)])
@@ -197,10 +196,11 @@ class DashboardBehavior(unittest.TestCase):
         self.assertEqual(self.request("/api/chat-page", headers={"X-Carrie-On": ""})[0], 403)
 
     def test_chat_page_errors_are_retryable_and_validate_inputs(self):
-        with patch.object(LocalCodex, "thread_page", create=True, side_effect=RuntimeError("Temporarily unavailable")):
+        with patch.object(LocalCodex, "list_chats", create=True, side_effect=RuntimeError("Temporarily unavailable")):
             self.assertEqual(self.request("/api/chat-page?cursor=page2"), (503, {"error": "Temporarily unavailable"}))
-        with patch.object(LocalCodex, "thread_page", create=True,
-                          return_value={"data": [{"id": "older", "preview": "Older chat"}], "nextCursor": None}):
+        with patch.object(LocalCodex, "list_chats", create=True,
+                          return_value={"chats": [{"id": "older", "title": "Older chat", "cwd": None,
+                                                  "last_activity": None}], "next_cursor": None}):
             self.assertEqual(self.request("/api/chat-page?cursor=page2"), (200, {
                 "chats": [{"id": "older", "title": "Older chat", "cwd": None, "last_activity": None}], "next_cursor": None}))
         for query in ("search=" + "x" * 501, "cursor=" + "x" * 16385, "cursor=a&cursor=b", "limit=1000"):
@@ -266,7 +266,7 @@ class DashboardBehavior(unittest.TestCase):
 
     def test_menu_usage_failure_preserves_queue_count(self):
         self.request("/api/queue", {"chat": CHAT_ID})
-        with patch.object(LocalCodex, "usage", side_effect=RuntimeError("Offline")):
+        with patch.object(LocalCodex, "read_usage", side_effect=RuntimeError("Offline")):
             status, summary = self.request("/api/menu")
         self.assertEqual(status, 200)
         self.assertEqual(summary["queue"]["count"], 1)
@@ -274,7 +274,7 @@ class DashboardBehavior(unittest.TestCase):
         self.assertEqual(summary["usage_error"], "Offline")
 
     def test_menu_snapshot_reports_desktop_loss_and_recovery(self):
-        with patch("carrie_on.Desktop", side_effect=FileNotFoundError("No socket")):
+        with patch("carrie_on.DesktopClient", side_effect=FileNotFoundError("No socket")):
             status, summary = self.request("/api/menu")
         self.assertEqual(status, 200)
         self.assertFalse(summary["connected"])
@@ -283,12 +283,13 @@ class DashboardBehavior(unittest.TestCase):
 
     def test_recent_usage_enrolls_without_refetching_quota(self):
         self.assertEqual(self.request("/api/menu")[0], 200)
-        with patch.object(LocalCodex, "usage", side_effect=AssertionError("Cached enrollment must not refetch quota")):
+        with patch.object(LocalCodex, "read_usage", side_effect=AssertionError("Cached enrollment must not refetch quota")):
             status, result = self.request("/api/queue", {"chat": CHAT_ID, "prompt": "Continue tests"})
         self.assertEqual(status, 200)
         entry = result["entry"]
-        self.assertEqual((entry["thread_id"], entry["anchor_message_id"], entry["account_id"], entry["prompt"]),
-                         (CHAT_ID, "original", "account-a", "Continue tests"))
+        self.assertEqual((entry["thread_id"], entry["anchor_message_id"], entry["anchor_turn_id"],
+                          entry["account_id"], entry["prompt"]),
+                         (CHAT_ID, None, "turn-original", "account-a", "Continue tests"))
         self.assertEqual(self.request("/api/status")[1]["entries"][0], entry)
 
     def test_expired_usage_and_elapsed_reset_are_refetched(self):
@@ -305,7 +306,7 @@ class DashboardBehavior(unittest.TestCase):
 
     def test_failed_usage_read_invalidates_cached_enrollment_data(self):
         self.request("/api/menu")
-        with patch.object(LocalCodex, "usage", side_effect=RuntimeError("Offline")):
+        with patch.object(LocalCodex, "read_usage", side_effect=RuntimeError("Offline")):
             self.assertEqual(self.request("/api/menu")[1]["usage_error"], "Offline")
             status, result = self.request("/api/queue", {"chat": CHAT_ID})
             self.assertEqual(status, 503)
@@ -315,12 +316,12 @@ class DashboardBehavior(unittest.TestCase):
     def test_multiple_cached_buckets_still_require_a_selection(self):
         raw = usage(25, int(time.time()) + 3600)
         raw["rateLimitsByLimitId"]["other"] = raw["rateLimitsByLimitId"]["codex"]
-        with patch.object(LocalCodex, "usage", return_value=raw):
+        with patch.object(LocalCodex, "read_usage", return_value=raw):
             self.assertEqual(self.request("/api/menu")[0], 200)
             status, result = self.request("/api/queue", {"chat": CHAT_ID})
             self.assertEqual(status, 400)
             self.assertIn("Choose --limit-id", result["error"])
-            with patch.object(LocalCodex, "usage", side_effect=AssertionError("Selected cached bucket should suffice")):
+            with patch.object(LocalCodex, "read_usage", side_effect=AssertionError("Selected cached bucket should suffice")):
                 status, result = self.request("/api/queue", {"chat": CHAT_ID, "limit_id": "other"})
             self.assertEqual(status, 200)
             self.assertEqual(result["entry"]["limit_id"], "other")
@@ -334,34 +335,34 @@ class DashboardBehavior(unittest.TestCase):
                 raise RuntimeError("Fixture timed out")
             return usage(25, int(time.time()) + 3600, account="old-account")
 
-        with patch.object(LocalCodex, "usage", delayed_usage):
+        with patch.object(LocalCodex, "read_usage", delayed_usage):
             worker = threading.Thread(target=lambda: results.append(self.request("/api/usage")))
             worker.start()
             try:
                 self.assertTrue(entered.wait(2))
-                with patch.object(LocalCodex, "usage", return_value=usage(25, int(time.time()) + 3600)):
+                with patch.object(LocalCodex, "read_usage", return_value=usage(25, int(time.time()) + 3600)):
                     self.assertEqual(self.request("/api/usage")[0], 200)
             finally:
                 release.set()
                 worker.join(5)
         self.assertEqual(results[0][1]["accountId"], "old-account")
-        with patch.object(LocalCodex, "usage", side_effect=AssertionError("Use the newer cached account")):
+        with patch.object(LocalCodex, "read_usage", side_effect=AssertionError("Use the newer cached account")):
             status, result = self.request("/api/queue", {"chat": CHAT_ID})
         self.assertEqual(status, 200)
         self.assertEqual(result["entry"]["account_id"], "account-a")
 
     def test_slow_enrollment_does_not_lock_other_queue_actions(self):
         entered, release = threading.Event(), threading.Event()
-        original_snapshot = LocalCodex.snapshot
+        original_read = LocalCodex.read_chat
         results = []
 
-        def slow_snapshot(client, thread_id, **kwargs):
+        def slow_read(client, thread_id, desktop, **kwargs):
             entered.set()
             if not release.wait(8):
                 raise RuntimeError("Fixture timed out")
-            return original_snapshot(client, thread_id, **kwargs)
+            return original_read(client, thread_id, desktop, **kwargs)
 
-        with patch.object(LocalCodex, "snapshot", slow_snapshot):
+        with patch.object(LocalCodex, "read_chat", slow_read):
             worker = threading.Thread(target=lambda: results.append(self.request("/api/queue", {"chat": CHAT_ID})))
             worker.start()
             try:
@@ -377,14 +378,14 @@ class DashboardBehavior(unittest.TestCase):
 
     def test_concurrent_enrollments_cannot_duplicate_a_chat(self):
         barrier = threading.Barrier(2)
-        original_snapshot = LocalCodex.snapshot
+        original_read = LocalCodex.read_chat
         results = []
 
-        def simultaneous_snapshot(client, thread_id, **kwargs):
+        def simultaneous_read(client, thread_id, desktop, **kwargs):
             barrier.wait(timeout=3)
-            return original_snapshot(client, thread_id, **kwargs)
+            return original_read(client, thread_id, desktop, **kwargs)
 
-        with patch.object(LocalCodex, "snapshot", simultaneous_snapshot):
+        with patch.object(LocalCodex, "read_chat", simultaneous_read):
             workers = [threading.Thread(target=lambda: results.append(
                 self.request("/api/queue", {"chat": CHAT_ID}))) for _ in range(2)]
             for worker in workers:

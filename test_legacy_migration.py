@@ -129,12 +129,13 @@ class MigrationTests(unittest.TestCase):
         bundle_install.setup(self.args())
         queue = Queue(self.data / "resume-queue.json")
         self.assertEqual((queue.entries[0].id, queue.entries[0].state), (sending.id, "sending"))
-        class Desktop:
-            def snapshot(self, thread):
-                raise ValueError("Offline")
+        class Codex:
+            def find_legacy_turn(self, thread, message_id, *, latest_only=True):
+                return None
             def continue_chat(self, *args):
                 raise AssertionError("Migration replayed an uncertain send")
-        check_queue(queue, None, Desktop(), now=300)
+        codex = Codex()
+        check_queue(queue, codex, codex, now=300)
         self.assertEqual(queue.entries[0].state, "needs_attention")
         self.assertEqual(queue.entries[0].attempted_at, 100)
 

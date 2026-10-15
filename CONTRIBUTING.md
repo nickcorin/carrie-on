@@ -18,7 +18,8 @@ Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix socket
 | Component | Responsibility |
 | --- | --- |
 | `resume_queue.py` | Queue persistence, enrollment anchors, quota eligibility, and uncertain-send recovery |
-| `codex_bridge.py` | Bounded Codex SDK reads and desktop-owned continuation over IPC |
+| `codex_bridge.py` | Public Codex SDK reads and desktop-owned continuation over IPC |
+| `verify_desktop.py` | Desktop history observation for integration tests |
 | `carrie_on.py` | CLI and scheduled worker |
 | `carrie_on_ui.py` | Loopback HTTP API for the native card |
 | `menubar/` | Native AppKit menu, chat picker, setup, and lifecycle |
@@ -29,6 +30,26 @@ Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix socket
 | `disk_image.py`, `assets/DMGBackground.swift` | Drag-to-Applications disk image, installer artwork, and mounted-image verification |
 
 Keep queue mutations behind `locked_queue`. Persist sending state before dispatch and never turn a missing reply into an automatic retry. The CLI and native card share that contract. Changes to installed service identities and data paths require explicit migration guidance. More detail is in the [feature contracts](features/index.md).
+
+`CodexClient.connect()` owns the SDK session. Its methods return chat observations, summaries, quota data, and legacy turn matches. `DesktopClient` owns the local socket and exposes settings reads, chat opening, and continuation. `resume_queue.py` owns queue state and imports `Chat` from `codex_bridge.py`. Production code does not import the history observer.
+
+Generate the client reference with `.venv/bin/python -m pydoc -w codex_bridge`. The command writes `codex_bridge.html` in the current directory.
+
+With an authenticated Codex CLI on `PATH`, this read-only example prints the IDs and titles of all unarchived local chats:
+
+```python
+from codex_bridge import CodexClient
+
+with CodexClient.connect() as client:
+	cursor = None
+	while True:
+		page = client.list_chats(cursor=cursor)
+		for chat in page["chats"]:
+			print(chat["id"], chat["title"])
+		cursor = page["next_cursor"]
+		if cursor is None:
+			break
+```
 
 ## Changes
 

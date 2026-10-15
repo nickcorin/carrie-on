@@ -13,7 +13,7 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlparse
 
-from codex_bridge import AppServer, Desktop
+from codex_bridge import CodexClient, DesktopClient
 from resume_queue import Entry, Queue, Usage, check_queue, locked_queue
 from app_runtime import PROFILE, RUNTIME, VERSION
 from app_lifecycle import remove_agent, write_agent
@@ -67,14 +67,13 @@ def resolve_chat(server, query):
     try:
         uuid.UUID(query)
     except ValueError:
-        matches = [t for t in server.threads(query) if (t.get("name") or t.get("preview")) == query]
+        matches = [t for t in server.list_chats(query, limit=100)["chats"] if t["title"] == query]
         if len(matches) != 1:
             raise ValueError(f"Found {len(matches)} exact title matches. Use threads SEARCH, then queue its ID.")
         return matches[0]["id"]
-    thread = server.request("thread/read", {"threadId": query, "includeTurns": False})["thread"]
-    candidates = server.threads(thread.get("name") or None)
-    if not any(t["id"] == query for t in candidates):
-        raise ValueError("Chat is archived or absent from the bounded local catalog; open it and retry")
+    thread = server.read_chat_summary(query)
+    if not server.contains_chat(query, thread["title"] or query):
+        raise ValueError("Chat is archived or absent from the local catalog; open it and retry")
     return query
 
 
@@ -137,32 +136,26 @@ def enroll(args, usage_observation=None):
     if not prompt.strip() or len(prompt) > 32000:
         raise ValueError("Prompt must contain 1–32,000 characters")
     query = urlparse(args.chat).path.strip("/") if args.chat.startswith("codex://threads/") else args.chat
-    try:
-        uuid.UUID(query)
-        thread_id = query
-    except ValueError:
-        with AppServer(args.codex) as server:
+    with CodexClient.connect(args.codex) as server:
+        try:
+            uuid.UUID(query)
+            thread_id = query
+        except ValueError:
             thread_id = resolve_chat(server, query)
 
-    with locked_queue(args.state) as queue:
-        if any(e.thread_id == thread_id for e in queue.entries):
-            raise ValueError("Chat is already queued; remove it before enrolling again")
+        with locked_queue(args.state) as queue:
+            if any(e.thread_id == thread_id for e in queue.entries):
+                raise ValueError("Chat is already queued; remove it before enrolling again")
 
-    def validate_before_open():
-        with AppServer(args.codex) as server:
-            resolve_chat(server, thread_id)
-
-    with AppServer(args.codex) as server, Desktop(args.socket, open_if_needed=True) as desktop:
-        desktop.settings(thread_id, before_open=validate_before_open)
-        chat = server.read_chat(thread_id, desktop)
-    if chat.thread_id != thread_id:
-        raise ValueError("Desktop returned a different chat")
-    if (usage_observation is not None and usage_observation.usable_for_enrollment(time.time())
-            and args.limit_id in (None, usage_observation.usage.limit_id)):
-        usage = usage_observation.usage
-    else:
-        with AppServer(args.codex) as server:
-            usage = Usage.parse(server.usage(), args.limit_id)
+        with DesktopClient(args.socket) as desktop:
+            chat = server.read_chat(thread_id, desktop, open_if_needed=True)
+        if chat.thread_id != thread_id:
+            raise ValueError("Codex returned a different chat")
+        if (usage_observation is not None and usage_observation.usable_for_enrollment(time.time())
+                and args.limit_id in (None, usage_observation.usage.limit_id)):
+            usage = usage_observation.usage
+        else:
+            usage = Usage.parse(server.read_usage(), args.limit_id)
     entry = Entry.enroll(chat, usage, prompt, time.time())
 
     with locked_queue(args.state) as queue:
@@ -179,15 +172,13 @@ def run(args, *, usage_observation=None):
     if args.command in {"install", "uninstall", "service"}:
         return launch_agent(args)
     if args.command in {"doctor", "usage", "threads"}:
-        with AppServer(args.codex) as server:
+        with CodexClient.connect(args.codex) as server:
             if args.command == "threads":
-                return [{"id": t["id"], "title": t.get("name") or t.get("preview"),
-                         "cwd": t.get("cwd"), "last_activity": t.get("updatedAt")}
-                        for t in server.threads(args.search)]
-            raw = server.usage()
+                return server.list_chats(args.search, limit=100)["chats"]
+            raw = server.read_usage()
             if args.command == "usage":
                 return usage_summary(raw)
-            with Desktop(args.socket) as desktop:
+            with DesktopClient(args.socket) as desktop:
                 report = {"usage_read": "ok", "desktop_ipc": "ok", "model_turns_started": 0,
                           "account_id": raw.get("accountId")}
                 if args.thread:
@@ -227,10 +218,10 @@ def run(args, *, usage_observation=None):
                     queue.save()
                 return {"status": "paused" if queue.data["paused"] else "waiting", "due": len(due)}
             try:
-                with AppServer(args.codex) as server, Desktop(args.socket, open_if_needed=not args.dry_run) as desktop:
+                with CodexClient.connect(args.codex) as server, DesktopClient(args.socket) as desktop:
                     if args.dry_run:
                         return [{"title": e.title, "state": e.state,
-                                 "reset_ready": e.reset_ready(Usage.parse(server.usage(), e.limit_id), time.time()),
+                                 "reset_ready": e.reset_ready(Usage.parse(server.read_usage(), e.limit_id), time.time()),
                                  "chat_status": server.read_chat(e.thread_id, desktop).status} for e in due]
                     outcomes = check_queue(queue, server, desktop)
                     queue.data["last_error"] = None

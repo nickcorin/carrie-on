@@ -24,7 +24,9 @@ Each enrollment authorizes a single continuation after a recorded reset. Carrie 
 
 Queue data, instructions, and logs stay on your Mac. The native card uses a local API listening only on `127.0.0.1`. Carrie On does not purchase credits, change models, or run a competing agent process. Remote chats and ChatGPT conversations are unsupported.
 
-Carrie On uses the official Python SDK to read quota, chat metadata, and the latest turn header without downloading conversation contents. Dispatch still uses the desktop's private, version-sensitive IPC protocol. Missing completion evidence keeps a chat waiting; incompatible responses stop dispatch. After a Codex update, check connectivity before relying on unattended continuation. This is an independent project, not an official OpenAI product.
+New enrollments use the official Python SDK to read quota, chat metadata, and the latest turn header. Legacy queue migration and delivery recovery also read opening prompts, as described in the [continuation contract](features/continuation-queue.md).
+
+Dispatch uses the desktop's private, version-sensitive IPC protocol. Missing completion evidence keeps a chat waiting. Incompatible responses prevent dispatch for the affected chat. After a Codex update, check connectivity before relying on unattended continuation. This is an independent project, not an official OpenAI product.
 
 ## Documentation
 

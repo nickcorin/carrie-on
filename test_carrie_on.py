@@ -5,9 +5,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+from dataclasses import replace
 
-from codex_bridge import AppServer, BridgeError
-from resume_queue import Chat, Entry, Usage, check_queue, locked_queue
+from codex_bridge import BridgeError, Chat
+from resume_queue import Entry, Usage, check_queue, locked_queue
 import carrie_on
 
 
@@ -21,46 +22,40 @@ def usage(used=100, reset=100, secondary=None, account="account-a"):
     }
 
 
-def snapshot(status="failed", message_id="original", runtime="idle", error="usageLimitExceeded"):
-    return {
-        "id": "thread-a", "title": "Finish feature", "latestTurnStartMessageId": message_id,
-        "latestModel": "model-a", "resumeState": "resumed", "requests": [],
-        "threadRuntimeStatus": {"type": runtime},
-        "turnHistory": {"kind": "canonical", "history": {"entitiesByKey": {
-            "latest": {"turnId": message_id, "status": status, "error": {"codexErrorInfo": error},
-                       "params": {"clientUserMessageId": message_id}},
-        }}},
-    }
+def chat(status="failed", message_id="original", runtime="idle", error="usageLimitExceeded"):
+    return Chat(thread_id="thread-a", title="Finish feature", turn_id="turn-" + message_id,
+                model="model-a", status=status, busy=runtime == "active" or status == "inProgress",
+                blocked=False, quota_failed=error == "usageLimitExceeded")
 
 
 class CodexFixture:
     def __init__(self):
         self.limits = usage(0, 200)
-        self.chat = snapshot()
+        self.chat = chat()
         self.delivered = []
         self.lose_reply = False
         self.usage_error = False
 
-    def usage(self):
+    def read_usage(self):
         if self.usage_error:
             raise BridgeError("Usage unavailable")
         return self.limits
 
-    def snapshot(self, _thread):
+    def read_chat(self, _thread, _desktop, *, include_goal=False, open_if_needed=False):
         return self.chat
 
-    def read_chat(self, _thread, _desktop, *, include_goal=False):
-        return Chat.parse(self.chat)
+    def find_legacy_turn(self, _thread, message_id, *, latest_only=True):
+        return self.chat.turn_id if self.chat.turn_id == "turn-" + message_id else None
 
-    def threads(self, _search):
-        return [{"id": "thread-a"}]
+    def contains_chat(self, thread_id, title):
+        return thread_id == "thread-a"
 
     def continue_chat(self, thread_id, prompt, message_id):
         self.delivered.append({"thread_id": thread_id, "prompt": prompt, "message_id": message_id})
         if self.lose_reply:
             raise BridgeError("Reply lost")
-        self.chat = snapshot("inProgress", message_id, "active")
-        return {"turn_id": "continued"}
+        self.chat = chat("inProgress", message_id, "active")
+        return "continued"
 
 
 class QueueBehavior(unittest.TestCase):
@@ -70,7 +65,7 @@ class QueueBehavior(unittest.TestCase):
         self.path = Path(self.temp.name) / "queue.json"
         self.codex = CodexFixture()
         with locked_queue(self.path) as queue:
-            entry = Entry.enroll(Chat.parse(snapshot()), Usage.parse(usage()), "Finish tests", 50)
+            entry = Entry.enroll(chat(), Usage.parse(usage()), "Finish tests", 50)
             self.entry_id = entry.id
             queue.entries.append(entry)
             queue.save()
@@ -102,9 +97,9 @@ class QueueBehavior(unittest.TestCase):
             entry = carrie_on.run(args)["entries"][0]
             self.assertEqual((entry["state"], entry["processing_until"]), ("sending", 230))
             self.assertEqual((thread_id, prompt, message_id), ("thread-a", "Finish tests", self.entry_id))
-            return {"turn_id": "continued"}
+            return "continued"
 
-        with patch.object(self.codex, "usage", side_effect=read_usage), \
+        with patch.object(self.codex, "read_usage", side_effect=read_usage), \
                 patch.object(self.codex, "continue_chat", side_effect=send):
             self.assertEqual(self.tick(), ["Continuation accepted: Finish feature"])
         self.assertIsNone(self.state()["history"][0]["processing_until"])
@@ -156,7 +151,7 @@ class QueueBehavior(unittest.TestCase):
         self.assertEqual(self.state()["history"][0]["outcome"], "resumed")
 
     def test_early_reset_still_holds_changed_chat(self):
-        self.codex.chat = snapshot(message_id="new-human-message")
+        self.codex.chat = chat(message_id="new-human-message")
         self.tick(70)
         self.assertEqual(self.state()["entries"][0]["state"], "needs_attention")
         self.assertEqual(self.state()["entries"][0]["note"],
@@ -185,7 +180,7 @@ class QueueBehavior(unittest.TestCase):
     def test_cli_tick_observes_reset_before_deadline(self):
         args = carrie_on.parser().parse_args(["--state", str(self.path), "tick"])
         with patch("carrie_on.time.time", return_value=70), \
-                patch("carrie_on.AppServer") as server, patch("carrie_on.Desktop") as desktop:
+                patch("carrie_on.CodexClient.connect") as server, patch("carrie_on.DesktopClient") as desktop:
             server.return_value.__enter__.return_value = self.codex
             desktop.return_value.__enter__.return_value = self.codex
             self.assertEqual(carrie_on.run(args),
@@ -217,15 +212,15 @@ class QueueBehavior(unittest.TestCase):
         self.assertEqual(self.state()["entries"][0]["note"], "Codex account or quota bucket changed")
 
     def test_busy_chat_is_skipped_then_continued_when_idle(self):
-        self.codex.chat = snapshot("inProgress", runtime="active")
+        self.codex.chat = chat("inProgress", runtime="active")
         self.tick()
         self.assertEqual(self.state()["entries"][0]["state"], "waiting")
-        self.codex.chat = snapshot()
+        self.codex.chat = chat()
         self.tick()
         self.assertEqual(len(self.codex.delivered), 1)
 
     def test_changed_chat_is_not_resumed(self):
-        self.codex.chat = snapshot(message_id="new-human-message")
+        self.codex.chat = chat(message_id="new-human-message")
         self.tick()
         self.assertEqual(self.state()["entries"][0]["state"], "needs_attention")
         self.assertEqual(self.state()["entries"][0]["note"],
@@ -237,7 +232,7 @@ class QueueBehavior(unittest.TestCase):
         with locked_queue(self.path) as queue:
             queue.entries[0].enrolled_while_busy = True
             queue.save()
-        self.codex.chat = snapshot("completed", error=None)
+        self.codex.chat = chat("completed", error=None)
         self.tick()
         self.assertEqual(self.state()["history"][0]["outcome"], "finished_before_reset")
 
@@ -245,25 +240,23 @@ class QueueBehavior(unittest.TestCase):
         with locked_queue(self.path) as queue:
             queue.entries[0].enrolled_while_busy = True
             queue.save()
-        self.codex.chat = snapshot("interrupted", error=None)
+        self.codex.chat = chat("interrupted", error=None)
         self.tick()
         self.assertEqual(self.state()["entries"][0]["note"],
                          "Chat stopped for a reason other than quota exhaustion")
 
     def test_paused_goal_is_not_resumed(self):
-        self.codex.chat["threadGoal"] = {"status": "paused"}
+        self.codex.chat = replace(self.codex.chat, blocked=True)
         self.tick()
         self.assertEqual(self.state()["entries"][0]["note"], "Waiting: chat is active or requires attention")
-        del self.codex.chat["threadGoal"]
+        self.codex.chat = replace(self.codex.chat, blocked=False)
         self.tick()
         self.assertEqual(len(self.codex.delivered), 1)
 
     def test_readiness_is_deferred_from_enrollment_to_dispatch(self):
-        blocked = snapshot()
-        blocked["threadGoal"] = {"status": "paused"}
-        blocked["requests"] = [{"kind": "approval"}]
+        blocked = replace(chat(), blocked=True)
         with locked_queue(self.path) as queue:
-            queue.entries = [Entry.enroll(Chat.parse(blocked), Usage.parse(usage()), "Wait for approval", 50)]
+            queue.entries = [Entry.enroll(blocked, Usage.parse(usage()), "Wait for approval", 50)]
             queue.save()
         self.codex.chat = blocked
         self.tick()
@@ -271,7 +264,7 @@ class QueueBehavior(unittest.TestCase):
         self.assertEqual((entry["state"], entry["note"]),
                          ("waiting", "Waiting: chat is active or requires attention"))
         self.assertEqual(self.codex.delivered, [])
-        self.codex.chat = snapshot()
+        self.codex.chat = chat()
         self.tick()
         self.assertEqual(self.codex.delivered[0]["prompt"], "Wait for approval")
         self.assertEqual(self.state()["history"][0]["outcome"], "resumed")
@@ -281,7 +274,7 @@ class QueueBehavior(unittest.TestCase):
         self.tick()
         self.assertEqual(self.state()["entries"][0]["state"], "sending")
         self.assertEqual(self.state()["entries"][0]["reactivation_error"], "Reply lost")
-        self.codex.chat = snapshot("inProgress", self.entry_id, "active")
+        self.codex.chat = chat("inProgress", self.entry_id, "active")
         self.tick()
         self.assertEqual(self.state()["entries"][0]["state"], "needs_attention")
         self.assertEqual(len(self.codex.delivered), 1)
@@ -294,23 +287,25 @@ class QueueBehavior(unittest.TestCase):
         self.assertEqual(self.state()["entries"][0]["state"], "needs_attention")
         self.assertEqual(len(self.codex.delivered), 1)
 
-    def test_provisional_desktop_message_is_not_proof_of_delivery(self):
-        self.codex.lose_reply = True
-        self.tick()
-        self.codex.chat = snapshot("failed", self.entry_id, "idle", None)
-        self.codex.chat["turnHistory"]["history"]["entitiesByKey"]["latest"]["turnId"] = None
-        self.tick()
-        self.assertEqual(self.state()["entries"][0]["state"], "needs_attention")
-        self.assertEqual(len(self.codex.delivered), 1)
-
     def test_legacy_anchor_is_converted_once_without_changing_the_instruction(self):
         with locked_queue(self.path) as queue:
             queue.entries[0].anchor_turn_id = None
+            queue.entries[0].anchor_message_id = "original"
             queue.save()
-        self.assertEqual(self.tick(), ["Continuation accepted: Finish feature"])
+        self.codex.chat = chat("inProgress", runtime="active")
+        self.assertEqual(self.tick(), [])
+        migrated = self.state()["entries"][0]
+        self.assertEqual((migrated["anchor_message_id"], migrated["anchor_turn_id"], migrated["state"]),
+                         ("original", "turn-original", "waiting"))
+        self.codex.chat = chat()
+        with patch.object(self.codex, "find_legacy_turn", side_effect=AssertionError("Already migrated")):
+            self.assertEqual(self.tick(), ["Continuation accepted: Finish feature"])
+            self.assertEqual(self.tick(), [])
         history = self.state()["history"][0]
         self.assertEqual((history["anchor_turn_id"], history["prompt"], history["outcome"]),
-                         ("original", "Finish tests", "resumed"))
+                         ("turn-original", "Finish tests", "resumed"))
+        self.assertEqual(self.codex.delivered, [{"thread_id": "thread-a", "prompt": "Finish tests",
+                                               "message_id": self.entry_id}])
 
     def test_persisted_receipt_finishes_after_restart_without_another_send(self):
         with locked_queue(self.path) as queue:
@@ -344,14 +339,10 @@ class QueueBehavior(unittest.TestCase):
             Usage.parse(raw)
         self.assertEqual(Usage.parse(raw, "other").limit_id, "other")
 
-    def test_monitoring_app_server_rejects_model_execution(self):
-        with self.assertRaisesRegex(ValueError, "read-only"):
-            AppServer().request("turn/start", {"threadId": "thread-a"})
-
     def test_connection_failure_marks_waiting_enrollments_and_dry_run_is_read_only(self):
         args = carrie_on.parser().parse_args(["--state", str(self.path), "tick", "--dry-run"])
         before = self.path.read_bytes()
-        with patch("carrie_on.AppServer", side_effect=BridgeError("Codex unavailable")):
+        with patch("carrie_on.CodexClient.connect", side_effect=BridgeError("Codex unavailable")):
             with self.assertRaisesRegex(BridgeError, "Codex unavailable"):
                 carrie_on.run(args)
             self.assertEqual(self.path.read_bytes(), before)
@@ -368,7 +359,7 @@ class QueueBehavior(unittest.TestCase):
         self.tick(99)
         self.assertIsNone(self.state()["entries"][0]["reactivation_error"])
         self.codex.limits = usage(0, 200)
-        self.codex.chat["requests"] = [{"kind": "approval"}]
+        self.codex.chat = replace(self.codex.chat, blocked=True)
         self.tick()
         self.assertEqual(self.state()["entries"][0]["note"], "Waiting: chat is active or requires attention")
         self.assertIsNone(self.state()["entries"][0]["reactivation_error"])

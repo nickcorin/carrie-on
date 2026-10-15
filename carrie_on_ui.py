@@ -15,6 +15,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from openai_codex.errors import JsonRpcError
+
 import carrie_on
 from resume_queue import Usage, UsageObservation, locked_queue
 from app_runtime import PROFILE, RUNTIME, VERSION
@@ -93,25 +95,19 @@ class Dashboard:
             cursor = query.get("cursor", [None])[0]
             if len(search) > 500 or (cursor is not None and len(cursor) > 16384):
                 raise ValueError("Search or cursor is too long")
-            with carrie_on.AppServer(self.codex) as server:
-                page = server.thread_page(search, cursor=cursor)
-            return {"chats": [{"id": chat["id"], "title": chat.get("name") or chat.get("preview"),
-                               "cwd": chat.get("cwd"), "last_activity": chat.get("updatedAt")}
-                              for chat in page["data"]],
-                    "next_cursor": page.get("nextCursor")}
+            with carrie_on.CodexClient.connect(self.codex) as server:
+                return server.list_chats(search, cursor=cursor)
         if route == "/api/queued-chats":
             # Read queue membership before contacting Codex; never hold its lock during metadata reads.
             entries = self.command("list")["entries"]
             if not entries:
                 return []
             result = []
-            with carrie_on.AppServer(self.codex) as server:
+            with carrie_on.CodexClient.connect(self.codex) as server:
                 for entry in entries:
                     try:
-                        chat = server.request("thread/read", {"threadId": entry["thread_id"], "includeTurns": False})["thread"]
-                        result.append({"id": entry["thread_id"], "title": chat.get("name") or entry["title"],
-                                       "cwd": chat.get("cwd"), "last_activity": chat.get("updatedAt")})
-                    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+                        result.append(server.read_chat_summary(entry["thread_id"], fallback_title=entry["title"]))
+                    except (JsonRpcError, OSError, RuntimeError, ValueError, KeyError, TypeError):
                         result.append({"id": entry["thread_id"], "title": entry["title"],
                                        "cwd": None, "last_activity": None})
             return result
@@ -122,7 +118,7 @@ class Dashboard:
     def desktop_connected(self):
         """Observe desktop availability without opening a chat or starting a turn."""
         try:
-            with carrie_on.Desktop(self.socket, timeout=3):
+            with carrie_on.DesktopClient(self.socket, timeout=3):
                 return True
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             return False
