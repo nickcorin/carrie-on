@@ -10,18 +10,55 @@ It does not verify an actual quota reset.
 import argparse
 import json
 import tempfile
+import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from carrie_on.application import QueueService
-from carrie_on.codex.client import CodexConnections
+from carrie_on.codex.client import CodexConnections, Desktop
+from carrie_on.codex.models import CodexProtocolError
 from carrie_on.dispatch import DispatchWorker
 from carrie_on.legacy import LegacyEntry, LegacyImporter
 from carrie_on.queue import QueueEntry
 from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
-from tools.verify_desktop import DesktopObserver, history_turns
+
+
+class DesktopObserver(Desktop):
+    """Read desktop snapshots independently of the queue's SDK checks."""
+
+    def snapshot(self, thread_id):
+        """Return the selected chat's full history from a version 11 broadcast."""
+        self.read_settings(thread_id)
+        self._send(
+            {
+                "type": "broadcast",
+                "sourceClientId": self.client_id,
+                "version": 1,
+                "method": "thread-stream-following-changed",
+                "params": {"conversationId": thread_id, "hostId": "local", "following": True},
+            }
+        )
+        deadline = time.monotonic() + self.timeout
+        while True:
+            message = self._receive(deadline)
+            if message.get("method") != "thread-stream-state-changed":
+                continue
+            params = message.get("params", {})
+            change = params.get("change", {})
+            if params.get("conversationId") == thread_id and change.get("type") == "snapshot":
+                if message.get("version") != 11:
+                    raise CodexProtocolError("Unsupported Codex snapshot version")
+                return change["conversationState"]
+
+
+def history_turns(snapshot):
+    """Return turns from either supported desktop history representation."""
+    history = snapshot.get("turnHistory") or {}
+    if history.get("kind") == "canonical":
+        return list(history["history"]["entitiesByKey"].values())
+    return snapshot.get("turns", [])
 
 
 def verify(mode: str, chat_id: UUID, executable: str):

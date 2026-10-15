@@ -46,7 +46,9 @@ The automated checks cover the product behaviors below through the current stora
 
 ## Acceptance boundaries
 
-`python -m tools.verify_large_chat` exercises fresh enrollment and retired JSON import against a synthetic 33 MiB desktop history. It checks that dispatch reads compact SDK responses, never subscribes to desktop history, sends the exact instruction once, and preserves the sent entry across server restart.
+`tests/test_composed_service.py` exercises fresh enrollment and interrupted v0.5.7 JSON import with a desktop peer that would send a 33 MiB history if requested. It checks that dispatch reads compact SDK responses, never subscribes to desktop history, sends the exact instruction once, and preserves the sent entry across server restart. These checks run in the normal test suite.
+
+`python -m tools.verify_codex_integration --help` describes the opt-in checks against a selected real Codex chat. The `wait` mode reads an active chat without sending. The `continue` and `migrate` modes send a test instruction and independently check desktop history for its receipt; use them only with permission to send to a disposable chat. All modes use temporary storage and simulated reset timestamps, so they do not verify a real quota reset.
 
 `tests/test_architecture.py` rejects database libraries outside `storage/` and concrete storage imports from the application/domain. `tests/test_storage.py` verifies concurrent acquisition, process death, expiry, revisions, pagination, private backups, repeated schema initialization with existing work, interrupted per-entry import, and terminal states.
 

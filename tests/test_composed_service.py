@@ -46,6 +46,7 @@ class ComposedService(unittest.TestCase):
         self.stop_peer = threading.Event()
         self.peer_errors = []
         self.sends = []
+        self.snapshot_requests = 0
         self.accepted_id = None
         self.lose_receipt = False
         self.peer_thread = threading.Thread(target=self.serve_desktop, daemon=True)
@@ -102,6 +103,7 @@ class ComposedService(unittest.TestCase):
         self.peer.close()
         self.assertFalse(self.peer_thread.is_alive())
         self.assertEqual(self.peer_errors, [])
+        self.assertEqual(self.snapshot_requests, 0)
 
     @staticmethod
     def read_bytes(connection, size):
@@ -167,7 +169,22 @@ class ComposedService(unittest.TestCase):
             )
 
     def send_history(self, connection):
-        raise AssertionError("The worker must not subscribe to desktop history")
+        self.snapshot_requests += 1
+        self.send(
+            connection,
+            {
+                "type": "broadcast",
+                "method": "thread-stream-state-changed",
+                "version": 11,
+                "params": {
+                    "conversationId": CHAT_ID,
+                    "change": {
+                        "type": "snapshot",
+                        "conversationState": {"text": "x" * (33 * 1024 * 1024)},
+                    },
+                },
+            },
+        )
 
     def wait_for(self, predicate, timeout=10):
         deadline = time.monotonic() + timeout
@@ -191,8 +208,8 @@ class ComposedService(unittest.TestCase):
         self.app.state.worker.wakeup.set()
         return item_id, instruction
 
-    def test_http_enrollment_worker_send_and_durable_receipt(self):
-        item_id, instruction = self.enroll_and_reset()
+    def assert_compact_delivery(self, item_id, instruction):
+        """Check exact delivery and restart recovery without requesting the 33 MiB history."""
         self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "sent")
         self.assertEqual(len(self.sends), 1)
         request = self.sends[0]["turnStart"]["request"]
@@ -204,6 +221,39 @@ class ComposedService(unittest.TestCase):
         self.assertEqual(self.http.get(f"queue/{item_id}").json()["state"], "sent")
         self.assertEqual(self.http.get("queue").json()["items"], [])
         self.assertEqual(len(self.sends), 1)
+        requests = [
+            json.loads(line)
+            for line in self.state_path.with_suffix(".requests.jsonl").read_text().splitlines()
+        ]
+        reads = [request for request in requests if request["method"] == "thread/read"]
+        headers = [request for request in requests if request["method"] == "thread/turns/list"]
+        self.assertTrue(reads)
+        self.assertTrue(headers)
+        self.assertTrue(all(request["params"]["includeTurns"] is False for request in reads))
+        self.assertTrue(
+            all(
+                request["params"]["limit"] == 1 and request["params"]["itemsView"] == "notLoaded"
+                for request in headers
+            )
+        )
+        self.assertLess(max(request["reply_bytes"] for request in requests), 10_000)
+        self.assertEqual(self.snapshot_requests, 0)
+
+    def test_http_enrollment_uses_compact_reads_and_preserves_delivery_after_restart(self):
+        item_id, instruction = self.enroll_and_reset()
+        self.assert_compact_delivery(item_id, instruction)
+
+    def test_interrupted_json_import_uses_compact_reads_and_preserves_delivery_after_restart(self):
+        self.stop_server()
+        source = Path(__file__).with_name("fixtures") / "v0.5.7-queue.json"
+        raw = json.loads(source.read_text())
+        entry = raw["entries"][0]
+        entry.update(anchor_message_id="original", state="sending", attempted_at=50)
+        (self.root / "resume-queue.json").write_text(json.dumps(raw))
+        self.state["usage"] = usage(0, 200)
+        self.save_state()
+        self.start_server()
+        self.assert_compact_delivery(entry["id"], entry["prompt"])
 
     def test_lost_receipt_reconciles_after_service_restart_without_another_send(self):
         self.lose_receipt = True
