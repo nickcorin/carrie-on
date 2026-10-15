@@ -1,7 +1,8 @@
 """Check a selected real Codex chat using a temporary database.
 
-The wait command only reads state. The continue and migrate commands send a test
-instruction. Use them only with permission to send to an idle, disposable chat.
+The wait command reads the selected chat without sending. All commands write to
+temporary storage. The continue and migrate commands send a test instruction.
+Use them only with permission to send to an idle, disposable chat.
 The tool changes saved reset timestamps to simulate a different quota window.
 It does not verify an actual quota reset.
 """

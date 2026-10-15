@@ -131,7 +131,7 @@ def absolute_setting_path(name: str, value: object) -> str | None:
 
 
 def legacy_settings(profile: BuildProfile) -> dict:
-    """Read connection settings from service definitions written before version 0.4."""
+    """Read connection settings from this profile's existing launchd definitions."""
     saved = {}
     for label in (profile.service_prefix, profile.labels[0]):
         path = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
@@ -204,7 +204,11 @@ def check_bundle(runtime: Runtime) -> dict:
 
 
 def write_private(path: Path, contents: bytes) -> None:
-    """Replace a settings or marker file atomically with permissions set to 0600."""
+    """Replace a settings or marker file with permissions set to 0600.
+
+    The caller must hold install.lock because writes share a temporary filename.
+    Replacement is atomic, but the file and directory are not synced to disk.
+    """
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_bytes(contents)
@@ -283,8 +287,8 @@ def import_source_queue(runtime: Runtime) -> None:
 def register_backend(runtime: Runtime, settings: Settings) -> Path:
     """Write settings and the backend's launchd definition while the caller holds install.lock.
 
-    Write settings first so the native client uses the same endpoint as launchd
-    after restarting. If a write fails, repeating setup finishes the registration.
+    Settings and the service definition are separate writes. A failure can leave
+    new settings alongside the previous definition. Retry after resolving the error.
     This function does not start or stop processes.
     """
     runtime.logs.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -342,9 +346,10 @@ def install_service(
 ) -> dict:
     """Install the backend while preserving the queue and existing login settings.
 
-    Validate settings before changing services. Repeating the call with the same
-    settings repairs an interrupted installation or failed launch. With start=False,
-    write only settings and service definitions.
+    Validate settings before changing services. With start=True, stop the old
+    worker and backend, import saved JSON, and register and launch the backend.
+    With start=False, write settings and service definitions without changing
+    running services or importing data.
     """
     with installation_lock(runtime):
         settings = Settings.load(runtime, overrides, legacy=True)
@@ -373,8 +378,8 @@ def setup(
 
     Hold install.lock while migrating data, validating settings, and writing service
     definitions. --no-start prepares a fresh installation without loading services.
-    A failure may leave services stopped. Run setup again to repair them using the
-    saved data.
+    A failure may leave services stopped or only some files updated. After resolving
+    the error, setup can be retried using the saved data.
     """
     metadata = check_bundle(runtime)
     with installation_lock(runtime):
@@ -520,7 +525,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Prepare a fresh installation without loading services",
     )
-    install.add_argument("--repair", action="store_true", help="Restart the backend and menu app")
+    install.add_argument(
+        "--repair",
+        action="store_true",
+        help="Restart the backend even if its settings are unchanged",
+    )
     install.add_argument("--json", action="store_true", help="Print the result or error as JSON")
     remove = commands.add_parser(
         "remove-installation",

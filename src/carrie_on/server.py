@@ -38,8 +38,9 @@ def create_application(
     """Create the HTTP application with the supplied storage and Codex connections.
 
     Before accepting requests, the lifespan handler initializes storage and imports
-    any saved JSON queue. It starts the worker and stops it at shutdown unless
-    run_worker is False.
+    any saved JSON queue. A failure in either step prevents startup. Unless
+    run_worker is False, it starts the worker and requests its shutdown on exit.
+    Shutdown waits up to three seconds for the worker to finish.
     """
     worker = DispatchWorker(store, connections, interval, on_worker_failure) if run_worker else None
 

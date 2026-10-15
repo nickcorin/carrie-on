@@ -37,8 +37,9 @@ class DispatchWorker:
         """Claim the next entry and check current Codex state before sending it.
 
         Leave delivery attempts unchanged so they expire at their saved deadlines.
-        Failed entries can retry after expiry. Entries whose messages were accepted,
-        or whose chats have continued, leave the queue.
+        Failed entries can retry after expiry. Mark accepted messages as sent and
+        entries whose chats have continued as stale. Keep both in stored history.
+        Storage errors propagate and can stop the dispatch thread.
         """
         attempt = self.store.create_delivery_attempt()
         if attempt is None:
@@ -88,7 +89,8 @@ class DispatchWorker:
     def stop(self) -> None:
         """Request shutdown and wait up to three seconds for the dispatch thread.
 
-        Active delivery attempts keep their expiry times.
+        An in-flight send may outlast this wait. Active delivery attempts keep
+        their expiry times.
         """
         self.stopping.set()
         self.wakeup.set()

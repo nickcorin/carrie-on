@@ -13,7 +13,7 @@ PENDING_STATES: tuple[EntryState, ...] = ("queued", "failed")
 
 
 class QueueError(Exception):
-    """Reject a queue operation before it writes, with a code callers can handle."""
+    """Report a rejected queue operation with a code callers can handle."""
 
     def __init__(self, code: str, detail: str):
         super().__init__(detail)
@@ -24,10 +24,10 @@ class QueueError(Exception):
 class QueueEntry:
     """Store a queued instruction and the chat state recorded when it was added.
 
-    Storage sets dispatching from the entry's unexpired delivery attempts when it
-    reads the entry. The queue does not store a dispatching state. Reset timestamps
-    identify the saved quota windows within this account and bucket. Datetime
-    fields use timezone-aware UTC values.
+    Storage reports dispatching when a queued or failed entry has an unexpired
+    delivery attempt. It does not store dispatching on the entry. Carrie On uses
+    reset timestamps to identify quota windows within the saved account and bucket.
+    Callers must supply timezone-aware UTC datetimes.
     """
 
     id: UUID
@@ -88,10 +88,12 @@ class QueueEntry:
         return replace(self, instructions=instructions, updated_at=now)
 
     def update_state(self, state: EntryState, now: datetime, *, error: str = "") -> "QueueEntry":
-        """Change a pending entry's state and set its error and completion time.
+        """Return the entry with its new state, error, and completion time.
 
         Failed entries require an error and remain eligible for retry. Finished
         entries cannot return to the queue. A stale entry can still be cancelled.
+        An active delivery blocks cancellation, but not other state changes.
+        Repeating the current state and error returns the entry unchanged.
         """
         if state == "failed" and not error.strip():
             raise QueueError("missing_error", "A failed entry requires an error")
@@ -116,7 +118,11 @@ class QueueEntry:
         )
 
     def reset_ready(self, usage: Usage) -> bool:
-        """Check for a changed reset timestamp and available quota in the saved account and bucket."""
+        """Check quota using the saved account, bucket, and window timestamps.
+
+        A timestamp must differ for a window name saved at enrollment. Usage must
+        be allowed, and every reported window must be below 100 percent used.
+        """
         if usage.account_id != self.account_id or usage.limit_id != self.limit_id:
             raise QueueError("quota_changed", "Codex account or quota bucket changed")
         if not usage.allowed or any(window.used >= 100 for window in usage.windows):
@@ -128,7 +134,7 @@ class QueueEntry:
         )
 
     def matches_anchor(self, chat: Chat) -> bool:
-        """Check that the chat still has the saved turn and opening message IDs."""
+        """Compare the chat against each saved turn or opening message ID that is present."""
         return (self.anchor_turn_id is None or chat.turn_id == self.anchor_turn_id) and (
             self.anchor_message_id is None or chat.message_id == self.anchor_message_id
         )
@@ -158,7 +164,11 @@ class QueueEntry:
 
 @dataclass(frozen=True, kw_only=True)
 class DeliveryAttempt:
-    """Give the creating worker exclusive access to an entry until the attempt expires."""
+    """Record a worker's claim on an entry until expiry.
+
+    Storage rejects overlapping attempts, but entry updates do not require
+    ownership of an attempt.
+    """
 
     id: UUID
     entry: QueueEntry
@@ -176,7 +186,7 @@ class Eligibility:
 
 @dataclass(frozen=True, kw_only=True)
 class QueueSummary:
-    """Count entries by state and active deliveries from the same storage read."""
+    """Store state counts and a count of pending entries with an unexpired attempt."""
 
     counts: dict[EntryState, int]
     dispatching: int

@@ -151,9 +151,11 @@ class LegacyQueue:
     def merge(self, current: "LegacyQueue", now: float) -> tuple[QueueEntry, ...]:
         """Merge saved queues into QueueEntry records without writing a merged JSON file.
 
-        History takes precedence over pending entries. For each chat, needs_attention
-        takes precedence over sending, then waiting. Entries from current win ties.
-        Keep the other entries as cancelled history.
+        History suppresses pending entries with the same UUID, even if the history
+        record cannot be imported. Among pending entries for the same chat,
+        needs_attention takes precedence over sending, then waiting. Entries from
+        current win ties. Keep losing entries with different UUIDs as cancelled
+        history.
         """
         history: list[Any] = []
         for record in self.history + current.history:
@@ -193,7 +195,7 @@ class LegacyQueue:
                 if type(finished_at) not in (int, float) or not math.isfinite(finished_at):
                     raise ValueError("Invalid completion timestamp")
             except (ValueError, TypeError, KeyError):
-                # The source snapshot keeps history records that cannot be imported.
+                # Leave unreadable history in the source JSON.
                 continue
             outcome = raw.get("outcome")
             if outcome == "resumed":
@@ -228,8 +230,10 @@ class LegacyQueue:
 class LegacyImporter:
     """Import saved JSON queue entries before the server accepts requests.
 
-    Insert entries individually and skip UUIDs already in storage. An interrupted
-    import can resume without overwriting edits or reactivating finished entries.
+    Insert entries individually and skip UUIDs already in storage. Earlier inserts
+    remain if a later insert fails. Retrying skips those UUIDs without overwriting
+    edits or reactivating finished entries. Existing records outside the import
+    take precedence for their chats, so import competing pending work as cancelled.
     Keep the source JSON for history and attempt details that cannot be imported.
     """
 

@@ -40,7 +40,7 @@ T = TypeVar("T")
 
 
 class AppServer:
-    """Manage an SDK session with a timeout for each call and an optional session deadline."""
+    """Close the SDK session when a request exceeds its timeout or the supplied deadline."""
 
     def __init__(self, executable="codex", timeout=30, deadline=None, codex_home=None):
         self.timeout, self.deadline = timeout, deadline
@@ -162,9 +162,11 @@ class AppServer:
     ) -> Chat:
         """Read the latest turn's metadata, opening message ID, and desktop settings.
 
-        Keep the chat busy until Codex reports that the turn ended. Read older turn
-        metadata only when checking for a specified message. These requests do not
-        load the full turn history.
+        Treat the chat as busy while the turn is in progress or has no positive
+        completion timestamp. Turn pages omit items. Read item pages until the
+        first item other than context compaction, and use its client ID if it is
+        a user message. Scan older turns only when receipt_id was supplied and
+        is absent from the latest turn.
         """
         summary = self.read_chat(chat_id)
         settings = desktop.read_settings(chat_id, before_open=before_open)

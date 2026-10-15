@@ -67,9 +67,9 @@ def observe_eligibility(entry: QueueEntry, server: AppServer, desktop: Desktop) 
 class QueueService:
     """Create queue entries and read queue status using current Codex data.
 
-    Each operation opens its own Codex connections. Enrollment reads current quota
-    instead of reusing a status response. Storage rejects duplicate pending entries
-    when saving, so a concurrent enrollment cannot queue the same chat twice.
+    Operations that need Codex data open their own connections. Enrollment reads
+    current quota instead of reusing a status response. Storage rejects duplicate
+    pending entries when saving, including concurrent enrollments for the same chat.
     """
 
     def __init__(self, store: QueueStorage, connections: CodexConnections):
@@ -167,7 +167,10 @@ class QueueService:
             return False
 
     def status(self) -> Status:
-        """Read queue and usage status separately so either can survive the other's failure."""
+        """Return available status data with separate storage and Codex error messages.
+
+        Unexpected exceptions propagate instead of producing partial status.
+        """
         queue = usage = None
         queue_error = usage_error = None
         try:

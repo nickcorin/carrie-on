@@ -1,4 +1,4 @@
-"""Apply SQL migrations and check that the database matches this release's schema."""
+"""Apply SQL migrations for this release and reject unsupported database versions."""
 
 import sqlite3
 from contextlib import closing

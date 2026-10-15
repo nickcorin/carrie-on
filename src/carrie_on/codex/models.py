@@ -79,8 +79,8 @@ class UsageSnapshot:
     def select(self, limit_id: str | None = None) -> Usage:
         """Return the named bucket, or the only bucket if no name was supplied.
 
-        Raise UsageSelectionError if the named bucket does not exist or several
-        buckets exist and the caller has not chosen one.
+        Raise UsageSelectionError if the named bucket does not exist or no name
+        was supplied and the snapshot does not contain exactly one bucket.
         """
         if limit_id is None:
             if len(self.buckets) != 1:
@@ -230,7 +230,7 @@ class Chat:
                 raise CodexProtocolError("Invalid turn message ID")
             if turn_id is not None and not isinstance(turn_id, str):
                 raise CodexProtocolError("Invalid accepted turn ID")
-            # A turn ID confirms that Codex accepted the message.
+            # Treat a message as accepted only when its desktop turn has an ID.
             if turn_id and isinstance(client_id, str):
                 seen_ids.add(client_id)
             if client_id == message_id:

@@ -1,6 +1,7 @@
-"""Check dispatch against synthetic Codex peers with a 33 MiB desktop history.
+"""Check dispatch without subscribing to a synthetic 33 MiB desktop history.
 
-Test HTTP enrollment and JSON imports through SDK subprocesses and desktop sockets.
+Test dispatch after HTTP enrollment and JSON imports using simulated Codex peers.
+The fixture can send the large history, but the worker must never request it.
 Check that the worker sends the exact instruction once and SQLite keeps the sent
 entry after a restart. The test uses temporary state and does not access installed
 apps or user chats.

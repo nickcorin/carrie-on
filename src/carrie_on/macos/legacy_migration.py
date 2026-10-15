@@ -65,9 +65,10 @@ class LegacyMigration:
     """Import the previous installation and keep copies for recovery.
 
     The caller must hold the current installation lock and quit the previous native
-    app. The prepare context holds both queue locks and the previous installation
-    and lifecycle locks until setup exits. Call complete only after the new API
-    passes its health check.
+    app. When migration is pending, prepare holds the current JSON queue lock.
+    If the previous data directory exists, it also holds that installation's
+    installation, lifecycle, and queue locks. These locks last until the context
+    exits. Call complete only after the new API passes its health check.
     """
 
     home: Path

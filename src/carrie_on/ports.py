@@ -8,7 +8,7 @@ from carrie_on.queue import DeliveryAttempt, EntryState, QueueEntry, QueueSummar
 
 
 class StorageUnavailable(Exception):
-    """Report a storage failure. A write may have succeeded before its reply was lost."""
+    """Report a storage failure without guaranteeing that earlier writes were undone."""
 
 
 class QueueStorage(Protocol):
@@ -28,14 +28,14 @@ class QueueStorage(Protocol):
     ) -> tuple[list[QueueEntry], str | None]:
         """List entries ordered by queued_at, then id, with a page size of 1 to 100.
 
-        Pass states=None to include every state. Reuse cursors only with the same
-        filters and page size. Each call reads current data, so entries may change
-        between pages.
+        Pass states=None to include every state. Reuse cursors with the same state
+        filters in the same order and the same chat_id. The page size may change.
+        Each call reads current data, so entries may change between pages.
         """
         ...
 
     def get_queue_summary(self) -> QueueSummary:
-        """Count entries by state and active deliveries from the same storage read."""
+        """Count states and pending entries with unexpired attempts from the same snapshot."""
         ...
 
     def create_entry(self, entry: QueueEntry) -> QueueEntry:
@@ -63,9 +63,10 @@ class QueueStorage(Protocol):
         ...
 
     def create_delivery_attempt(self) -> DeliveryAttempt | None:
-        """Create an attempt for the next pending entry that has no active attempt.
+        """Claim the earliest pending entry without an unexpired attempt.
 
-        Return None if no entry is available.
+        Order entries by queued_at, then id. Concurrent calls cannot create
+        overlapping attempts for the same entry. Return None if none is available.
         """
         ...
 
@@ -78,5 +79,8 @@ class StorageMaintenance(Protocol):
         ...
 
     def create_backup(self, destination: Path) -> None:
-        """Create a consistent backup without interrupting other connections."""
+        """Create a consistent backup, replacing any database at destination.
+
+        Other connections may remain open. The backup may wait for database locks.
+        """
         ...
