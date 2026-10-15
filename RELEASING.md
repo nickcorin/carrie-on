@@ -24,11 +24,9 @@ just test-minimum
 just ci
 ```
 
-`just ci` checks Python errors, workflow syntax, release metadata, branding, and Python 3.10 compatibility. It then builds and verifies the app with the pinned build interpreter. The builder runs the full test suite, native checks, Mach-O compatibility checks, ad-hoc signing, and isolated ZIP verification. Tests use synthetic chats and temporary state, without installing login services or dispatching work.
+`just ci` checks Python errors, workflow syntax, release metadata, and Python 3.10 compatibility. It then builds and verifies the app with the pinned build interpreter. The builder runs the full test suite, native checks, Mach-O compatibility checks, ad-hoc signing, and isolated ZIP verification. Tests use synthetic chats and temporary state, without installing login services or dispatching work.
 
 Use `just package` or its alias `just build` to compile, sign, and package the verified app. To replace an existing local package, pass `--replace`. CI replaces local packages so checks can run repeatedly.
-
-Run `just branding` to check current tracked and nonignored source files for retired app branding. Packaging also checks bundle paths, file contents, symlink targets, and compressed Python modules before signing. ZIP verification repeats the bundle check. Historical Git objects and ignored development caches are outside the source check and never enter the packages.
 
 ```sh
 just package

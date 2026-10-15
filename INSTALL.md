@@ -103,7 +103,7 @@ To rerun the packaged acceptance check:
 just verify
 ```
 
-It extracts into paths containing spaces, copies the app to an isolated home, removes Python from PATH, and invokes the native first-launch helper with `--no-start`. It checks service paths, persisted configuration, queue operations, local API health, release health, app immutability, code signatures, and bundled reference links. Its fake Codex executable answers version, initialization, and usage requests. It never loads login services or dispatches a chat. `--no-start` is restricted to fresh test installations.
+It extracts into paths containing spaces, copies the app to an isolated home, removes Python from PATH, and invokes the native first-launch helper with `--no-start`. It checks service paths, persisted configuration, queue operations, local API health, release health, app immutability, code signatures, bundled guide links, and the running server's OpenAPI schema. Its fake Codex executable answers version, initialization, and usage requests. It never loads login services or dispatches a chat. `--no-start` is restricted to fresh test installations.
 
 Before broader distribution, test Gatekeeper approval, first launch, login startup, `doctor`, updates, and removal on another Mac. Include macOS 13 before claiming runtime compatibility with that version. Local tests on macOS 27.0.1 and deployment-target checks do not establish that compatibility. See [automated distribution checks](features/distribution.md#verification) for unit test coverage.
 

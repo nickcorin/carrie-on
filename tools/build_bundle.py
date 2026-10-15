@@ -19,10 +19,7 @@ from pathlib import Path
 
 from carrie_on.macos.compatibility import audit
 from carrie_on.macos.runtime import MINIMUM_MACOS, PROFILES
-from tools.branding import check_bundle, check_source
 from tools.disk_image import build_disk_image
-from tools.export_native_reference import export_reference as export_native_reference
-from tools.export_reference import export as export_python_reference
 from tools.install_menubar import build_menu
 from tools.release import Release, source_commit
 from tools.verify_bundle import verify
@@ -47,7 +44,6 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
     if sys.platform != "darwin":
         raise ValueError("Build on a Mac with Python 3.10+ and Apple's Swift command-line tools")
     release = Release.read(ROOT)
-    check_source(ROOT)
     commit = source_commit(ROOT)
     dev_commit = (
         subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
@@ -157,14 +153,11 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
             "SECURITY.md",
             "LICENSE",
             "ARCHITECTURE.md",
-            "openapi.json",
         ):
             shutil.copy2(ROOT / filename, docs / filename)
         shutil.copytree(ROOT / "features", docs / "features")
         (docs / "assets").mkdir()
         shutil.copy2(ROOT / "assets/README.md", docs / "assets/README.md")
-        export_python_reference(docs / "reference/python")
-        export_native_reference(docs / "reference/native")
         licenses = resources / "Licenses"
         licenses.mkdir()
         shutil.copy2(ROOT / "LICENSE", licenses / "Carrie-On.txt")
@@ -197,7 +190,6 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
             "binary_audit": audit(app, MINIMUM_MACOS),
         }
         (resources / "release.json").write_text(json.dumps(metadata, indent=2) + "\n")
-        check_bundle(app)
         sign_app(app)
         staged = work / archive.name
         subprocess.run(

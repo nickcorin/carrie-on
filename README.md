@@ -34,7 +34,6 @@ Dispatch uses the desktop's private, version-sensitive IPC protocol. Missing com
 - [Installation](INSTALL.md): install, update, recover, and uninstall.
 - [Contributing](CONTRIBUTING.md): development setup, component map, and tests.
 - [Architecture and API](ARCHITECTURE.md): package boundaries, SQLite, delivery, and HTTP contracts.
-- [Interface references](CONTRIBUTING.md#interface-references): generated Python and native declarations, also bundled with the app.
 - [Releasing](RELEASING.md): build locally and prepare GitHub releases.
 - [Feature contracts](features/index.md), [changelog](CHANGELOG.md), and [security](SECURITY.md).
 

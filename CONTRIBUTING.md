@@ -26,22 +26,16 @@ Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix socket
 | `src/carrie_on/legacy.py` | v0.5.7 queue decoding and resumable imports |
 | `menubar/` | Native AppKit menu, chat picker, setup, and lifecycle |
 | `src/carrie_on/macos/` | Platform installation, migration, lifecycle, updates, and compatibility |
-| `tools/` | Build, release, package acceptance, artwork, and OpenAPI export |
+| `tools/` | Builds, source installation, releases, artwork, and package/Codex acceptance checks |
 | `tests/` | Python and Swift behavior tests plus isolated visual fixtures |
 
 Keep all database concepts inside `storage/`; application consumers depend only on `ports.py`. `SqliteQueueStorage` owns both entry and attempt tables and encapsulates their atomic queries. Domain rules belong on `QueueEntry`; external calls occur outside storage operations. Each dispatch creates an attempt, checks fresh Codex observations, and sends at most once. Preserve original creation input for idempotent retries; edits require current revisions. Clients use HTTP exclusively. Add ordered SQL files under `storage/migrations/` for schema changes; never edit a migration after release. Yoyo applies pending files at startup. Runtime queries target only the current schema. JSON imports and installation reconciliation belong outside storage. Read the [architecture](ARCHITECTURE.md) and [feature contracts](features/index.md) before changing these boundaries.
 
-`just setup` installs the `src` package in editable mode. Run tools as modules, such as `python -m tools.build_bundle`, and tests with `python -m unittest discover -v`. Regenerate `openapi.json` with `python -m tools.export_openapi` after contract changes; `just api-check` detects drift. The [verification matrix](features/verification.md) links retained behavior to its automated and manual checks.
+`just setup` installs the `src` package in editable mode. Run tools as modules, such as `python -m tools.build_bundle`, and tests with `python -m unittest discover -v`. FastAPI serves the current OpenAPI schema at `/openapi.json`; see the [HTTP contract](ARCHITECTURE.md#http-contract) for access requirements. The [verification matrix](features/verification.md) links retained behavior to its automated and manual checks.
 
 For example, `service.doctor(chat_id)` reads a chat without opening it. `service.enqueue(entry_id, chat_id, instructions)` permits opening and supplies a catalog validator before opening a dormant chat. A direct caller of `AppServer.get_chat` with an opening-enabled desktop must likewise validate catalog membership beforehand or supply `before_open`; opening can change Codex's visible chat.
 
 `just lint-python` checks Ruff formatting and imports as well as correctness rules. `just typecheck` checks the shared Python contracts with mypy. Dependency tests prevent inner components from importing frameworks or platform configuration.
-
-## Interface references
-
-`just reference` generates Python pages at `build/reference/python/index.html` and readable native declarations at `build/reference/native/index.html`. The native export also keeps Swift's symbol graphs. Both exporters check local page and fragment links. Inspect the generated signatures and documentation after changing callable contracts.
-
-Every app build regenerates and bundles these references under `Contents/Resources/Documentation/reference/`; open either language's `index.html` in a browser. Package verification checks their presence and links. Python pages include package navigation and omit links to dependency pages that are not bundled.
 
 ## Changes
 

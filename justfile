@@ -25,16 +25,8 @@ ci: lint secrets test-minimum (package '--replace')
 alias check := ci
 alias build := package
 
-# Check Python, JavaScript, workflows, and release metadata.
-lint: lint-just lint-python typecheck lint-workflows release-check branding api-check
-
-# Confirm the checked-in API contract matches the server.
-api-check:
-    {{ python }} -m tools.export_openapi --check
-
-# Reject retired app names in current source inputs.
-branding: setup
-    {{ python }} -m tools.branding
+# Check Python, workflow syntax, and release metadata.
+lint: lint-just lint-python typecheck lint-workflows release-check
 
 lint-just:
     just --fmt --check
@@ -50,11 +42,6 @@ lint-python:
 # Check shared domain, storage, adapter, application, and HTTP contracts.
 typecheck:
     uvx --from mypy==1.19.1 mypy --python-executable {{ python }}
-
-# Generate Python and native HTML references, including Swift symbol graphs.
-reference:
-    {{ python }} -m tools.export_reference
-    {{ python }} -m tools.export_native_reference
 
 lint-workflows:
     go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12

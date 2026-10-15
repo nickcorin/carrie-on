@@ -18,7 +18,7 @@ Carrie On is a local client/server application. The native Swift app and Typer C
 | `src/carrie_on/codex/` | Validated observations and private desktop/read-only app-server adapters |
 | `src/carrie_on/macos/` | Installation, lifecycle, updates, and compatibility |
 | `menubar/` | Native presentation, HTTP client, and macOS app lifecycle |
-| `tools/` | Build, icon, release, OpenAPI, and package-verification tooling |
+| `tools/` | Builds, source installation, releases, artwork, and package/Codex acceptance checks |
 | `tests/` | Domain, storage, HTTP, CLI, protocol, packaging, and native behavior checks |
 
 The domain and application layers do not depend on FastAPI or Typer. The service owns decisions; adapters translate inputs and results. Network operations occur outside database transactions. Every SQLite operation uses its own connection, so a slow Codex call does not prevent another client from reading or changing unrelated work. `pyproject.toml` installs the `src` package and exposes `carrie-on` and `carrie-on-server`.
@@ -28,7 +28,7 @@ The domain and application layers do not depend on FastAPI or Typer. The service
 Application code depends on `QueueStorage`, not its SQLite implementation. `SqliteQueueStorage` owns both entries and attempts because acquiring work requires an atomic query across both tables. Domain rules live on `QueueEntry`; storage enforces uniqueness, revisions, and exclusive delivery acquisition. Connections, transactions, SQL, and SQLite errors never cross `storage/`. `StorageUnavailable` represents persistence failure; `QueueError` identifies an expected rejection. Codex connection failures and malformed upstream data remain distinct from programming errors.
 
 The read adapter uses the official Codex Python SDK. It reads compact thread metadata, a latest-turn header, and a bounded opening-message page. Missing completion evidence means the chat is busy. It pages older headers only when reconciling a changed conversation against an uncertain send. Desktop IPC reads settings and sends through the owning app; it never subscribes to full conversation history.
-The server constructs a shared connection configuration, while every operation owns separate context-managed connections. Platform entrypoints resolve `Runtime` and validated `Settings` explicitly; importing a component does not select a profile or inspect an installed app. Both installation paths load settings under the same installation lock and publish the same launchd configuration. Module dependency tests and `just typecheck` guard these contracts. `just reference` generates Python API pages and native symbol graphs under `build/reference/`.
+The server constructs a shared connection configuration, while every operation owns separate context-managed connections. Platform entrypoints resolve `Runtime` and validated `Settings` explicitly; importing a component does not select a profile or inspect an installed app. Both installation paths load settings under the same installation lock and publish the same launchd configuration. Module dependency tests and `just typecheck` guard these contracts.
 
 ## Storage services
 
@@ -67,7 +67,13 @@ The worker waits between selections, targeting the configured interval for a pas
 
 ## HTTP contract
 
-The service binds to `127.0.0.1`. Requests require the exact configured Host and `X-Carrie-On: 1`; foreign origins and cross-site requests are rejected. Responses disable caching. JSON writes have a bounded body size and reject unknown fields. Errors use `application/problem+json` with `type`, `title`, `status`, `detail`, and stable `code` fields. The generated [OpenAPI contract](openapi.json) describes request and response schemas.
+The service binds to `127.0.0.1`. Requests require the exact configured Host and `X-Carrie-On: 1`; foreign origins and cross-site requests are rejected. Responses disable caching. JSON writes have a bounded body size and reject unknown fields. Errors use `application/problem+json` with `type`, `title`, `status`, `detail`, and stable `code` fields. FastAPI serves request and response schemas at `/openapi.json`, subject to the same request restrictions. With the service running on its default release port:
+
+```sh
+curl -H 'X-Carrie-On: 1' http://127.0.0.1:8766/openapi.json
+```
+
+Use port 8767 for Dev, or the configured port for a custom installation.
 
 | Method and path | Behavior |
 | --- | --- |

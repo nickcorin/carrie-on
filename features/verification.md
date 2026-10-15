@@ -39,10 +39,10 @@ The automated checks cover the product behaviors below through the current stora
 | GitHub release selection, download integrity, offline failure, rollback, retry | Python/native updater tests with temporary apps |
 | Source rebuild output, failure isolation, successful replacement, local commit discovery | Native/Python source-build tests |
 | Release/Dev independent settings, state, ports, preferences, service targets | Build-profile and CLI service tests |
-| Branding, release metadata, signed app, ZIP/DMG, relocation, no system Python | Build/release tests and packaged acceptance pipeline |
+| App identity, release metadata, signed app, ZIP/DMG, relocation, no system Python | Build/release tests and packaged acceptance pipeline |
 | Loopback/Host/Origin/header restrictions, body bounds, validation, error schema | HTTP contract tests including required OpenAPI headers, health failure media, bounded cursors, positive integer revisions, and 405 Allow preservation |
 | CLI help/version, structured stdout, stderr/errors, exit codes, explicit server | CLI subprocess tests, long Unicode add/edit round trips, HTTP 413 input rejection, and packaged CLI reads against an isolated HTTP service |
-| Python module ownership and callable contracts | Dependency-boundary tests, Ruff formatting/import checks, mypy on shared contracts, generated Python/native HTML, and bundled page/fragment link checks |
+| Python module ownership and callable contracts | Dependency-boundary tests, Ruff formatting/import checks, and mypy on shared contracts |
 
 ## Acceptance boundaries
 
@@ -50,7 +50,7 @@ The automated checks cover the product behaviors below through the current stora
 
 `tests/test_architecture.py` rejects database libraries outside `storage/` and concrete storage imports from the application/domain. `tests/test_storage.py` verifies concurrent acquisition, process death, expiry, revisions, pagination, private backups, repeated schema initialization with existing work, interrupted per-entry import, and terminal states.
 
-`just test` runs the Python and native automated tests. `just test-minimum` repeats them on Python 3.10. `just dev` additionally builds the complete Dev bundle, regenerates and checks its references, audits native dependencies, signs it, verifies it in an isolated home, and checks the ZIP and mounted DMG. `just lint` checks formatting, imports, the generated OpenAPI contract, and shared Python types. `just reference` generates Python API pages, native HTML, and Swift symbol graphs.
+`just test` runs the Python and native automated tests. `just test-minimum` repeats them on Python 3.10. `just dev` additionally builds the complete Dev bundle, audits native dependencies, signs it, verifies it in an isolated home, and checks the ZIP and mounted DMG. HTTP tests check FastAPI's live OpenAPI schema; package verification also requests it from the bundled server. `just lint` checks formatting, imports, workflow syntax, release metadata, and shared Python types.
 
 `python tests/render_queue_cards.py OUTPUT.png [--dark]` renders real AppKit/SwiftUI cards with synthetic data. `.venv/bin/python tests/build_chat_scroll_preview.py /tmp/carrie-scroll --verify --snapshots /tmp/carrie-scroll/renders` runs the complete picker with 150 synthetic chats and 75 queued items. Repeated runs verify viewport pagination, search reset, beginning/end navigation, and independent overflowing lists; light/dark renders verify card spacing, alignment, and section heights. This fixture starts no services and rejects queue mutations.
 

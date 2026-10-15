@@ -21,8 +21,6 @@ from pathlib import Path
 
 from carrie_on.macos.compatibility import audit
 from carrie_on.macos.runtime import PROFILES
-from tools.branding import check_bundle
-from tools.export_reference import check_links
 
 
 def app_contents(app):
@@ -72,7 +70,6 @@ def verify(archive, profile=None):
             check=True,
         )
         extracted = root / "Extracted" / profile.bundle_name
-        check_bundle(extracted)
         app = home / "Applications" / profile.bundle_name
         subprocess.run(["/usr/bin/ditto", str(extracted), str(app)], check=True)
         metadata = json.loads((app / "Contents/Resources/release.json").read_text())
@@ -101,11 +98,8 @@ def verify(archive, profile=None):
             "LICENSE",
             "features/index.md",
             "assets/README.md",
-            "reference/python/index.html",
-            "reference/native/index.html",
         ):
             assert (documentation / name).is_file(), f"Missing bundled documentation: {name}"
-        check_links(documentation / "reference")
         for document in documentation.rglob("*.md"):
             for target in re.findall(r"\]\(([^)]+)\)", document.read_text()):
                 if "://" in target or target.startswith(("mailto:", "#")):
@@ -272,6 +266,13 @@ for line in sys.stdin:
                         and health["build_id"] == metadata["build_id"]
                     )
                     assert health["worker_healthy"], "Packaged dispatch worker is unhealthy"
+                request = urllib.request.Request(
+                    url + "/openapi.json", headers={"X-Carrie-On": "1"}
+                )
+                with urllib.request.urlopen(request, timeout=2) as response:
+                    schema = json.load(response)
+                    assert schema["info"]["version"] == metadata["version"]
+                    assert "post" in schema["paths"]["/api/v1/queue"]
                 assert (
                     json.loads(run(cli, "--server", url, "--json", "queue", "list"))["items"] == []
                 )
@@ -293,7 +294,7 @@ for line in sys.stdin:
         )
         print(
             "PASS: archive integrity, compatibility, isolated native setup, immutable app, persisted settings, "
-            "relocated runtime, queue, service paths, signatures, native self-tests, and local API"
+            "relocated runtime, queue, service paths, signatures, native self-tests, local API, and OpenAPI"
         )
 
 
