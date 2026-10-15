@@ -36,7 +36,7 @@ files = [
     "src/carrie_on/api.py", "src/carrie_on/server.py",
     "src/carrie_on/cli.py", "src/carrie_on/macos/runtime.py",
     "src/carrie_on/macos/installation.py", "src/carrie_on/macos/lifecycle.py",
-    "src/carrie_on/macos/updates.py", "src/carrie_on/macos/legacy_migration.py",
+    "src/carrie_on/macos/updates.py",
 ]
 follow_imports = "silent"
 check_untyped_defs = true

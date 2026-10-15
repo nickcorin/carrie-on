@@ -74,6 +74,7 @@ class ComposedService(unittest.TestCase):
             maintenance=SqliteStorageMaintenance(self.root / "queue.sqlite3"),
             port=port,
             interval=1,
+            legacy_path=self.root / "resume-queue.json",
         )
         self.server = uvicorn.Server(uvicorn.Config(self.app, log_level="critical"))
         self.server_thread = threading.Thread(
@@ -229,3 +230,41 @@ class ComposedService(unittest.TestCase):
         status = self.http.get("status").json()
         self.assertEqual(status["usage"]["windows"][0]["window_minutes"], 300)
         self.assertIsNone(status["usage_error"])
+
+    def import_saved_queue(self, *, message_anchor=None, turn_id="original-turn", accepted=False):
+        self.stop_server()
+        source = Path(__file__).with_name("fixtures") / "v0.5.7-queue.json"
+        raw = json.loads(source.read_text())
+        entry = raw["entries"][0]
+        entry["anchor_message_id"] = message_anchor
+        (self.root / "resume-queue.json").write_text(json.dumps(raw))
+        self.state["usage"] = usage(0, 200)
+        self.state["turn_id"] = turn_id
+        if accepted:
+            self.state["accepted_id"] = entry["id"]
+        self.save_state()
+        self.start_server()
+        return entry["id"], entry["prompt"]
+
+    def test_imported_turn_anchor_sends_exact_instruction_after_reset(self):
+        item_id, instruction = self.import_saved_queue()
+        self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "sent")
+        self.assertEqual(len(self.sends), 1)
+        request = self.sends[0]["turnStart"]["request"]
+        self.assertEqual(request["clientUserMessageId"], item_id)
+        self.assertEqual(request["input"][0]["text"], instruction)
+
+    def test_changed_imported_turn_is_stale_without_a_message_anchor(self):
+        item_id, _ = self.import_saved_queue(turn_id="later-turn")
+        self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "stale")
+        self.assertEqual(self.sends, [])
+
+    def test_changed_turn_is_stale_even_when_message_anchor_matches(self):
+        item_id, _ = self.import_saved_queue(message_anchor="original", turn_id="later-turn")
+        self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "stale")
+        self.assertEqual(self.sends, [])
+
+    def test_imported_accepted_message_is_not_sent_again(self):
+        item_id, _ = self.import_saved_queue(accepted=True)
+        self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "sent")
+        self.assertEqual(self.sends, [])

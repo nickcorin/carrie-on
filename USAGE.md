@@ -73,7 +73,7 @@ A worker acquires the next queued or failed entry without a live attempt, ordere
 
 Attempts have expiring leases. If the worker dies, a later iteration reclaims the item. Before sending, it checks fresh conversation state: if the message was accepted already it records success; if the conversation advanced it marks the entry stale and does not retry. Temporary failures and uncertain send replies retry through these checks. The external send and SQLite commit cannot be atomic, so duplicate suppression cannot guarantee exactly-once delivery.
 
-The backend owns `queue.sqlite3`; clients never access it directly. Setup stops the retired JSON worker, imports existing JSON transactionally, and preserves the source file. Import ignores the old pause setting. See [queue behavior](features/queue.md), [migration](ARCHITECTURE.md#installation-and-migration), and the [feature verification matrix](features/verification.md).
+The backend owns `queue.sqlite3`; clients never access it directly. Setup stops the retired JSON worker, imports v0.5.7 entries individually, and preserves the source file. If import is interrupted, retry skips stored UUIDs and continues with missing entries. Import ignores the old pause setting. See [queue behavior](features/queue.md), [migration](ARCHITECTURE.md#installation-and-migration), and the [feature verification matrix](features/verification.md).
 
 For an isolated source server, use a temporary directory and free port:
 

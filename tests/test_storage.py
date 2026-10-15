@@ -245,75 +245,20 @@ os._exit(17)
         with self.assertRaisesRegex(StorageUnavailable, "newer"):
             self.maintenance.initialize()
 
-    def test_declarative_upgrade_preserves_instructions_history_and_active_attempt(self):
-        path = self.path.with_name("old.sqlite3")
-        baseline = Path(__file__).parents[1] / "src/carrie_on/storage/migrations/0001_queue.sql"
-        with closing(sqlite3.connect(path)) as connection:
-            connection.executescript(baseline.read_text())
-            connection.execute("PRAGMA user_version=2")
-            columns = dict(
-                id=str(self.entry.id),
-                chat_id=str(self.entry.chat_id),
-                title="Task",
-                account_id="a",
-                limit_id="codex",
-                anchor_message_id="anchor",
-                model="model",
-                instruction="Edited\x00",
-                create_request=json.dumps(
-                    {
-                        "chat_id": str(self.entry.chat_id),
-                        "instruction": "Original",
-                        "limit_id": None,
-                    }
-                ),
-                reset_windows='{"primary":100}',
-                enrolled_while_busy=0,
-                state="queued",
-                reason="Busy",
-                error="Retry",
-                deferrals=4,
-                queued_at=50,
-                updated_at=100,
-                revision=8,
-            )
-            connection.execute(
-                f"INSERT INTO queue_items ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
-                tuple(columns.values()),
-            )
-            connection.execute(
-                "INSERT INTO deliveries (id,queue_item_id,instruction,started_at,lease_expires_at) VALUES (?,?,?,?,?)",
-                (str(uuid4()), str(self.entry.id), "Edited\x00", 100, 220),
-            )
-            historical = {}
-            for state in ("sent", "changed", "cancelled", "failed"):
-                fields = {**columns, "id": str(uuid4()), "state": state, "finished_at": 101}
-                historical[state] = UUID(fields["id"])
-                connection.execute(
-                    f"INSERT INTO queue_items ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
-                    tuple(fields.values()),
-                )
-            connection.commit()
-        maintenance = SqliteStorageMaintenance(path)
-        maintenance.initialize()
-        maintenance.initialize()
-        store = SqliteQueueStorage(path, clock=lambda: instant(150))
-        entry = store.get_entry(self.entry.id)
-        self.assertEqual(
-            (entry.instructions, entry.state, entry.revision),
-            ("Edited\x00", "failed", 8),
-        )
-        self.assertTrue(entry.dispatching)
-        self.assertEqual(entry.reset_windows, {"primary": 100})
-        self.assertIsNone(store.create_delivery_attempt())
-        for previous, current in (
-            ("sent", "sent"),
-            ("changed", "stale"),
-            ("cancelled", "cancelled"),
-            ("failed", "cancelled"),
-        ):
-            self.assertEqual(store.get_entry(historical[previous]).state, current)
-        self.assertEqual(store.get_entry(historical["failed"]).error, "Retry")
+    def test_reinitialization_preserves_entries_history_and_active_attempts(self):
+        self.store.update_instructions(self.entry.id, "Edited\x00", revision=1)
+        finished = self.add()
+        self.store.update_entry_state(finished.id, "sent")
+        attempt = self.store.create_delivery_attempt()
+        self.maintenance.initialize()
+        self.maintenance.initialize()
+        saved = self.store.get_entry(self.entry.id)
+        self.assertEqual((saved.instructions, saved.revision), ("Edited\x00", 2))
+        self.assertTrue(saved.dispatching)
+        self.assertEqual(self.store.get_entry(finished.id).state, "sent")
+        self.assertIsNone(self.store.create_delivery_attempt())
+        self.now = attempt.expires_at.timestamp()
+        self.assertEqual(self.store.create_delivery_attempt().entry.id, self.entry.id)
 
     def test_external_import_preserves_current_work_and_is_idempotent(self):
         legacy = self.legacy_entry()
@@ -350,6 +295,25 @@ os._exit(17)
         store = self.imported_storage(self.write_legacy([active, sent]))
         self.assertEqual(store.get_entry(UUID(active.id)).anchor_turn_id, "turn-a")
         self.assertEqual(store.get_entry(UUID(sent.id)).state, "sent")
+
+    def test_unreadable_history_does_not_block_pending_work(self):
+        active = self.legacy_entry()
+        historical = self.legacy_entry(thread_id=str(uuid4()))
+        for record in (
+            {"id": []},
+            {**asdict(historical), "thread_id": []},
+            {**asdict(historical), "finished_at": 10**400},
+            {**asdict(historical), "finished_at": 253402300800},
+        ):
+            with self.subTest(record=record):
+                path = self.write_legacy([active], [record])
+                original = path.read_bytes()
+                store = self.imported_storage(path)
+                self.assertEqual(
+                    store.get_entry(UUID(active.id)).instructions, "Legacy instruction"
+                )
+                self.assertIsNone(store.get_entry(UUID(historical.id)))
+                self.assertEqual(path.read_bytes(), original)
 
     def test_bad_json_leaves_current_schema_and_original_file_intact(self):
         path = self.path.with_name("bad.json")

@@ -18,7 +18,6 @@ from importlib.metadata import distributions
 from pathlib import Path
 
 from carrie_on.macos.compatibility import audit
-from carrie_on.macos.legacy_migration import PREVIOUS_IDENTIFIER
 from carrie_on.macos.runtime import MINIMUM_MACOS, PROFILES
 from tools.branding import check_bundle, check_source
 from tools.disk_image import build_disk_image
@@ -137,8 +136,6 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
             }
         )
         info["CarrieOnBuildProfile"] = profile.name
-        if profile.name == "release":
-            info["CarrieOnPreviousBundleIdentifier"] = PREVIOUS_IDENTIFIER
         if profile.name == "dev":
             info["CarrieOnSourceRoot"] = str(ROOT)
             info["CarrieOnBuildPython"] = sys.executable

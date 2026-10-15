@@ -27,7 +27,7 @@ class BrandingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 check_source(root)
 
-    def test_historical_names_are_allowed_only_in_migration_source(self):
+    def test_migration_sources_have_no_branding_exemption(self):
         import subprocess
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -36,7 +36,5 @@ class BrandingTests(unittest.TestCase):
             migration = root / "src/carrie_on/macos/legacy_migration.py"
             migration.parent.mkdir(parents=True)
             migration.write_bytes(RETIRED_NAME)
-            check_source(root)
-            (root / "app_runtime.py").write_bytes(RETIRED_NAME)
-            with self.assertRaisesRegex(ValueError, "app_runtime.py"):
+            with self.assertRaisesRegex(ValueError, "legacy_migration.py"):
                 check_source(root)

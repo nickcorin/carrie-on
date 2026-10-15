@@ -42,7 +42,6 @@ class LegacyEntry:
         if not isinstance(entry.id, str):
             raise TypeError("Invalid queue entry ID")
         UUID(entry.id)
-        UUID(entry.thread_id)
         for value in (
             entry.thread_id,
             entry.title,
@@ -54,6 +53,7 @@ class LegacyEntry:
         ):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError("Invalid queue entry text field")
+        UUID(entry.thread_id)
         if not (entry.anchor_message_id or entry.anchor_turn_id):
             raise ValueError("Missing conversation anchor")
         for identity in (entry.anchor_message_id, entry.anchor_turn_id, entry.accepted_turn_id):
@@ -121,25 +121,20 @@ class LegacyEntry:
 
 @dataclass(frozen=True, kw_only=True)
 class LegacyQueue:
-    """Read and merge saved JSON queues without changing the source files."""
+    """Read the v0.5.7 JSON queue without changing the source file."""
 
     entries: tuple[LegacyEntry, ...] = ()
     history: tuple[Any, ...] = ()
 
     @classmethod
     def read(cls, path: Path) -> "LegacyQueue":
-        """Read a version 2 JSON queue or an empty version 1 queue. Ignore the pause setting."""
+        """Read the version 2 JSON format written by v0.5.7. Ignore the pause setting."""
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text())
         if not isinstance(raw, dict):
             raise TypeError("Invalid queue file")
-        if raw.get("version") == 1:
-            if raw.get("entries"):
-                raise ValueError(
-                    "Re-enroll legacy entries before migrating to the independent monitor"
-                )
-        elif raw.get("version") != 2:
+        if raw.get("version") != 2:
             raise ValueError("Unsupported queue file format")
         if not isinstance(raw.get("entries"), list) or not isinstance(raw.get("history"), list):
             raise TypeError("Invalid queue entries or history")
@@ -148,40 +143,19 @@ class LegacyQueue:
             raise ValueError("Duplicate chat enrollment in queue")
         return cls(entries=entries, history=tuple(raw["history"]))
 
-    def merge(self, current: "LegacyQueue", now: float) -> tuple[QueueEntry, ...]:
-        """Merge saved queues into QueueEntry records without writing a merged JSON file.
+    def normalize(self, now: float) -> tuple[QueueEntry, ...]:
+        """Convert saved entries and readable history to current queue records.
 
         History suppresses pending entries with the same UUID, even if the history
-        record cannot be imported. Among pending entries for the same chat,
-        needs_attention takes precedence over sending, then waiting. Entries from
-        current win ties. Keep losing entries with different UUIDs as cancelled
-        history.
+        record cannot be imported. Unreadable history remains in the source JSON.
         """
-        history: list[Any] = []
-        for record in self.history + current.history:
-            if record not in history:
-                history.append(record)
-        finished = {record.get("id") for record in history if isinstance(record, dict)}
-        entries = {entry.thread_id: entry for entry in current.entries if entry.id not in finished}
-        retired: list[LegacyEntry] = []
-        priority = {"waiting": 0, "sending": 1, "needs_attention": 2}
-        for entry in self.entries:
-            if entry.id in finished:
-                continue
-            existing = entries.get(entry.thread_id)
-            if existing is None:
-                entries[entry.thread_id] = entry
-                continue
-            if priority[entry.state] > priority[existing.state]:
-                winner, loser = entry, existing
-            else:
-                winner, loser = existing, entry
-            entries[entry.thread_id] = winner
-            if loser.id != winner.id:
-                retired.append(loser)
-
+        finished = {
+            record["id"]
+            for record in self.history
+            if isinstance(record, dict) and isinstance(record.get("id"), str)
+        }
         imported: list[QueueEntry] = []
-        for raw in history:
+        for raw in self.history:
             try:
                 if not isinstance(raw, dict):
                     raise TypeError("Partial history")
@@ -194,19 +168,19 @@ class LegacyQueue:
                 finished_at = raw.get("finished_at", now)
                 if type(finished_at) not in (int, float) or not math.isfinite(finished_at):
                     raise ValueError("Invalid completion timestamp")
-            except (ValueError, TypeError, KeyError):
-                # Leave unreadable history in the source JSON.
+                outcome = raw.get("outcome")
+                if outcome == "resumed":
+                    state: EntryState = "sent"
+                elif outcome in {"cancelled", "superseded_by_migration"}:
+                    state = "cancelled"
+                else:
+                    state = "stale"
+                imported.append(entry.to_entry(state, now, finished_at))
+            except (ValueError, TypeError, KeyError, OverflowError, OSError):
                 continue
-            outcome = raw.get("outcome")
-            if outcome == "resumed":
-                state: EntryState = "sent"
-            elif outcome in {"cancelled", "superseded_by_migration"}:
-                state = "cancelled"
-            else:
-                state = "stale"
-            imported.append(entry.to_entry(state, now, finished_at))
-        imported.extend(entry.to_entry("cancelled", now, now) for entry in retired)
-        for entry in entries.values():
+        for entry in self.entries:
+            if entry.id in finished:
+                continue
             state = (
                 "sent"
                 if entry.accepted_turn_id
@@ -221,10 +195,6 @@ class LegacyQueue:
                 )
             )
         return tuple(imported)
-
-    def normalize(self, now: float) -> tuple[QueueEntry, ...]:
-        """Convert this queue's records using the same rules as merging installations."""
-        return LegacyQueue().merge(self, now)
 
 
 class LegacyImporter:

@@ -5,7 +5,7 @@
 - Ship a single ad-hoc signed Carrie On.app containing Python, the local API, worker, native menu, and custom app icon.
 - Configure backend and menu login services on first launch without development tools.
 - Detect app replacements and update service registrations while preserving connection settings, queue, and history.
-- Automatically migrate older bundled installations on first launch, merging queued work and retiring old services after the current installation is healthy.
+- Import the v0.5.7 JSON queue into SQLite on first launch and retire its standalone worker.
 - Check for a newer stable GitHub release on startup and show **Update to &lt;version&gt;** when available. Download and install it after confirmation.
 - Rebuild the entire Carrie On Dev app from its saved checkout with live output, replacing and restarting only after tests, signing, and bundle verification succeed. Source menu installations reuse their native menu builder.
 - Build versioned releases with automated acceptance checks, checksums, and release manifests.
@@ -19,17 +19,15 @@ Follow the [installation guide](../INSTALL.md) for setup, updates, release comma
 
 First launch finds or asks for the CLI executable, saves settings in Application Support, registers services, and checks the local API before opening the menu. It never modifies the signed app. Fresh installations contain no enrolled chats, logs, or builder credentials. Replacing and reopening the app updates services based on its build identity. Reopening the same build preserves healthy running services.
 
-## Legacy migration
+## Upgrade from v0.5.7
 
-Version 0.5.6 imports data from older bundled installations on first launch. Versions 0.5.3 and 0.5.4 reject updates with a different bundle identity. They require manual app replacement before automatic migration can run. Earlier versions have no built-in updater. Version 0.5.5 can update through Settings.
+Setup stops the retired writer before importing the v0.5.7 queue. Settings and launch-at-login preferences stay in place. The JSON source remains unchanged. Each entry commits separately; retry skips stored UUIDs without overwriting edits or reactivating completed work. Readable history imports into SQLite, and incomplete historical records remain available in the JSON source. Pause settings are ignored. Import does not send messages.
 
-Migration stops the old services before importing settings, queued work, history, and the launch-at-login preference. When both installations have data, current settings and login preferences take precedence. Distinct queued chats and history are combined. Completed enrollments are never reactivated.
+Recorded acceptance imports as sent. An uncertain send without recorded acceptance becomes pending work and is checked against Codex before another send. Existing SQLite work takes precedence over conflicting JSON enrollment; conflicting pending records import as cancelled history. See the [import contract](../ARCHITECTURE.md#installation-and-migration).
 
-For a chat enrolled in both legacy JSON queues, an attempted or uncertain send takes precedence over waiting work. Otherwise, the current enrollment wins. Superseded entries remain in history and recovery copies. SQLite work takes precedence over later legacy imports; conflicting old items remain cancelled history. Old pause settings are ignored. In-flight attempts become expired deliveries, and held entries become changed items. Migration does not send messages.
+Upgrades from earlier app identities and merging multiple installations are unsupported. Carrie On Dev does not import the release installation.
 
-After the new services are healthy, setup removes the old login registrations and moves the old data into `~/Library/Application Support/Carrie On/Migration/previous-installation/retired`. The parent directory holds snapshots of both installations and `journal.json`, which records migration progress. Unsupported or damaged files remain available for recovery, with warnings in the journal. Migration imports usable data automatically.
-
-Reopening retries interrupted setup without importing stale queue entries over newer work. The installer snapshots existing SQLite using its backup API, including committed WAL data. Carrie On Dev never migrates the release installation. Direct source servers default to checkout-local SQLite; registered source services use the selected profile’s Application Support data. Registering the release source service stops the old writers and imports a private snapshot of checkout-local JSON once. Dev source registration does not import the release queue. See the [source upgrade instructions](../INSTALL.md#update-a-source-installation).
+Direct source servers default to checkout-local SQLite; registered source services use the selected profile’s Application Support data. Registering the release source service stops the old writers and imports a private snapshot of checkout-local JSON. Dev source registration does not import the release queue. See the [source upgrade instructions](../INSTALL.md#update-a-source-installation).
 
 ## Update verification and recovery
 
@@ -55,7 +53,7 @@ For source builds, see [menu usage](../USAGE.md#menu-bar). `python -m unittest t
 
 `python -m unittest tests.test_service_installation tests.test_cli -v` checks source commands from outside the checkout, virtual-environment interpreter preservation, saved-setting validation, relative socket reuse, environment isolation, installation locking, publication failure recovery, source JSON import and retry, and interrupted CLI creation with its original UUID.
 
-`python -m unittest tests.test_legacy_migration -v` exercises first launch with old settings, queues, history, startup preferences, and service registrations in isolated homes. It checks duplicate enrollments, uncertain sends, damaged data, interrupted import, setup failures, retries, and Dev isolation with a simulated launchd session. `carrie_on.macos.legacy_migration` manages recovery copies and the import journal.
+`python -m unittest tests.test_storage tests.test_composed_service -v` checks JSON import, incomplete history, interrupted imports, and dispatch from raw v0.5.7 entries through the real adapters with controlled peers. The scenarios include unchanged and changed turn anchors, accepted-message reconciliation, and restart persistence.
 
 ## Distribution limits
 

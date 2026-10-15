@@ -45,7 +45,9 @@ def serve(state_path: str) -> None:
             result = {
                 "data": [
                     {
-                        "id": "accepted-turn" if state.get("accepted_id") else "original-turn",
+                        "id": "accepted-turn"
+                        if state.get("accepted_id")
+                        else state.get("turn_id", "original-turn"),
                         "status": "failed",
                         "completedAt": 100,
                         "items": [],

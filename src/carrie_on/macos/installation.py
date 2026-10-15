@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Iterator
 
 from carrie_on.macos.compatibility import version_tuple
-from carrie_on.macos.legacy_migration import LegacyMigration
 from carrie_on.macos.lifecycle import (
     agent_path,
     remove_agent,
@@ -383,18 +382,9 @@ def setup(
     """
     metadata = check_bundle(runtime)
     with installation_lock(runtime):
-        if runtime.profile.name == "dev" or no_start:
-            settings = Settings.load(runtime, overrides, legacy=True)
-            verify_codex(settings)
-            return configure(runtime, settings, metadata, no_start=no_start, repair=repair)
-        retire_worker(profile=runtime.profile, remove_definition=False)
-        migration = LegacyMigration(Path.home(), runtime.data, runtime.profile.labels)
-        with migration.prepare():
-            settings = Settings.load(runtime, overrides, legacy=True)
-            verify_codex(settings)
-            result = configure(runtime, settings, metadata, no_start=no_start, repair=repair)
-            migration.complete()
-        return result
+        settings = Settings.load(runtime, overrides, legacy=True)
+        verify_codex(settings)
+        return configure(runtime, settings, metadata, no_start=no_start, repair=repair)
 
 
 def configure(

@@ -25,7 +25,7 @@ Setup runs as your login user, without administrator privileges. Your settings, 
 
 These instructions apply to Carrie On releases. Carrie On Dev rebuilds from your local checkout. See [development builds](RELEASING.md#local-development-app).
 
-### Update 0.5.5 or later
+### Update 0.5.7 or later
 
 Carrie On checks for a newer stable release on startup. To install an update, follow these steps:
 
@@ -37,13 +37,13 @@ Settings shows download and installation progress. Choose **Not Now** to leave t
 
 Updates preserve your settings, queue, history, and launch-at-login preference. See [startup and quit](features/app-lifecycle.md) for background service behavior.
 
-### Replace 0.5.4 or earlier
+### Upgrade the v0.5.7 queue
 
-The older updater rejects the changed app identity. To upgrade, follow the [installation steps](#install) to quit the old app and replace it with the latest release.
+First launch stops the retired worker and imports the v0.5.7 JSON queue into SQLite. Settings and launch-at-login preferences stay in place. The original `resume-queue.json` remains in Application Support. Pause is ignored; otherwise, pending work and readable history retain their UUIDs and instructions.
 
-First launch imports your settings, queued work, history, and launch-at-login preference automatically. You do not need to move files, run Terminal commands, or resolve duplicate records. After the new services are healthy, setup removes the old service registrations and moves the old files into a recovery directory. See [migration behavior](features/distribution.md#legacy-migration) for merge rules and recovery files.
+Each entry commits separately. If import fails, keep both the JSON source and SQLite files and reopen the app after resolving the reported error. Retry skips UUIDs already stored, preserving subsequent edits and completed work. See [import behavior](ARCHITECTURE.md#installation-and-migration).
 
-If migration is interrupted, reopen the app to resume it. To recover old files, look in `~/Library/Application Support/Carrie On/Migration/previous-installation`. Keep that directory until you have checked your settings, queue, and history.
+Automatic upgrades from versions before v0.5.7 are unsupported.
 
 ### Recover a failed update
 
@@ -55,7 +55,7 @@ If the replacement fails to start immediately, the updater restores the previous
 
 Update your Git checkout, run `just setup`, and register its backend with `.venv/bin/carrie-on service install`. Registration uses `~/Library/Application Support/Carrie On`, including `queue.sqlite3`, `settings.json`, and `.runtime/` logs. It shares the release app’s service names and data, so choose either the source service or the release app as the owner of that installation. Prefer `just dev` for an independent development app.
 
-When registering a release source backend, the installer stops the retired worker and backend, takes a private copy of the checkout’s `resume-queue.json` in `Migration/source-checkout/resume-queue.json` under Application Support, and imports it transactionally. The original file and snapshot remain intact. Repeating registration does not reactivate completed work. Existing SQLite enrollments take precedence over an old JSON enrollment for the same chat. `--profile dev service install` uses the Dev namespace and does not adopt the release checkout queue.
+When registering a release source backend, the installer stops the retired worker and backend, takes a private copy of the checkout’s `resume-queue.json` in `Migration/source-checkout/resume-queue.json` under Application Support, and imports entries individually. The original file and snapshot remain intact. An interrupted import can leave entries committed; retry skips their UUIDs. Repeating registration does not reactivate completed work. Existing SQLite enrollments take precedence over an old JSON enrollment for the same chat. `--profile dev service install` uses the Dev namespace and does not adopt the release checkout queue.
 
 A directly launched `carrie-on-server serve` instead defaults to `queue.sqlite3` beside the checkout, with adjacent `settings.json` when present. It imports an adjacent legacy JSON queue on first start. Its output goes to the terminal. `--state /absolute/path/queue.sqlite3` selects another database and settings directory. These direct servers are separate from registered services; use a different port when running both.
 
@@ -103,7 +103,7 @@ To rerun the packaged acceptance check:
 just verify
 ```
 
-It extracts into paths containing spaces, copies the app to an isolated home, removes Python from PATH, and invokes the native first-launch helper with `--no-start`. It checks service paths, persisted configuration, queue operations, local API health, release health, app immutability, and code signatures. Its fake Codex executable only answers the setup version check. It never loads login services or dispatches a chat. `--no-start` is restricted to fresh test installations.
+It extracts into paths containing spaces, copies the app to an isolated home, removes Python from PATH, and invokes the native first-launch helper with `--no-start`. It checks service paths, persisted configuration, queue operations, local API health, release health, app immutability, code signatures, and bundled reference links. Its fake Codex executable answers version, initialization, and usage requests. It never loads login services or dispatches a chat. `--no-start` is restricted to fresh test installations.
 
 Before broader distribution, test Gatekeeper approval, first launch, login startup, `doctor`, updates, and removal on another Mac. Include macOS 13 before claiming runtime compatibility with that version. Local tests on macOS 27.0.1 and deployment-target checks do not establish that compatibility. See [automated distribution checks](features/distribution.md#verification) for unit test coverage.
 

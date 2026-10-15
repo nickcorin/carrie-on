@@ -1,11 +1,8 @@
 """Reject retired branding in source inputs and packaged application payloads."""
 
 import marshal
-import plistlib
 import subprocess
 from pathlib import Path
-
-from carrie_on.macos.legacy_migration import PREVIOUS_IDENTIFIER
 
 # Keep the rejected spelling out of shipped source and bytecode constants.
 RETIRED_NAME = bytes.fromhex("746f6b656e6d6178786572")
@@ -33,14 +30,7 @@ def check_source(root):
     for name in sorted(set(names) - {""}):
         path = root / name
         if path.is_file():
-            # Historical identifiers belong only to the migration and its fixtures.
-            payload = (
-                b""
-                if name
-                in {"src/carrie_on/macos/legacy_migration.py", "tests/test_legacy_migration.py"}
-                else path.read_bytes()
-            )
-            check_branding(name, payload)
+            check_branding(name, path.read_bytes())
 
 
 def check_bundle(app):
@@ -53,11 +43,6 @@ def check_bundle(app):
             check_branding(name, str(path.readlink()).encode())
         elif path.is_file():
             payload = path.read_bytes()
-            if name == Path("Contents/Info.plist"):
-                info = plistlib.loads(payload)
-                if info.get("CarrieOnPreviousBundleIdentifier") == PREVIOUS_IDENTIFIER:
-                    del info["CarrieOnPreviousBundleIdentifier"]
-                payload = plistlib.dumps(info)
             check_branding(name, payload)
 
     archive = CArchiveReader(str(app / "Contents/MacOS/carrie_on"))
@@ -66,11 +51,7 @@ def check_bundle(app):
         if entry[-1] == "z":
             modules = archive.open_embedded_archive(name)
             for module in modules.toc:
-                payload = (
-                    b""
-                    if module == "carrie_on.macos.legacy_migration"
-                    else marshal.dumps(modules.extract(module))
-                )
+                payload = marshal.dumps(modules.extract(module))
                 check_branding(module, payload)
         else:
             check_branding(name, archive.extract(name) or b"")

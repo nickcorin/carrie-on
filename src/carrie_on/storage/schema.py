@@ -10,7 +10,7 @@ from yoyo.exceptions import BadMigration, LockTimeout
 
 from carrie_on.ports import StorageUnavailable
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 1
 
 
 def migrate(path: Path) -> None:
