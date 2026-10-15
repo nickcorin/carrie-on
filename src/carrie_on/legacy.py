@@ -1,14 +1,16 @@
 """Decode and reconcile retired JSON queues into current, portable import records."""
 
-import hashlib
 import json
 import math
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
-from uuid import UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
-from carrie_on.queue import Delivery, EnqueueCommand, ItemState, QueueItem
+from carrie_on.ports import QueueStorage
+from carrie_on.queue import PENDING_STATES, EntryState, QueueEntry
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -20,11 +22,13 @@ class LegacyEntry:
     title: str
     account_id: str
     limit_id: str
-    anchor_message_id: str
+    anchor_message_id: str | None
     model: str
     prompt: str
     reset_windows: dict[str, int]
     enrolled_while_busy: bool
+    anchor_turn_id: str | None = None
+    accepted_turn_id: str | None = None
     state: Literal["waiting", "sending", "needs_attention"] = "waiting"
     note: str = "Waiting for the recorded usage reset"
     attempted_at: float | None = None
@@ -38,18 +42,23 @@ class LegacyEntry:
         if not isinstance(entry.id, str):
             raise TypeError("Invalid queue entry ID")
         UUID(entry.id)
+        UUID(entry.thread_id)
         for value in (
             entry.thread_id,
             entry.title,
             entry.account_id,
             entry.limit_id,
-            entry.anchor_message_id,
             entry.model,
             entry.prompt,
             entry.note,
         ):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError("Invalid queue entry text field")
+        if not (entry.anchor_message_id or entry.anchor_turn_id):
+            raise ValueError("Missing conversation anchor")
+        for identity in (entry.anchor_message_id, entry.anchor_turn_id, entry.accepted_turn_id):
+            if identity is not None and (not isinstance(identity, str) or not identity.strip()):
+                raise ValueError("Invalid conversation identity")
         if entry.state not in {"waiting", "sending", "needs_attention"}:
             raise ValueError("Invalid queue entry state")
         for timestamp in (entry.attempted_at, entry.processing_until):
@@ -76,22 +85,40 @@ class LegacyEntry:
             raise ValueError("Invalid reactivation error")
         return entry
 
-
-@dataclass(frozen=True, kw_only=True)
-class ImportedItem:
-    """A current enrollment, original creation identity, and historical attempts."""
-
-    item: QueueItem
-    command: EnqueueCommand
-    deliveries: tuple[Delivery, ...] = ()
-
-
-@dataclass(frozen=True, kw_only=True)
-class QueueImport:
-    """Fully interpreted legacy records; opaque history remains recoverable metadata."""
-
-    items: tuple[ImportedItem, ...] = ()
-    opaque_history: tuple[tuple[str, str], ...] = ()
+    def to_entry(
+        self,
+        state: EntryState,
+        now: float,
+        finished_at: float | None,
+        *,
+        current_enrollment: bool = False,
+    ) -> QueueEntry:
+        """Convert validated saved intent into the current entry representation."""
+        # JSON queues did not record enrollment time. Imported history precedes pending work.
+        terminal_time = finished_at if finished_at is not None else now
+        queued_at = now if current_enrollment else min(terminal_time, now - 1)
+        return QueueEntry(
+            id=UUID(self.id),
+            chat_id=UUID(self.thread_id),
+            title=self.title,
+            account_id=self.account_id,
+            limit_id=self.limit_id,
+            anchor_message_id=self.anchor_message_id,
+            anchor_turn_id=self.anchor_turn_id,
+            model=self.model,
+            instructions=self.prompt,
+            original_instructions=self.prompt,
+            requested_limit_id=self.limit_id,
+            reset_windows=dict(self.reset_windows),
+            enrolled_while_busy=self.enrolled_while_busy,
+            queued_at=datetime.fromtimestamp(queued_at, timezone.utc),
+            updated_at=datetime.fromtimestamp(now, timezone.utc),
+            state=state,
+            error=(self.reactivation_error or self.note) if state == "failed" else "",
+            finished_at=datetime.fromtimestamp(finished_at, timezone.utc)
+            if finished_at is not None
+            else None,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -123,7 +150,7 @@ class LegacyQueue:
             raise ValueError("Duplicate chat enrollment in queue")
         return cls(entries=entries, history=tuple(raw["history"]))
 
-    def merge(self, current: "LegacyQueue", now: float) -> "QueueImport":
+    def merge(self, current: "LegacyQueue", now: float) -> tuple[QueueEntry, ...]:
         """Prefer terminal history, then uncertain sends, with current entries winning ties.
 
         Each chat retains a single enrollment. Superseded enrollments become
@@ -152,8 +179,7 @@ class LegacyQueue:
             if loser.id != winner.id:
                 retired.append(loser)
 
-        imported: list[ImportedItem] = []
-        opaque: list[tuple[str, str]] = []
+        imported: list[QueueEntry] = []
         for raw in history:
             try:
                 if not isinstance(raw, dict):
@@ -168,85 +194,75 @@ class LegacyQueue:
                 if type(finished_at) not in (int, float) or not math.isfinite(finished_at):
                     raise ValueError("Invalid completion timestamp")
             except (ValueError, TypeError, KeyError):
-                payload = json.dumps(raw, sort_keys=True, allow_nan=False)
-                digest = hashlib.sha256(payload.encode()).hexdigest()
-                opaque.append(("legacy_history:" + digest, payload))
+                # Partial history is retained verbatim in the immutable source snapshot.
                 continue
             outcome = raw.get("outcome")
             if outcome == "resumed":
-                state: ItemState = "sent"
+                state: EntryState = "sent"
             elif outcome in {"cancelled", "superseded_by_migration"}:
                 state = "cancelled"
             else:
-                state = "changed"
-            imported.append(_translate(entry, state, now, finished_at))
-        imported.extend(_translate(entry, "cancelled", now, now) for entry in retired)
+                state = "stale"
+            imported.append(entry.to_entry(state, now, finished_at))
+        imported.extend(entry.to_entry("cancelled", now, now) for entry in retired)
         for entry in entries.values():
-            state = "changed" if entry.state == "needs_attention" else "queued"
+            state = (
+                "sent"
+                if entry.accepted_turn_id
+                else ("failed" if entry.state == "needs_attention" else "queued")
+            )
             imported.append(
-                _translate(
-                    entry,
+                entry.to_entry(
                     state,
                     now,
-                    None if state == "queued" else now,
+                    None if state in PENDING_STATES else now,
                     current_enrollment=True,
                 )
             )
-        return QueueImport(items=tuple(imported), opaque_history=tuple(opaque))
+        return tuple(imported)
 
-    def normalize(self, now: float) -> QueueImport:
+    def normalize(self, now: float) -> tuple[QueueEntry, ...]:
         """Translate a single queue using the same precedence rules as installation merge."""
         return LegacyQueue().merge(self, now)
 
 
-def _translate(
-    entry: LegacyEntry,
-    state: ItemState,
-    now: float,
-    finished_at: float | None,
-    *,
-    current_enrollment: bool = False,
-) -> ImportedItem:
-    # Legacy files did not record enrollment time. Attempt time belongs to the
-    # delivery, while import order ensures a retained enrollment follows history.
-    terminal_time = finished_at if finished_at is not None else now
-    queued_at = now if current_enrollment else min(terminal_time, now - 1)
-    item = QueueItem(
-        id=entry.id,
-        chat_id=entry.thread_id,
-        title=entry.title,
-        account_id=entry.account_id,
-        limit_id=entry.limit_id,
-        anchor_message_id=entry.anchor_message_id,
-        model=entry.model,
-        instruction=entry.prompt,
-        reset_windows=dict(entry.reset_windows),
-        enrolled_while_busy=entry.enrolled_while_busy,
-        queued_at=queued_at,
-        updated_at=now,
-        state=state,
-        reason=entry.note,
-        error=entry.reactivation_error,
-        finished_at=finished_at,
-    )
-    command = EnqueueCommand(
-        id=item.id,
-        chat_id=item.chat_id,
-        instruction=item.instruction,
-        limit_id=item.limit_id,
-    )
-    deliveries: tuple[Delivery, ...] = ()
-    if entry.attempted_at is not None:
-        attempt = Delivery(
-            id=str(uuid5(UUID(entry.id), "legacy-delivery")),
-            queue_item_id=item.id,
-            instruction=item.instruction,
-            started_at=entry.attempted_at,
-            lease_expires_at=entry.attempted_at + 120,
-            sending_at=entry.attempted_at,
-            finished_at=finished_at if finished_at is not None else now,
-            outcome="sent" if state == "sent" else "expired",
-            reason="Imported previous delivery attempt",
+class LegacyImporter:
+    """Reconcile a retired queue before serving requests; preserve current work and history.
+
+    Original JSON files remain the recovery source for partial history and old
+    attempt details. Storage receives only current entries and an opaque import ID.
+    """
+
+    def __init__(self, storage: QueueStorage):
+        self.storage = storage
+
+    def import_file(self, path: Path, marker: str) -> bool:
+        if not path.exists():
+            return False
+        return self.import_records(
+            LegacyQueue.read(path).normalize(datetime.now().timestamp()), marker
         )
-        deliveries = (attempt,)
-    return ImportedItem(item=item, command=command, deliveries=deliveries)
+
+    def import_records(self, records: Sequence[QueueEntry], marker: str) -> bool:
+        current: dict[UUID, datetime] = {}
+        cursor = None
+        while True:
+            entries, cursor = self.storage.list_entries(states=None, limit=100, cursor=cursor)
+            for entry in entries:
+                current.setdefault(entry.chat_id, entry.queued_at)
+            if cursor is None:
+                break
+        reconciled = []
+        for entry in records:
+            if entry.chat_id in current:
+                entry = replace(
+                    entry,
+                    queued_at=min(entry.queued_at, current[entry.chat_id] - timedelta(seconds=1)),
+                )
+                if entry.state in PENDING_STATES:
+                    entry = replace(
+                        entry, state="cancelled", error="", finished_at=entry.updated_at
+                    )
+            reconciled.append(entry)
+        import_id = uuid5(NAMESPACE_URL, "carrie-on/import/" + marker)
+        return self.storage.create_entries(reconciled, import_id=import_id)

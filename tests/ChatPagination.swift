@@ -90,7 +90,7 @@ func testQueueActions() async throws {
 
     func item(_ id: String, instruction: String, revision: Int, state: String = "queued") throws -> String {
         let fields: [String: Any] = ["id": id, "chat_id": chat.id, "title": chat.title!,
-                                    "instruction": instruction, "revision": revision, "state": state]
+                                    "instruction": instruction, "revision": revision, "state": state, "error": "", "dispatching": false]
         return String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self)
     }
     func settle() async throws {
@@ -217,7 +217,7 @@ func testUncertainCreationRecovery() async throws {
     guard restored.request.httpMethod == "POST" else { fatalError("Restart retry received \(restored.request)") }
     guard try requestBody(restored.request) == original else { fatalError("Restart changed the original creation payload") }
     restored.reply("""
-        {"id":"\(itemID)","chat_id":"\(chat.id)","title":"Recovered chat", "instruction":"Later edited instruction","revision":3,"state":"sent"}
+        {"id":"\(itemID)","chat_id":"\(chat.id)","title":"Recovered chat", "instruction":"Later edited instruction","revision":3,"state":"sent","error":"","dispatching":false}
         """)
     guard await retryAfterRestart.value else { fatalError("Completed creation replay was not recovered") }
     try await Task.sleep(nanoseconds: 20_000_000)
@@ -254,7 +254,7 @@ func testIndependentCreationRecovery() async throws {
         ]}
         """.utf8), forKey: "pendingQueueCreations.v1")
     ChatPageProtocol.queueJSON = """
-        [{"id":"\(confirmedID)","chat_id":"\(confirmedChat)","title":"Confirmed chat", "instruction":"Confirmed instruction","revision":1,"state":"queued"}]
+        [{"id":"\(confirmedID)","chat_id":"\(confirmedChat)","title":"Confirmed chat", "instruction":"Confirmed instruction","revision":1,"state":"queued","error":"","dispatching":false}]
         """
     let model = ChatPickerModel(baseURL: URL(string: "http://queue.test")!, session: session,
                                 recoveryDefaults: defaults, didQueue: {})
@@ -303,15 +303,12 @@ func testQueueHTTPContract() async throws {
     let entries = Dictionary(uniqueKeysWithValues: model.queuedEntries.map { ($0.title, $0) })
     guard let checking = entries["Checking"], let sending = entries["Sending"],
           let expired = entries["Expired"], let waiting = entries["Waiting"],
-          checking.processing_until == 4_000_000_120, checking.attempted_at == nil,
-          checking.hasActiveDelivery, checking.cardState == .queued,
-          sending.attempted_at == 4_000_000_000.25, sending.processing_until == 4_000_000_120,
+          checking.hasActiveDelivery, checking.cardState == .processing,
           sending.hasActiveDelivery, sending.cardState == .processing,
-          expired.attempted_at == 100.25, expired.processing_until == 220,
-          !expired.hasActiveDelivery, expired.cardState == .queued,
-          waiting.attempted_at == nil, waiting.processing_until == nil,
+          !expired.hasActiveDelivery, expired.cardState == .failed,
+          expired.failureDetail.contains("Will retry automatically"),
           !waiting.hasActiveDelivery, waiting.cardState == .queued else {
-        fatalError("Actual HTTP delivery timestamps did not produce the expected native states")
+        fatalError("HTTP dispatching and error fields did not produce the expected native states")
     }
     guard await model.changeQueued(checking, change: .remove) == false,
           await model.changeQueued(sending, change: .instruction("Blocked edit", expected: sending.prompt)) == false else {

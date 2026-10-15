@@ -1,7 +1,6 @@
 """HTTP validation, serialization, and resource contracts for the local service."""
 
 import re
-import sqlite3
 from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -16,11 +15,11 @@ from starlette.exceptions import HTTPException
 from carrie_on.application import QueueService
 from carrie_on.codex.models import CodexProtocolError, CodexUnavailable, UsageSnapshot
 from carrie_on.dispatch import DispatchWorker
+from carrie_on.ports import StorageUnavailable
 from carrie_on.queue import (
     DEFAULT_INSTRUCTION,
-    DeliveryOutcome,
-    EnqueueCommand,
-    ItemState,
+    PENDING_STATES,
+    EntryState,
     QueueEntry,
     QueueError,
 )
@@ -48,50 +47,29 @@ class Enqueue(Instruction):
     limit_id: StrictStr | None = Field(default=None, min_length=1, max_length=200)
 
 
-class QueueItemResponse(BaseModel):
+class QueueEntryResponse(BaseModel):
     id: UUID
     chat_id: UUID
     title: str
     account_id: str
     limit_id: str
-    anchor_message_id: str
+    anchor_message_id: str | None
+    anchor_turn_id: str | None
     model: str
     instruction: str
     reset_windows: dict[str, int]
     enrolled_while_busy: bool
-    state: ItemState
-    reason: str
-    error: str | None
-    deferrals: int
+    state: EntryState
+    error: str
     revision: int
     queued_at: datetime
     updated_at: datetime
     finished_at: datetime | None
-    delivery_id: UUID | None
-    lease_expires_at: datetime | None
-    sending_at: datetime | None
-
-
-class DeliveryResponse(BaseModel):
-    id: UUID
-    queue_item_id: UUID
-    instruction: str
-    started_at: datetime
-    lease_expires_at: datetime
-    sending_at: datetime | None
-    finished_at: datetime | None
-    outcome: DeliveryOutcome | None
-    reason: str | None
-    receipt: str | None
+    dispatching: bool
 
 
 class QueuePage(BaseModel):
-    items: list[QueueItemResponse]
-    next_cursor: str | None
-
-
-class DeliveryPage(BaseModel):
-    items: list[DeliveryResponse]
+    items: list[QueueEntryResponse]
     next_cursor: str | None
 
 
@@ -110,7 +88,6 @@ class ChatPage(BaseModel):
 class HealthResponse(BaseModel):
     version: str
     build_id: str | None
-    schema_version: int
     worker_healthy: bool
     worker_error: str | None
 
@@ -157,7 +134,8 @@ class UsageSummary(BaseModel):
 class QueueSummary(BaseModel):
     count: int
     needs_attention: int
-    last_check: float | None
+    counts: dict[EntryState, int]
+    dispatching: int
 
 
 class StatusResponse(BaseModel):
@@ -172,7 +150,7 @@ class StatusResponse(BaseModel):
 class Readiness(BaseModel):
     id: UUID
     title: str
-    outcome: Literal["ready", "sent", "changed", "deferred"]
+    outcome: Literal["ready", "sent", "stale", "failed"]
     reason: str
 
 
@@ -201,7 +179,7 @@ class PageQuery(Input):
 
 
 class QueueQuery(PageQuery):
-    state: Literal["open", "all", "queued", "sent", "changed", "cancelled", "failed"] = "open"
+    state: Literal["open", "all", "queued", "sent", "stale", "cancelled", "failed"] = "open"
     chat_id: UUID | None = None
 
 
@@ -233,14 +211,12 @@ def problem(code, detail, status):
 
 
 def queue_response(entry: QueueEntry) -> dict:
-    """Flatten delivery metadata only at the HTTP boundary."""
-    active = entry.active_delivery
-    return {
-        **asdict(entry.item),
-        "delivery_id": active.id if active else None,
-        "lease_expires_at": active.lease_expires_at if active else None,
-        "sending_at": active.sending_at if active else None,
-    }
+    """Publish entry state without exposing delivery ownership or creation identity."""
+    fields = asdict(entry)
+    fields["instruction"] = fields.pop("instructions")
+    fields.pop("original_instructions")
+    fields.pop("requested_limit_id")
+    return fields
 
 
 def usage_response(usage: UsageSnapshot) -> dict:
@@ -406,7 +382,7 @@ def create_app(
     async def unavailable(_, error):
         return problem("unavailable", str(error) or type(error).__name__, 503)
 
-    for error_type in (CodexUnavailable, CodexProtocolError, sqlite3.Error):
+    for error_type in (CodexUnavailable, CodexProtocolError, StorageUnavailable):
         app.add_exception_handler(error_type, unavailable)
 
     @app.get(
@@ -415,15 +391,13 @@ def create_app(
         responses={503: {"model": HealthResponse, **errors[503]}},
     )
     def health(response: Response):
-        with service.store.connection() as connection:
-            schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        service.store.get_queue_summary()
         worker = app.state.worker
         healthy = worker is None or worker.healthy
         response.status_code = 200 if healthy else 503
         return {
             "version": version,
             "build_id": build_id,
-            "schema_version": schema_version,
             "worker_healthy": healthy,
             "worker_error": worker.error if worker else None,
         }
@@ -449,7 +423,13 @@ def create_app(
         return {
             "connected": result.connected,
             "usage": {"windows": windows} if windows is not None else None,
-            "queue": result.queue,
+            "queue": {
+                **asdict(result.queue),
+                "count": result.queue.count,
+                "needs_attention": result.queue.needs_attention,
+            }
+            if result.queue
+            else None,
             "usage_error": result.usage_error,
             "queue_error": result.queue_error,
             "worker_healthy": worker is None or worker.healthy,
@@ -502,47 +482,51 @@ def create_app(
 
     @app.get("/api/v1/queue", response_model=QueuePage)
     def queue(query: Annotated[QueueQuery, Query()]):
-        items, cursor = service.store.page(**query.model_dump(mode="json"))
+        states = (
+            None
+            if query.state == "all"
+            else (PENDING_STATES + ("stale",) if query.state == "open" else (query.state,))
+        )
+        items, cursor = service.store.list_entries(
+            states=states, chat_id=query.chat_id, limit=query.limit, cursor=query.cursor
+        )
         return {"items": [queue_response(item) for item in items], "next_cursor": cursor}
 
     @app.post(
         "/api/v1/queue",
-        response_model=QueueItemResponse,
+        response_model=QueueEntryResponse,
         status_code=201,
         responses={
-            200: {"model": QueueItemResponse, "headers": CREATION_HEADERS},
+            200: {"model": QueueEntryResponse, "headers": CREATION_HEADERS},
             201: {"headers": CREATION_HEADERS},
         },
     )
     def enqueue(body: Enqueue, response: Response):
-        command = EnqueueCommand(
-            id=str(body.id),
-            chat_id=str(body.chat_id),
-            instruction=body.instruction,
-            limit_id=body.limit_id,
+        entry, created = service.enqueue(
+            body.id, body.chat_id, body.instruction, limit_id=body.limit_id
         )
-        entry, created = service.enqueue(command)
-        item = entry.item
         response.status_code = 201 if created else 200
-        response.headers["Location"] = f"/api/v1/queue/{item.id}"
-        response.headers["ETag"] = f'"revision-{item.revision}"'
+        response.headers["Location"] = f"/api/v1/queue/{entry.id}"
+        response.headers["ETag"] = f'"revision-{entry.revision}"'
         if created and app.state.worker:
             app.state.worker.wakeup.set()
         return queue_response(entry)
 
     @app.get(
         "/api/v1/queue/{item_id}",
-        response_model=QueueItemResponse,
+        response_model=QueueEntryResponse,
         responses={200: {"headers": ETAG_HEADER}},
     )
     def item(item_id: UUID, response: Response):
-        value = service.store.get(str(item_id))
-        response.headers["ETag"] = f'"revision-{value.item.revision}"'
+        value = service.store.get_entry(item_id)
+        if value is None:
+            raise QueueError("not_found", "Queue entry not found")
+        response.headers["ETag"] = f'"revision-{value.revision}"'
         return queue_response(value)
 
     @app.patch(
         "/api/v1/queue/{item_id}",
-        response_model=QueueItemResponse,
+        response_model=QueueEntryResponse,
         responses={200: {"headers": ETAG_HEADER}},
     )
     def edit(
@@ -557,17 +541,14 @@ def create_app(
         matched = re.fullmatch(r'"revision-([1-9][0-9]{0,18})"', if_match)
         if not matched:
             raise QueueError("stale_revision", "Read the item and use its current ETag")
-        value = service.store.edit(str(item_id), body.instruction, int(matched[1]))
-        response.headers["ETag"] = f'"revision-{value.item.revision}"'
+        value = service.store.update_instructions(
+            item_id, body.instruction, revision=int(matched[1])
+        )
+        response.headers["ETag"] = f'"revision-{value.revision}"'
         return queue_response(value)
 
-    @app.post("/api/v1/queue/{item_id}/cancel", response_model=QueueItemResponse)
+    @app.post("/api/v1/queue/{item_id}/cancel", response_model=QueueEntryResponse)
     def cancel(item_id: UUID, body: Input):
-        return queue_response(service.store.cancel(str(item_id)))
-
-    @app.get("/api/v1/queue/{item_id}/deliveries", response_model=DeliveryPage)
-    def deliveries(item_id: UUID, query: Annotated[PageQuery, Query()]):
-        values, cursor = service.store.deliveries(str(item_id), **query.model_dump())
-        return {"items": [asdict(value) for value in values], "next_cursor": cursor}
+        return queue_response(service.store.update_entry_state(item_id, "cancelled"))
 
     return app

@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 import json
-import sqlite3
 import sys
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -18,13 +17,17 @@ from carrie_on.api import create_app
 from carrie_on.application import QueueService
 from carrie_on.codex.client import CodexConnections
 from carrie_on.dispatch import DispatchWorker
-from carrie_on.storage import QueueStore
+from carrie_on.legacy import LegacyImporter
+from carrie_on.ports import QueueStorage, StorageMaintenance, StorageUnavailable
+from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 
 
 def create_application(
-    store: QueueStore,
+    store: QueueStorage,
     connections: CodexConnections,
     *,
+    maintenance: StorageMaintenance,
+    legacy_path: Path | None = None,
     port: int = 8766,
     version: str | None = None,
     build_id: str | None = None,
@@ -41,7 +44,9 @@ def create_application(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        store.initialize(store.path.with_name("resume-queue.json"))
+        maintenance.initialize()
+        if legacy_path is not None:
+            LegacyImporter(store).import_file(legacy_path, "json_import")
         if worker:
             loop = asyncio.get_running_loop()
 
@@ -100,8 +105,10 @@ def main() -> int:
                 "build_id"
             ]
         app = create_application(
-            QueueStore(args.state),
+            SqliteQueueStorage(args.state),
             connections,
+            maintenance=SqliteStorageMaintenance(args.state),
+            legacy_path=args.state.with_name("resume-queue.json"),
             port=settings.port,
             version=runtime.version,
             build_id=build_id,
@@ -120,7 +127,7 @@ def main() -> int:
         )
         server.run()
         return 1 if app.state.worker and app.state.worker.error else 0
-    except (OSError, ValueError, sqlite3.Error) as error:
+    except (OSError, ValueError, StorageUnavailable) as error:
         print(f"Carrie On server: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

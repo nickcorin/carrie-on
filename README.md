@@ -20,11 +20,11 @@ Carrie On Dev checks for newer commits in your local checkout and rebuilds the a
 
 ## How it works
 
-Each queue item authorizes an instruction after a recorded reset. Carrie On waits for available quota and checks that the chat still matches the enrolled work. It defers active chats and work awaiting approval, input, or goal changes. Changed work requires inspection. Expiring delivery leases recover interrupted workers; fresh conversation checks suppress duplicate sends after uncertain replies. Remove queued work using its trash control, or quit the app to stop processing while preserving the queue.
+Each queue item authorizes an instruction after a recorded reset. Carrie On waits for available quota and checks that the chat still matches the enrolled work. Active chats and work awaiting quota, approval, input, or goal changes remain retryable failures. If the conversation has continued, its entry becomes stale and does not retry. Expiring delivery leases recover interrupted workers; fresh conversation checks suppress duplicate sends after uncertain replies. Remove queued work using its trash control, or quit the app to stop processing while preserving the queue.
 
 Queue data, instructions, and logs stay on your Mac. The native card uses a local API listening only on `127.0.0.1`. Carrie On does not purchase credits, change models, or run a competing agent process. Remote chats and ChatGPT conversations are unsupported.
 
-New enrollments use the official Python SDK to read quota, chat metadata, and the latest turn header. Legacy queue migration and delivery recovery also read opening prompts, as described in the [continuation contract](features/continuation-queue.md).
+The official Python SDK reads quota, chat metadata, the latest turn header, and its opening message identity through bounded requests. Recovery checks older turn headers when needed, as described in the [queue contract](features/queue.md).
 
 Dispatch uses the desktop's private, version-sensitive IPC protocol. Missing completion evidence keeps a chat waiting. Incompatible responses prevent dispatch for the affected chat. After a Codex update, check connectivity before relying on unattended continuation. This is an independent project, not an official OpenAI product.
 

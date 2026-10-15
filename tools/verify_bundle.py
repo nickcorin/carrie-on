@@ -10,6 +10,7 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -20,7 +21,6 @@ from pathlib import Path
 
 from carrie_on.macos.compatibility import audit
 from carrie_on.macos.runtime import PROFILES
-from carrie_on.storage import SCHEMA_VERSION
 from tools.branding import check_bundle
 
 
@@ -118,7 +118,26 @@ def verify(archive, profile=None):
         native = app / "Contents/MacOS/CarrieOnMenu"
         fake_codex = root / "fake-codex"
         fake_codex.write_text(
-            '#!/bin/sh\n[ "$1" = "--version" ] || exit 99\necho "codex-cli test"\n'
+            f"#!{sys.executable}\n"
+            + """
+import json, sys
+if sys.argv[1:] == ["--version"]:
+    print("codex-cli 0.162.1")
+    sys.exit()
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    if request["method"] == "initialize":
+        result = {"userAgent":"codex/0.162.1"}
+    elif request["method"] == "account/rateLimits/read":
+        bucket = {"limitId":"codex", "primary":{"usedPercent":25,"resetsAt":4000000000,"windowDurationMins":300}}
+        result = {"accountId":"bundle-fixture","ordinaryUsageAllowed":True,
+                  "rateLimits":bucket,"rateLimitsByLimitId":{"codex":bucket}}
+    else:
+        raise AssertionError("Unexpected fixture method: " + request["method"])
+    print(json.dumps({"id":request["id"],"result":result}), flush=True)
+"""
         )
         fake_codex.chmod(0o755)
         environment = {
@@ -248,11 +267,12 @@ def verify(archive, profile=None):
                         health["version"] == metadata["version"]
                         and health["build_id"] == metadata["build_id"]
                     )
-                    assert health["schema_version"] == SCHEMA_VERSION, "Unexpected database schema"
                     assert health["worker_healthy"], "Packaged dispatch worker is unhealthy"
                 assert (
                     json.loads(run(cli, "--server", url, "--json", "queue", "list"))["items"] == []
                 )
+                usage = json.loads(run(cli, "--server", url, "--json", "usage"))
+                assert usage["accountId"] == "bundle-fixture", "Bundled SDK read failed"
                 assert "pause" not in run(cli, "queue", "--help")
                 assert (data / "queue.sqlite3").is_file()
             finally:

@@ -4,7 +4,6 @@ import fcntl
 import json
 import os
 import plistlib
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -13,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
+from uuid import UUID, uuid4
 
 from carrie_on.macos.installation import (
     Settings,
@@ -22,7 +22,8 @@ from carrie_on.macos.installation import (
     install_service,
 )
 from carrie_on.macos.runtime import PROFILES, Runtime
-from carrie_on.storage import QueueStore
+from carrie_on.ports import StorageUnavailable
+from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 
 
 @contextmanager
@@ -209,12 +210,14 @@ class ServiceInstallationTests(unittest.TestCase):
         stopped = subprocess.CompletedProcess([], 1)
         with patch("carrie_on.macos.installation.subprocess.run", return_value=stopped):
             with patch.object(
-                QueueStore, "initialize", side_effect=sqlite3.OperationalError("database is locked")
+                SqliteStorageMaintenance,
+                "initialize",
+                side_effect=StorageUnavailable("database is locked"),
             ):
                 with self.assertRaises(SetupError) as caught:
                     install_service(self.runtime, SettingsOverrides(codex=str(self.codex)))
             self.assertEqual(caught.exception.code, "storage_unavailable")
-            self.assertIsInstance(caught.exception.__cause__, sqlite3.OperationalError)
+            self.assertIsInstance(caught.exception.__cause__, StorageUnavailable)
             self.assertIn("retry setup", str(caught.exception))
             result = install_service(self.runtime, SettingsOverrides(codex=str(self.codex)))
         self.assertEqual(result["port"], 8766)
@@ -234,7 +237,7 @@ class ServiceInstallationTests(unittest.TestCase):
             "entries": [
                 {
                     "id": item_id,
-                    "thread_id": "old-chat",
+                    "thread_id": str(uuid4()),
                     "title": "Old task",
                     "account_id": "account",
                     "limit_id": "codex",
@@ -251,7 +254,7 @@ class ServiceInstallationTests(unittest.TestCase):
         current = dict(
             payload["entries"][0],
             id=current_id,
-            thread_id="installed-chat",
+            thread_id=str(uuid4()),
             prompt="Installed task",
         )
         (self.runtime.data / "resume-queue.json").write_text(
@@ -277,21 +280,15 @@ class ServiceInstallationTests(unittest.TestCase):
 
         with patch("carrie_on.macos.installation.subprocess.run", side_effect=isolated_process):
             install_service(self.runtime, SettingsOverrides(codex=str(self.codex)))
-        database = QueueStore(self.runtime.state)
-        self.assertEqual(database.get(item_id).item.instruction, "Keep working")
-        self.assertEqual(database.get(current_id).item.instruction, "Installed task")
-        self.assertEqual(database.summary()["count"], 2)
-        database.cancel(item_id)
+        database = SqliteQueueStorage(self.runtime.state)
+        self.assertEqual(database.get_entry(UUID(item_id)).instructions, "Keep working")
+        self.assertEqual(database.get_entry(UUID(current_id)).instructions, "Installed task")
+        self.assertEqual(database.get_queue_summary().count, 2)
+        database.update_entry_state(UUID(item_id), "cancelled")
         with patch("carrie_on.macos.installation.subprocess.run", side_effect=isolated_process):
             install_service(self.runtime)
-        self.assertEqual(database.get(item_id).item.state, "cancelled")
+        self.assertEqual(database.get_entry(UUID(item_id)).state, "cancelled")
         self.assertEqual(source.read_bytes(), original)
         snapshot = self.runtime.data / "Migration/source-checkout/resume-queue.json"
         self.assertEqual(snapshot.read_bytes(), original)
-        with database.connection() as connection:
-            self.assertEqual(
-                connection.execute(
-                    "SELECT count(*) FROM metadata WHERE key LIKE 'legacy_history:%'"
-                ).fetchone()[0],
-                1,
-            )
+        self.assertEqual(len(database.list_entries(states=None)[0]), 2)

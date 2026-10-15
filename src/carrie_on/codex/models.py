@@ -199,13 +199,14 @@ class Chat:
 
     thread_id: str
     title: str
-    message_id: str
+    message_id: str | None
     model: str
     status: str
     busy: bool
     blocked: bool
     quota_failed: bool
     seen_message_ids: frozenset[str]
+    turn_id: str | None = None
 
     @classmethod
     def parse(cls, snapshot: Any) -> "Chat":

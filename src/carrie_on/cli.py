@@ -105,14 +105,16 @@ class Client:
                 typer.echo(
                     f"{item['id']}  {state:<10} {item.get('title') or item.get('reason') or ''}"
                 )
-                if item.get("title") and item.get("reason"):
-                    typer.echo("  " + item["reason"])
+                detail = item.get("error") or item.get("reason")
+                if item.get("title") and detail:
+                    typer.echo("  " + detail)
             if value.get("next_cursor"):
                 typer.echo("More results: use --cursor " + value["next_cursor"], err=True)
         elif isinstance(value, dict) and "instruction" in value:
             typer.echo(f"{value['id']}  {value['state']}  {value['title']}")
             typer.echo(value["instruction"])
-            typer.echo(value["reason"])
+            if value.get("error"):
+                typer.echo(value["error"])
         else:
             typer.echo(json.dumps(value, indent=2))
 
@@ -290,23 +292,6 @@ def edit(
 def cancel(ctx: typer.Context, item_id: UUID):
     """Remove an item from the queue, retaining its history. Repetition is safe."""
     ctx.obj.show(ctx.obj.request("POST", f"queue/{item_id}/cancel", {})[0])
-
-
-@queue.command("deliveries")
-def deliveries(
-    ctx: typer.Context,
-    item_id: UUID,
-    limit: int = typer.Option(50, min=1, max=100),
-    cursor: Optional[str] = None,
-):
-    """Inspect recorded attempts for an item."""
-    ctx.obj.show(
-        ctx.obj.request(
-            "GET",
-            f"queue/{item_id}/deliveries",
-            params={"limit": limit, "cursor": cursor},
-        )[0]
-    )
 
 
 @queue.command("check")

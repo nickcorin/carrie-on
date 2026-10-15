@@ -6,12 +6,15 @@ from pathlib import Path
 
 from carrie_on.codex.client import CodexConnections
 from carrie_on.server import create_application
-from carrie_on.storage import QueueStore
+from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 
 
 def contract():
     app = create_application(
-        QueueStore(Path("unused.sqlite3")), CodexConnections(), run_worker=False
+        SqliteQueueStorage(Path("unused.sqlite3")),
+        CodexConnections(),
+        maintenance=SqliteStorageMaintenance(Path("unused.sqlite3")),
+        run_worker=False,
     )
     return json.dumps(app.openapi(), indent=2, sort_keys=True) + "\n"
 

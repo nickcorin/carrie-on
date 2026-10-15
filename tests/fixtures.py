@@ -1,8 +1,11 @@
 """Synthetic Codex state; fixtures never contact a user conversation."""
 
 import time
+from datetime import datetime, timezone
+from uuid import UUID, uuid4
 
 from carrie_on.codex.models import Chat, ChatPage, ChatSummary, CodexUnavailable, UsageSnapshot
+from carrie_on.queue import QueueEntry
 
 
 def usage(used=100, reset=100, secondary=None, account="account-a"):
@@ -20,7 +23,7 @@ def usage(used=100, reset=100, secondary=None, account="account-a"):
 
 def snapshot(status="failed", message_id="original", runtime="idle", error="usageLimitExceeded"):
     return {
-        "id": "thread-a",
+        "id": CHAT_ID,
         "title": "Finish feature",
         "latestTurnStartMessageId": message_id,
         "latestModel": "model-a",
@@ -62,11 +65,14 @@ class CodexFixture:
             raise CodexUnavailable("Usage unavailable")
         return UsageSnapshot.parse(self.limits)
 
-    def snapshot(self, _thread):
+    def snapshot(self, _thread, _desktop=None, **_options):
         return Chat.parse(self.chat)
 
+    def has_message(self, _thread, message_id):
+        return message_id in Chat.parse(self.chat).seen_message_ids
+
     def threads(self, _search):
-        return (ChatSummary(id="thread-a", title="Finish feature", cwd=None, last_activity=None),)
+        return (ChatSummary(id=CHAT_ID, title="Finish feature", cwd=None, last_activity=None),)
 
     def continue_chat(self, thread_id, prompt, message_id):
         self.delivered.append({"thread_id": thread_id, "prompt": prompt, "message_id": message_id})
@@ -108,8 +114,32 @@ class LocalCodex:
             raise CodexUnavailable("Unknown fixture chat")
         return self.threads()[0]
 
-    def snapshot(self, thread_id, *, before_open=None):
+    def snapshot(self, thread_id, _desktop=None, **_options):
         result = snapshot("completed")
         result["id"] = thread_id
         result["title"] = self.threads()[0].title
         return Chat.parse(result)
+
+
+def instant(seconds):
+    return datetime.fromtimestamp(seconds, timezone.utc)
+
+
+def queue_entry(**changes):
+    fields = dict(
+        id=uuid4(),
+        chat_id=UUID(CHAT_ID),
+        title="Task A",
+        account_id="account-a",
+        limit_id="codex",
+        anchor_message_id="original",
+        model="model-a",
+        instructions="Continue",
+        original_instructions="Continue",
+        reset_windows={"primary": 100},
+        enrolled_while_busy=False,
+        queued_at=instant(50),
+        updated_at=instant(50),
+    )
+    fields.update(changes)
+    return QueueEntry(**fields)

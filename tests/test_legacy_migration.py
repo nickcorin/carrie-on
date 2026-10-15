@@ -7,13 +7,14 @@ import subprocess
 import unittest
 from dataclasses import asdict, replace
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from carrie_on.legacy import LegacyEntry
 from carrie_on.macos import installation, legacy_migration
 from carrie_on.macos.runtime import PROFILES
-from carrie_on.storage import QueueStore
+from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 from tests import test_distribution as fixtures
+from tests.fixtures import instant
 
 
 class MigrationTests(unittest.TestCase):
@@ -56,15 +57,14 @@ class MigrationTests(unittest.TestCase):
         return installation.setup(self.runtime, **self.args(**overrides))
 
     def database(self):
-        store = QueueStore(self.runtime.state)
-        store.initialize()
-        return store
+        SqliteStorageMaintenance(self.runtime.state).initialize()
+        return SqliteQueueStorage(self.runtime.state)
 
     @staticmethod
     def entry(thread="chat-a", **changes):
         values = {
             "id": str(uuid4()),
-            "thread_id": thread,
+            "thread_id": str(uuid5(NAMESPACE_URL, thread)),
             "title": thread,
             "account_id": "account",
             "limit_id": "codex",
@@ -99,18 +99,12 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual((result["port"], result["started"]), (8877, True))
         store = self.database()
         self.assertCountEqual(
-            [(entry.item.id, entry.item.state) for entry in store.page()[0]],
+            [(str(entry.id), entry.state) for entry in store.list_entries()[0]],
             [(waiting.id, "queued"), (sending.id, "queued")],
         )
-        self.assertEqual(store.deliveries(sending.id)[0][0].sending_at, 100)
-        with store.connection() as connection:
-            history = [
-                json.loads(row[0])
-                for row in connection.execute(
-                    "SELECT value FROM metadata WHERE key LIKE 'legacy_history:%'"
-                )
-            ]
-        self.assertEqual(history, [partial])
+        recovered = json.loads((self.migration.recovery / "retired/resume-queue.json").read_text())
+        self.assertEqual(recovered["history"], [partial])
+        self.assertEqual(recovered["entries"][1]["attempted_at"], 100)
         self.assertFalse((self.data / "resume-queue.json").exists())
         settings = json.loads((self.data / "settings.json").read_text())
         self.assertEqual(
@@ -132,7 +126,7 @@ class MigrationTests(unittest.TestCase):
         self.restarts.clear()
         self.setup_app()
         self.assertEqual(self.restarts, [])
-        self.assertEqual(len(self.database().page()[0]), 2)
+        self.assertEqual(len(self.database().list_entries()[0]), 2)
 
     def test_merges_existing_installation_and_never_resurrects_finished_entries(self):
         finished = self.entry("finished", state="sending", attempted_at=100)
@@ -152,28 +146,20 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(result["port"], 9000)
         store = self.database()
         self.assertCountEqual(
-            [(entry.item.chat_id, entry.item.instruction) for entry in store.page()[0]],
+            [(entry.title, entry.instructions) for entry in store.list_entries()[0]],
             [("shared", "Current instruction"), ("old", "Continue")],
         )
         self.assertEqual(
             (
-                store.get(finished.id).item.state,
-                store.get(finished.id).item.finished_at,
+                store.get_entry(UUID(finished.id)).state,
+                store.get_entry(UUID(finished.id)).finished_at,
             ),
-            ("sent", 200),
+            ("sent", instant(200)),
         )
-        self.assertEqual(store.get(duplicate.id).item.state, "cancelled")
-        self.assertEqual(
-            [
-                (attempt.started_at, attempt.finished_at, attempt.outcome)
-                for attempt in store.deliveries(finished.id)[0]
-            ],
-            [(100, 200, "sent")],
-        )
+        self.assertEqual(store.get_entry(UUID(duplicate.id)).state, "cancelled")
         self.setup_app()
         store = self.database()
-        self.assertEqual(len(store.page(state="all")[0]), 4)
-        self.assertEqual(len(store.deliveries(finished.id)[0]), 1)
+        self.assertEqual(len(store.list_entries(states=None)[0]), 4)
         self.assertEqual(json.loads((self.data / "settings.json").read_text())["interval"], 120)
 
     def test_first_updater_queue_accepts_missing_presentation_lease_and_completes_once(
@@ -193,18 +179,16 @@ class MigrationTests(unittest.TestCase):
         )
         self.setup_app()
         queue = self.database()
-        item, delivery = queue.claim(now=150)
-        self.assertEqual((item.id, delivery.instruction), (entry["id"], "Finish the queued task"))
-        queue.begin_send(delivery, now=151)
-        queue.finish(delivery, "sent", "Accepted", receipt="turn-1", now=152)
+        attempt = queue.create_delivery_attempt()
+        self.assertEqual(
+            (str(attempt.entry.id), attempt.entry.instructions),
+            (entry["id"], "Finish the queued task"),
+        )
+        queue.update_entry_state(attempt.entry.id, "sent")
         self.setup_app()
         queue = self.database()
-        self.assertIsNone(queue.claim(now=153))
-        self.assertEqual(queue.get(entry["id"]).item.state, "sent")
-        self.assertEqual(
-            [(d.outcome, d.receipt) for d in queue.deliveries(entry["id"])[0]],
-            [("sent", "turn-1")],
-        )
+        self.assertIsNone(queue.create_delivery_attempt())
+        self.assertEqual(queue.get_entry(UUID(entry["id"])).state, "sent")
 
     def test_uncertain_send_dominates_waiting_duplicate_and_remains_visible_after_retry(
         self,
@@ -215,14 +199,13 @@ class MigrationTests(unittest.TestCase):
         self.queue(self.data, [waiting])
         self.setup_app()
         database = self.database()
-        self.assertEqual([entry.item.id for entry in database.page()[0]], [sending.id])
-        self.assertEqual(database.summary(), {"count": 1, "needs_attention": 0, "last_check": None})
-        self.assertEqual(database.get(waiting.id).item.state, "cancelled")
-        self.assertEqual(database.deliveries(sending.id)[0][0].sending_at, 100)
+        self.assertEqual([str(entry.id) for entry in database.list_entries()[0]], [sending.id])
+        self.assertEqual(database.get_queue_summary().count, 1)
+        self.assertEqual(database.get_entry(UUID(waiting.id)).state, "cancelled")
         self.setup_app()
         database = self.database()
-        self.assertEqual([entry.item.id for entry in database.page()[0]], [sending.id])
-        self.assertEqual(database.claim(now=300)[0].id, sending.id)
+        self.assertEqual([str(entry.id) for entry in database.list_entries()[0]], [sending.id])
+        self.assertEqual(str(database.create_delivery_attempt().entry.id), sending.id)
 
     def test_held_enrollment_dominates_waiting_duplicate_and_stays_visible(self):
         waiting = self.entry()
@@ -234,14 +217,15 @@ class MigrationTests(unittest.TestCase):
         with self.migration.prepare():
             store = self.database()
             self.assertEqual(
-                [(entry.item.id, entry.item.state) for entry in store.page()[0]],
-                [(held.id, "changed")],
+                [(str(entry.id), entry.state) for entry in store.list_entries()[0]],
+                [(held.id, "failed")],
             )
-            self.assertEqual(store.summary()["needs_attention"], 1)
-            self.assertIsNone(store.claim(now=300))
+            self.assertEqual(store.get_queue_summary().needs_attention, 1)
+            self.assertEqual(str(store.create_delivery_attempt().entry.id), held.id)
         with self.migration.prepare():
-            self.assertEqual([entry.item.id for entry in self.database().page()[0]], [held.id])
-        self.assertEqual(len(self.database().deliveries(held.id)[0]), 1)
+            self.assertEqual(
+                [str(entry.id) for entry in self.database().list_entries()[0]], [held.id]
+            )
 
     def test_same_enrollment_keeps_attempt_state_without_duplicate_history(self):
         waiting = self.entry()
@@ -251,12 +235,8 @@ class MigrationTests(unittest.TestCase):
         self.setup_app()
         store = self.database()
         self.assertEqual(
-            [(entry.item.id, entry.item.state) for entry in store.page(state="all")[0]],
+            [(str(entry.id), entry.state) for entry in store.list_entries(states=None)[0]],
             [(sending.id, "queued")],
-        )
-        self.assertEqual(
-            [attempt.outcome for attempt in store.deliveries(sending.id)[0]],
-            ["expired"],
         )
 
     def test_setup_failure_then_retry_keeps_progress_made_by_new_worker(self):
@@ -268,13 +248,12 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(json.loads(self.migration.journal.read_text())["state"], "applied")
         self.assertTrue(self.previous.exists())
         queue = self.database()
-        _, delivery = queue.claim(now=300)
-        queue.finish(delivery, "sent", "Accepted", now=301)
+        attempt = queue.create_delivery_attempt()
+        queue.update_entry_state(attempt.entry.id, "sent")
         self.fail_bootstrap = None
         self.setup_app()
         queue = self.database()
-        self.assertEqual(queue.get(entry.id).item.state, "sent")
-        self.assertEqual([attempt.outcome for attempt in queue.deliveries(entry.id)[0]], ["sent"])
+        self.assertEqual(queue.get_entry(UUID(entry.id)).state, "sent")
         self.assertFalse(self.previous.exists())
 
     def test_interrupted_import_replays_the_saved_plan(self):
@@ -294,14 +273,14 @@ class MigrationTests(unittest.TestCase):
             self.setup_app()
         self.assertEqual(json.loads(self.migration.journal.read_text())["state"], "prepared")
         self.setup_app()
-        self.assertEqual([item.item.id for item in self.database().page()[0]], [entry.id])
+        self.assertEqual([str(item.id) for item in self.database().list_entries()[0]], [entry.id])
         self.assertEqual(json.loads(self.migration.journal.read_text())["state"], "complete")
 
     def test_malformed_old_queue_is_preserved_without_blocking_setup(self):
         (self.previous / "resume-queue.json").write_text("interrupted JSON")
         result = self.setup_app()
         self.assertTrue(result["started"])
-        self.assertEqual(self.database().page()[0], [])
+        self.assertEqual(self.database().list_entries()[0], [])
         self.assertEqual(
             (self.migration.recovery / "retired/resume-queue.json").read_text(),
             "interrupted JSON",
@@ -405,7 +384,7 @@ class MigrationTests(unittest.TestCase):
         self.assertTrue((self.migration.recovery / "retired/settings.json").exists())
         self.setup_app()
         self.assertEqual(json.loads(self.migration.journal.read_text())["state"], "complete")
-        self.assertEqual([item.item.id for item in self.database().page()[0]], [entry.id])
+        self.assertEqual([str(item.id) for item in self.database().list_entries()[0]], [entry.id])
 
     def test_cleanup_never_retires_an_installation_without_an_import_plan(self):
         self.migration.complete()

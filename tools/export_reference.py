@@ -7,10 +7,14 @@ from pathlib import Path
 
 MODULES = (
     "queue",
-    "storage",
+    "ports",
+    "storage.queue",
+    "storage.database",
+    "storage.schema",
     "legacy",
     "codex.models",
     "codex.client",
+    "codex.sdk",
     "application",
     "dispatch",
     "api",

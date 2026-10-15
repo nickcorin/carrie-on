@@ -7,7 +7,6 @@ import os
 import platform
 import plistlib
 import shutil
-import sqlite3
 import subprocess
 import sys
 import time
@@ -26,6 +25,7 @@ from carrie_on.macos.lifecycle import (
     write_agent,
 )
 from carrie_on.macos.runtime import BuildProfile, Runtime
+from carrie_on.ports import StorageUnavailable
 
 
 class SetupError(ValueError):
@@ -219,7 +219,7 @@ def installation_lock(runtime: Runtime) -> Iterator[None]:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             yield
-        except sqlite3.Error as error:
+        except StorageUnavailable as error:
             raise SetupError(
                 "storage_unavailable",
                 f"Could not access the queue database at {runtime.state}: {error}. "
@@ -270,11 +270,13 @@ def import_source_queue(runtime: Runtime) -> None:
         with source.with_suffix(".lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             write_private(snapshot, source.read_bytes())
-    from carrie_on.storage import QueueStore
+    from carrie_on.legacy import LegacyImporter
+    from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 
-    store = QueueStore(runtime.state)
-    store.initialize(runtime.data / "resume-queue.json")
-    store.import_legacy_snapshot(snapshot, "source_checkout_import")
+    SqliteStorageMaintenance(runtime.state).initialize()
+    importer = LegacyImporter(SqliteQueueStorage(runtime.state))
+    importer.import_file(runtime.data / "resume-queue.json", "json_import")
+    importer.import_file(snapshot, "source_checkout_import")
 
 
 def register_backend(runtime: Runtime, settings: Settings) -> Path:

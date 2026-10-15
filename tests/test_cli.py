@@ -12,7 +12,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import uvicorn
 
@@ -20,7 +20,7 @@ from carrie_on.codex.client import CodexConnections
 from carrie_on.macos.lifecycle import control_service
 from carrie_on.macos.runtime import PROFILES
 from carrie_on.server import create_application
-from carrie_on.storage import QueueStore
+from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 from tests.fixtures import CHAT_ID, LocalCodex
 
 
@@ -29,7 +29,7 @@ class CliContract(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.home = Path(directory.name)
-        self.store = QueueStore(self.home / "queue.sqlite3")
+        self.store = SqliteQueueStorage(self.home / "queue.sqlite3")
         for name in ("AppServer", "Desktop"):
             mock = patch("carrie_on.codex.client." + name, LocalCodex)
             mock.start()
@@ -39,7 +39,11 @@ class CliContract(unittest.TestCase):
         port = listener.getsockname()[1]
         self.url = f"http://127.0.0.1:{port}"
         application = create_application(
-            self.store, CodexConnections("fixture"), port=port, run_worker=False
+            self.store,
+            CodexConnections("fixture"),
+            maintenance=SqliteStorageMaintenance(self.home / "queue.sqlite3"),
+            port=port,
+            run_worker=False,
         )
         self.service = application.state.service
         self.server = uvicorn.Server(uvicorn.Config(application, log_level="critical"))
@@ -107,17 +111,16 @@ class CliContract(unittest.TestCase):
         instruction_file = self.home / "instruction with spaces.txt"
         instruction_file.write_text("A café instruction\nwith two lines")
         self.cli("queue", "edit", item_id, "--instruction-file", str(instruction_file))
-        self.assertEqual(self.store.get(item_id).item.instruction, instruction_file.read_text())
+        self.assertEqual(
+            self.store.get_entry(UUID(item_id)).instructions, instruction_file.read_text()
+        )
         self.cli("queue", "edit", item_id, "--instruction=--finish the tests")
-        self.assertEqual(self.store.get(item_id).item.instruction, "--finish the tests")
+        self.assertEqual(self.store.get_entry(UUID(item_id)).instructions, "--finish the tests")
         self.cli("queue", "cancel", item_id)
         self.cli("queue", "cancel", item_id)
         history = json.loads(self.cli("--json", "queue", "list", "--history").stdout)
         self.assertEqual(history["items"][0]["state"], "cancelled")
-        self.assertEqual(
-            json.loads(self.cli("--json", "queue", "deliveries", item_id).stdout)["items"],
-            [],
-        )
+        self.assertIn("No such command", self.cli("queue", "deliveries", item_id, code=2).stderr)
 
     def test_exit_codes_and_stderr_are_scriptable(self):
         self.assertEqual(self.cli("queue", "show", str(uuid4()), code=3).stdout, "")
@@ -141,8 +144,8 @@ class CliContract(unittest.TestCase):
         item_id = str(uuid4())
         enqueue = self.service.enqueue
 
-        def slow(*args):
-            result = enqueue(*args)
+        def slow(*args, **kwargs):
+            result = enqueue(*args, **kwargs)
             time.sleep(0.4)
             return result
 
@@ -152,14 +155,14 @@ class CliContract(unittest.TestCase):
         self.assertIn(item_id, result.stderr)
         result = self.cli("--json", "queue", "add", CHAT_ID, "--id", item_id)
         self.assertEqual(json.loads(result.stdout)["id"], item_id)
-        self.assertEqual(len(self.store.page(state="all")[0]), 1)
+        self.assertEqual(len(self.store.list_entries(states=None)[0]), 1)
 
     def test_interrupted_creation_discloses_id_and_replays_original_request(self):
         committed, release = threading.Event(), threading.Event()
         enqueue = self.service.enqueue
 
-        def delayed_reply(*args):
-            result = enqueue(*args)
+        def delayed_reply(*args, **kwargs):
+            result = enqueue(*args, **kwargs)
             committed.set()
             release.wait(5)
             return result
@@ -199,7 +202,7 @@ class CliContract(unittest.TestCase):
                 if process.poll() is None:
                     process.kill()
                     process.wait()
-        self.store.cancel(item_id)
+        self.store.update_entry_state(UUID(item_id), "cancelled")
         replay = self.cli(
             "--json",
             "queue",
@@ -211,7 +214,9 @@ class CliContract(unittest.TestCase):
             "Keep this exact text",
         )
         self.assertEqual(json.loads(replay.stdout)["state"], "cancelled")
-        self.assertEqual([entry.item.id for entry in self.store.page(state="all")[0]], [item_id])
+        self.assertEqual(
+            [str(entry.id) for entry in self.store.list_entries(states=None)[0]], [item_id]
+        )
 
     def test_read_commands_never_dispatch(self):
         self.cli("--json", "status")
@@ -220,8 +225,7 @@ class CliContract(unittest.TestCase):
         self.cli("--json", "chats", "list")
         self.cli("queue", "add", CHAT_ID)
         self.cli("--json", "queue", "check", "--limit", "1")
-        with self.store.connection() as connection:
-            self.assertEqual(connection.execute("SELECT count(*) FROM deliveries").fetchone()[0], 0)
+        self.assertEqual(self.store.get_queue_summary().dispatching, 0)
 
     def test_interrupt_exits_130_without_a_traceback(self):
         reading, release = threading.Event(), threading.Event()

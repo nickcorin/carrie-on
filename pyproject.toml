@@ -30,8 +30,8 @@ select = ["E4", "E7", "E9", "F", "I"]
 [tool.mypy]
 python_version = "3.10"
 files = [
-    "src/carrie_on/queue.py", "src/carrie_on/storage.py", "src/carrie_on/legacy.py",
-    "src/carrie_on/codex/models.py", "src/carrie_on/codex/client.py",
+    "src/carrie_on/queue.py", "src/carrie_on/storage", "src/carrie_on/ports.py", "src/carrie_on/pagination.py", "src/carrie_on/legacy.py",
+    "src/carrie_on/codex/sdk.py", "src/carrie_on/codex/models.py", "src/carrie_on/codex/client.py",
     "src/carrie_on/application.py", "src/carrie_on/dispatch.py",
     "src/carrie_on/api.py", "src/carrie_on/server.py",
     "src/carrie_on/cli.py", "src/carrie_on/macos/runtime.py",
@@ -41,3 +41,10 @@ files = [
 follow_imports = "silent"
 check_untyped_defs = true
 warn_unused_ignores = true
+
+[tool.setuptools.package-data]
+"carrie_on.storage" = ["migrations/*.sql"]
+
+[[tool.mypy.overrides]]
+module = ["yoyo", "yoyo.*"]
+ignore_missing_imports = true

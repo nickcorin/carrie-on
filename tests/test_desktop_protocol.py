@@ -11,8 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from carrie_on.codex.client import Desktop
-from carrie_on.codex.models import CodexProtocolError, CodexUnavailable
-from tests.fixtures import snapshot
+from carrie_on.codex.models import CodexUnavailable
 
 
 class DesktopProtocol(unittest.TestCase):
@@ -27,7 +26,6 @@ class DesktopProtocol(unittest.TestCase):
         self.addCleanup(self.server.close)
         self.requests = []
         self.errors = []
-        self.snapshot_version = 11
         self.dormant = False
         self.receipt = {"result": {"turn": {"id": "accepted-turn"}}}
         self.worker = threading.Thread(target=self.serve, daemon=True)
@@ -57,19 +55,6 @@ class DesktopProtocol(unittest.TestCase):
                 while True:
                     message = json.loads(read(struct.unpack("<I", read(4))[0]))
                     method = message["method"]
-                    if method == "thread-stream-following-changed":
-                        send(
-                            {
-                                "type": "broadcast",
-                                "method": "thread-stream-state-changed",
-                                "version": self.snapshot_version,
-                                "params": {
-                                    "conversationId": "thread-a",
-                                    "change": {"type": "snapshot", "conversationState": snapshot()},
-                                },
-                            }
-                        )
-                        continue
                     if method == "initialize":
                         result = {"clientId": "fixture-client"}
                     elif method == "thread-follower-read-model-settings":
@@ -110,10 +95,10 @@ class DesktopProtocol(unittest.TestCase):
         if self.errors:
             raise self.errors[0]
 
-    def test_live_snapshot_and_turn_dispatch_preserve_desktop_settings(self):
+    def test_compact_settings_and_turn_dispatch_preserve_desktop_settings(self):
         self.worker.start()
         with Desktop(self.path, timeout=2) as desktop:
-            self.assertEqual(desktop.snapshot("thread-a").title, "Finish feature")
+            self.assertEqual(desktop.read_settings("thread-a")["model"], "model-a")
             self.assertEqual(
                 desktop.continue_chat("thread-a", "Finish tests", "message-a"), "accepted-turn"
             )
@@ -134,18 +119,10 @@ class DesktopProtocol(unittest.TestCase):
         )
         self.assertEqual(self.requests[0]["version"], 3)
 
-    def test_unknown_snapshot_protocol_fails_closed(self):
-        self.snapshot_version = 999
-        self.worker.start()
-        with Desktop(self.path, timeout=2) as desktop:
-            with self.assertRaisesRegex(CodexProtocolError, "Unsupported Codex snapshot version"):
-                desktop.snapshot("thread-a")
-        self.finish()
-
     def test_expired_attempt_cannot_send_a_message(self):
         self.worker.start()
         with Desktop(self.path, timeout=2) as desktop:
-            desktop.snapshot("thread-a")
+            desktop.read_settings("thread-a")
             desktop.deadline = time.monotonic() - 1
             with self.assertRaisesRegex(CodexUnavailable, "deadline expired"):
                 desktop.continue_chat("thread-a", "Do not send", "expired-attempt")
@@ -173,7 +150,7 @@ class DesktopProtocol(unittest.TestCase):
         ):
             with Desktop(self.path, timeout=2, open_if_needed=True) as desktop:
                 with self.assertRaisesRegex(ValueError, "Chat is archived"):
-                    desktop.snapshot(
+                    desktop.read_settings(
                         "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", before_open=reject_archived
                     )
         self.finish()

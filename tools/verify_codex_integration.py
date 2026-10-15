@@ -1,115 +1,109 @@
-#!/usr/bin/env python3
-"""Check real SDK readiness and optional desktop delivery using a temporary queue.
+"""Check a selected real Codex chat using a temporary database.
 
-`wait THREAD` checks an active chat without sending. `continue THREAD` sends a
-test instruction to an authorized idle disposable chat and verifies delivery.
-`migrate THREAD` also converts an old message anchor through the SDK. Both send
-modes require exactly one matching desktop turn and no resend by fresh workers.
-
-All modes use real quota and chat state with a simulated reset baseline in a
-temporary queue. They do not test actual quota exhaustion.
+wait performs read-only inspection. continue and migrate SEND a test instruction
+and are intended only for an explicitly authorized, idle disposable chat.
+Quota baselines are simulated; this does not establish a real usage reset.
 """
 
 import argparse
 import json
-import subprocess
-import sys
 import tempfile
-import time
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import UUID, uuid4
 
-from codex_bridge import CodexClient, DesktopClient
-from resume_queue import Entry, Usage, check_queue, locked_queue
-from verify_desktop import DesktopObserver, history_turns, latest_turn
-
-
-class QueueDesktop(DesktopClient):
-    """Fail if the queue attempts to subscribe to conversation history."""
-
-    def snapshot(self, *_args, **_kwargs):
-        raise AssertionError("Queue checks must not fetch a desktop snapshot")
+from carrie_on.application import QueueService
+from carrie_on.codex.client import CodexConnections
+from carrie_on.dispatch import DispatchWorker
+from carrie_on.legacy import LegacyEntry, LegacyImporter
+from carrie_on.queue import QueueEntry
+from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
+from tools.verify_desktop import DesktopObserver, history_turns
 
 
-class ObserveDesktop(QueueDesktop):
-    """Allow real desktop reads but fail the check if dispatch is attempted."""
-
-    def continue_chat(self, *_):
-        raise AssertionError("The active-chat check attempted a continuation")
-
-
-def verify(mode, thread_id, executable):
-    """Run the worker and verify its result. continue and migrate send a test prompt."""
-    desktop_type = ObserveDesktop if mode == "wait" else QueueDesktop
+def verify(mode: str, chat_id: UUID, executable: str):
+    connections = CodexConnections(executable)
     with tempfile.TemporaryDirectory(prefix="carrie-sdk-acceptance-") as directory:
-        state = Path(directory) / "queue.json"
-        with CodexClient.connect(executable) as server, desktop_type() as desktop, locked_queue(state) as queue:
-            chat = server.read_chat(thread_id, desktop, include_goal=True)
-            if chat.thread_id != thread_id or chat.busy != (mode == "wait") or chat.blocked:
-                raise ValueError("Use an active unblocked chat for wait, or an idle unblocked disposable chat for continue")
-            usage = Usage.parse(server.read_usage())
-            now = time.time()
-            entry = Entry.enroll(chat, usage, "Reply exactly: Carrie On desktop continuation verified.", now)
-            if mode == "migrate":
-                # Simulate the released enrollment format using real desktop evidence.
-                with DesktopObserver() as observer:
-                    legacy = latest_turn(observer.snapshot(thread_id))
-                assert legacy["turnId"] == chat.turn_id and legacy["params"]["clientUserMessageId"]
-                entry.anchor_message_id = legacy["params"]["clientUserMessageId"]
-                entry.anchor_turn_id = None
-            entry.reset_windows = {name: reset - 1 for name, reset in entry.reset_windows.items()}
-            if not entry.reset_ready(usage, now):
-                raise ValueError("The account must have available quota and future reset timestamps for this check")
-            queue.entries.append(entry)
-            queue.save()
-            outcomes = check_queue(queue, server, desktop)
-            if mode == "wait":
-                assert len(queue.entries) == 1 and entry.state == "waiting", outcomes
-                assert entry.note == "Waiting: chat is active or requires attention", entry.note
-                assert not queue.data["history"] and entry.attempted_at is None
-                return {"worker_waited_for_active_chat": True, "dispatch_attempts": 0,
-                        "synthetic_reset_baseline": True}
-
-            assert not queue.entries and len(queue.data["history"]) == 1, outcomes
-            history = queue.data["history"][0]
-            assert history["outcome"] == "resumed" and history["accepted_turn_id"], history["outcome"]
-            with DesktopObserver() as observer:
-                snapshot = observer.snapshot(thread_id)
-            observed = latest_turn(snapshot)
-            assert snapshot["id"] == thread_id and observed["turnId"] == history["accepted_turn_id"]
-            assert observed["params"]["clientUserMessageId"] == entry.id
-            assert history["anchor_turn_id"] == chat.turn_id
-        # A fresh worker process must observe the saved outcome and never resend.
-        worker = Path(__file__).with_name("carrie_on.py")
-        for _ in range(2):
-            result = subprocess.run(
-                [sys.executable, str(worker), "--state", str(state), "--codex", executable, "--json", "tick"],
-                check=True, capture_output=True, text=True, timeout=30,
+        path = Path(directory) / "queue.sqlite3"
+        SqliteStorageMaintenance(path).initialize()
+        store = SqliteQueueStorage(path)
+        with connections.app_server() as server, connections.desktop() as desktop:
+            chat = server.snapshot(str(chat_id), desktop)
+            if chat.thread_id != str(chat_id) or chat.busy != (mode == "wait") or chat.blocked:
+                raise ValueError(
+                    "Select an active unblocked chat for wait, or an idle unblocked disposable chat for sending"
+                )
+            usage = server.usage().select()
+        now = datetime.now(timezone.utc)
+        entry = QueueEntry.enroll(
+            uuid4(), "Reply exactly: Carrie On desktop delivery verified.", chat, usage, now
+        )
+        entry = replace(
+            entry, reset_windows={name: reset - 1 for name, reset in entry.reset_windows.items()}
+        )
+        if not entry.reset_ready(usage, now):
+            raise ValueError("Available quota and future reset timestamps are required")
+        if mode == "migrate":
+            if not entry.anchor_message_id:
+                raise ValueError("This chat has no message identity for the legacy import check")
+            legacy = LegacyEntry(
+                id=str(entry.id),
+                thread_id=str(entry.chat_id),
+                title=entry.title,
+                account_id=entry.account_id,
+                limit_id=entry.limit_id,
+                anchor_message_id=entry.anchor_message_id,
+                model=entry.model,
+                prompt=entry.instructions,
+                reset_windows=entry.reset_windows,
+                enrolled_while_busy=entry.enrolled_while_busy,
             )
-            assert json.loads(result.stdout) == {"status": "waiting", "due": 0}, result.stdout
-        with DesktopObserver() as desktop:
-            snapshot = desktop.snapshot(thread_id)
-        delivered = [turn for turn in history_turns(snapshot)
-                     if turn.get("params", {}).get("clientUserMessageId") == entry.id]
-        assert snapshot["id"] == thread_id
-        assert len(delivered) == 1 and delivered[0]["turnId"] == history["accepted_turn_id"]
-        saved = json.loads(state.read_text())
-        assert saved["entries"] == [] and len(saved["history"]) == 1
-        return {"thread_id": thread_id, "enrollment_id": entry.id,
-                "accepted_turn_id": history["accepted_turn_id"],
-                "desktop_accepted_continuation": True, "desktop_message_verified": True,
-                "matching_desktop_turns": len(delivered), "fresh_worker_checks_without_resend": 2,
-                "persisted_history_records": len(saved["history"]),
-                "legacy_anchor_migrated": mode == "migrate", "worker_snapshot_requests": 0,
-                "synthetic_reset_baseline": True}
+            source = path.with_suffix(".json")
+            source.write_text(
+                json.dumps({"version": 2, "entries": [asdict(legacy)], "history": []})
+            )
+            LegacyImporter(store).import_file(source, "acceptance")
+        else:
+            store.create_entry(entry)
+        if mode == "wait":
+            results, _ = QueueService(store, connections).inspect()
+            assert results[0].eligibility.outcome == "failed"
+            assert "active" in results[0].eligibility.reason
+            assert store.get_queue_summary().dispatching == 0
+            return {
+                "read_only": True,
+                "active_chat_blocked": True,
+                "synthetic_reset_baseline": True,
+            }
+        assert DispatchWorker(store, connections).send()
+        assert store.get_entry(entry.id).state == "sent"
+        for _ in range(2):
+            assert not DispatchWorker(SqliteQueueStorage(path), connections).send()
+        with DesktopObserver() as observer:
+            turns = history_turns(observer.snapshot(str(chat_id)))
+        matching = [
+            turn
+            for turn in turns
+            if turn.get("turnId")
+            and turn.get("params", {}).get("clientUserMessageId") == str(entry.id)
+        ]
+        assert len(matching) == 1
+        return {
+            "entry_id": str(entry.id),
+            "matching_desktop_turns": 1,
+            "restarted_workers_did_not_resend": True,
+            "synthetic_reset_baseline": True,
+        }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("wait", "continue", "migrate"))
-    parser.add_argument("thread_id", help="An explicitly selected local desktop chat UUID")
-    parser.add_argument("--codex", default="codex", help="Installed Codex CLI executable")
+    parser.add_argument("chat_id", type=UUID)
+    parser.add_argument("--codex", default="codex")
     args = parser.parse_args()
-    print(json.dumps(verify(args.mode, args.thread_id, args.codex), indent=2))
+    print(json.dumps(verify(args.mode, args.chat_id, args.codex), indent=2))
 
 
 if __name__ == "__main__":

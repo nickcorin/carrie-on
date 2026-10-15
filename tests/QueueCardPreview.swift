@@ -10,7 +10,7 @@ MainActor.assumeIsolated {
     let states: [(String, String, Double?, String?)] = [
         ("Refine the checkout flow", "queued", nil, nil),
         ("Finish chat pagination", "queued", expiry, nil),
-        ("Update the migration tests", "changed", nil,
+        ("Update the migration tests", "stale", nil,
          "Chat changed after enrollment; remove and re-enroll if still wanted")
     ]
     let instructions = [
@@ -23,9 +23,8 @@ MainActor.assumeIsolated {
         var entry = PickerQueue.Entry(enrollmentID: "entry-\(index)", thread_id: "chat-\(index)",
                                       title: fixture.0, prompt: instructions[index])
         entry.state = fixture.1
-        entry.note = fixture.3
-        entry.attempted_at = fixture.2 == nil ? nil : expiry - 120
-        entry.processing_until = fixture.2
+        entry.error = fixture.3 ?? ""
+        entry.dispatching = fixture.2 != nil
         return entry
     }
     let content = VStack(spacing: 10) {

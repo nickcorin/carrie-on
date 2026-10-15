@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,8 +17,8 @@ import uvicorn
 
 from carrie_on.codex.client import CodexConnections
 from carrie_on.server import create_application
-from carrie_on.storage import QueueStore
-from tests.fixtures import CHAT_ID, snapshot, usage
+from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
+from tests.fixtures import CHAT_ID, usage
 
 
 class ComposedService(unittest.TestCase):
@@ -50,7 +51,9 @@ class ComposedService(unittest.TestCase):
         self.peer_thread = threading.Thread(target=self.serve_desktop, daemon=True)
         self.peer_thread.start()
         self.addCleanup(self.close_peer)
-        self.store = QueueStore(self.root / "queue.sqlite3")
+        self.store = SqliteQueueStorage(
+            self.root / "queue.sqlite3", lease_duration=timedelta(seconds=2)
+        )
         self.connections = CodexConnections(str(executable), self.socket_path)
         self.server = None
         self.start_server()
@@ -65,7 +68,13 @@ class ComposedService(unittest.TestCase):
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
-        self.app = create_application(self.store, self.connections, port=port, interval=1)
+        self.app = create_application(
+            self.store,
+            self.connections,
+            maintenance=SqliteStorageMaintenance(self.root / "queue.sqlite3"),
+            port=port,
+            interval=1,
+        )
         self.server = uvicorn.Server(uvicorn.Config(self.app, log_level="critical"))
         self.server_thread = threading.Thread(
             target=self.server.run, kwargs={"sockets": [listener]}, daemon=True
@@ -129,32 +138,17 @@ class ComposedService(unittest.TestCase):
             message = json.loads(self.read_bytes(connection, size))
             method = message["method"]
             if method == "thread-stream-following-changed":
-                chat = (
-                    snapshot("inProgress", self.accepted_id, "active")
-                    if self.accepted_id
-                    else snapshot()
-                )
-                chat["id"] = CHAT_ID
-                self.send(
-                    connection,
-                    {
-                        "type": "broadcast",
-                        "method": "thread-stream-state-changed",
-                        "version": 11,
-                        "params": {
-                            "conversationId": CHAT_ID,
-                            "change": {"type": "snapshot", "conversationState": chat},
-                        },
-                    },
-                )
+                self.send_history(connection)
                 continue
             if method == "initialize":
                 result = {"clientId": "fixture-client"}
             elif method == "thread-follower-read-model-settings":
-                result = {"settings": {"model": "model-a"}}
+                result = {"settings": {"model": "model-a", "resumeState": "resumed"}}
             elif method == "thread-follower-start-turn":
                 self.sends.append(message["params"])
                 self.accepted_id = message["params"]["turnStart"]["request"]["clientUserMessageId"]
+                self.state["accepted_id"] = self.accepted_id
+                self.save_state()
                 if self.lose_receipt:
                     return
                 result = {"result": {"turn": {"id": "accepted-fixture-turn"}}}
@@ -171,6 +165,9 @@ class ComposedService(unittest.TestCase):
                 },
             )
 
+    def send_history(self, connection):
+        raise AssertionError("The worker must not subscribe to desktop history")
+
     def wait_for(self, predicate, timeout=10):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -186,7 +183,7 @@ class ComposedService(unittest.TestCase):
             "queue", json={"id": item_id, "chat_id": CHAT_ID, "instruction": instruction}
         )
         self.assertEqual(response.status_code, 201, response.text)
-        self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["deferrals"] > 0)
+        self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "failed")
         self.assertEqual(self.sends, [])
         self.state["usage"] = usage(0, int(time.time()) + 3600)
         self.save_state()
@@ -201,9 +198,6 @@ class ComposedService(unittest.TestCase):
         self.assertEqual(request["clientUserMessageId"], item_id)
         self.assertEqual(request["input"][0]["text"], instruction)
         self.assertEqual(self.sends[0]["turnStart"]["context"], {"inheritThreadSettings": True})
-        attempts = self.http.get(f"queue/{item_id}/deliveries").json()["items"]
-        self.assertEqual(attempts[-1]["receipt"], "accepted-fixture-turn")
-        self.assertEqual(attempts[-1]["outcome"], "sent")
         self.stop_server()
         self.start_server()
         self.assertEqual(self.http.get(f"queue/{item_id}").json()["state"], "sent")
@@ -214,14 +208,12 @@ class ComposedService(unittest.TestCase):
         self.lose_receipt = True
         item_id, _ = self.enroll_and_reset()
         self.wait_for(lambda: bool(self.sends))
-        self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["delivery_id"] is None)
+        self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "failed")
         self.stop_server()
         self.start_server()
         self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "sent")
         self.assertEqual(len(self.sends), 1)
-        attempts = self.http.get(f"queue/{item_id}/deliveries").json()["items"]
-        self.assertEqual(attempts[-1]["reason"], "Confirmed the previously accepted instruction")
-        self.assertTrue(any(attempt["outcome"] == "deferred" for attempt in attempts))
+        self.assertEqual(self.http.get(f"queue/{item_id}").json()["error"], "")
 
     def test_legacy_usage_shape_normalizes_through_real_adapter_and_http(self):
         bucket = self.state["usage"].pop("rateLimitsByLimitId")["codex"]

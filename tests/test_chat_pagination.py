@@ -6,14 +6,15 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
 from carrie_on.codex.client import CodexConnections
-from carrie_on.queue import EnqueueCommand, QueueItem
+from carrie_on.queue import QueueEntry
 from carrie_on.server import create_application
-from carrie_on.storage import QueueStore
+from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
+from tests.fixtures import instant, queue_entry
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,58 +23,58 @@ def queue_contract_fixtures(directory: Path) -> Path:
     """Capture actual HTTP projections for the native decoder and action model."""
 
     def enqueue(
-        store: QueueStore,
+        store: SqliteQueueStorage,
         title: str,
         timestamp: float,
         *,
-        chat_id: str | None = None,
+        chat_id: UUID | None = None,
         instruction: str = "Original instruction",
-    ) -> QueueItem:
-        command = EnqueueCommand(
-            id=str(uuid4()), chat_id=chat_id or str(uuid4()), instruction=instruction
-        )
-        item = QueueItem(
-            id=command.id,
-            chat_id=command.chat_id,
+    ) -> QueueEntry:
+        entry = queue_entry(
+            chat_id=chat_id or uuid4(),
             title=title,
-            account_id="test-account",
-            limit_id="codex",
-            anchor_message_id="anchor",
-            model="test-model",
-            instruction=instruction,
-            reset_windows={"primary": 100},
-            enrolled_while_busy=False,
-            queued_at=timestamp,
-            updated_at=timestamp,
+            instructions=instruction,
+            original_instructions=instruction,
+            queued_at=instant(timestamp),
+            updated_at=instant(timestamp),
         )
-        store.enqueue(item, command)
-        return item
+        store.create_entry(entry)
+        return entry
 
-    store = QueueStore(directory / "delivery-states.sqlite3")
+    now = 100
+    path = directory / "delivery-states.sqlite3"
+    store = SqliteQueueStorage(path, clock=lambda: instant(now))
     application = create_application(
-        store, CodexConnections("unused"), version="test", run_worker=False
+        store,
+        CodexConnections("unused"),
+        maintenance=SqliteStorageMaintenance(path),
+        version="test",
+        run_worker=False,
     )
     with TestClient(
         application, base_url="http://127.0.0.1:8766", headers={"X-Carrie-On": "1"}
     ) as client:
+        expired = enqueue(store, "Expired", 3)
+        store.create_delivery_attempt()
+        store.update_entry_state(expired.id, "failed", error="Connection lost")
+        now = 300
         enqueue(store, "Checking", 1)
-        assert store.claim(now=4_000_000_000) is not None
+        store.create_delivery_attempt()
         enqueue(store, "Sending", 2)
-        sending = store.claim(now=4_000_000_000)
-        assert sending is not None
-        assert store.begin_send(sending[1], now=4_000_000_000.25)
-        enqueue(store, "Expired", 3)
-        expired = store.claim(now=100)
-        assert expired is not None
-        assert store.begin_send(expired[1], now=100.25)
+        store.create_delivery_attempt()
         enqueue(store, "Waiting", 4)
         response = client.get("/api/v1/queue")
         response.raise_for_status()
         delivery_states = response.json()
 
-    store = QueueStore(directory / "pagination.sqlite3")
+    path = directory / "pagination.sqlite3"
+    store = SqliteQueueStorage(path)
     application = create_application(
-        store, CodexConnections("unused"), version="test", run_worker=False
+        store,
+        CodexConnections("unused"),
+        maintenance=SqliteStorageMaintenance(path),
+        version="test",
+        run_worker=False,
     )
     with TestClient(
         application, base_url="http://127.0.0.1:8766", headers={"X-Carrie-On": "1"}
@@ -83,7 +84,7 @@ def queue_contract_fixtures(directory: Path) -> Path:
             enqueue(store, f"Other chat {index}", 51 + index)
         first = client.get("/api/v1/queue")
         first.raise_for_status()
-        store.cancel(original.id, now=101)
+        store.update_entry_state(original.id, "cancelled")
         enqueue(
             store,
             "Re-enrolled chat",

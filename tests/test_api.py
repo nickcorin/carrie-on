@@ -9,12 +9,13 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
-from carrie_on.codex.client import AppServer, CodexConnections
+from carrie_on.codex.client import CodexConnections
 from carrie_on.codex.models import (
+    ChatPage,
     ChatSummary,
     CodexProtocolError,
     CodexUnavailable,
@@ -23,7 +24,7 @@ from carrie_on.codex.models import (
 )
 from carrie_on.dispatch import DispatchWorker
 from carrie_on.server import create_application
-from carrie_on.storage import QueueStore
+from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 from tests.fixtures import CHAT_ID, LocalCodex, usage
 
 
@@ -31,9 +32,15 @@ class ApiBehavior(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.store = QueueStore(Path(directory.name) / "queue.sqlite3")
+        self.path = Path(directory.name) / "queue.sqlite3"
+        self.store = SqliteQueueStorage(self.path)
         self.connections = CodexConnections("fixture")
-        self.app = create_application(self.store, self.connections, run_worker=False)
+        self.app = create_application(
+            self.store,
+            self.connections,
+            maintenance=SqliteStorageMaintenance(self.path),
+            run_worker=False,
+        )
         self.service = self.app.state.service
         for name in ("AppServer", "Desktop"):
             mock = patch("carrie_on.codex.client." + name, LocalCodex)
@@ -71,7 +78,7 @@ class ApiBehavior(unittest.TestCase):
         ):
             result = self.get("health")
         self.assertEqual(result.status_code, 200)
-        self.assertEqual(result.json()["schema_version"], 2)
+        self.assertNotIn("schema_version", result.json())
         schema = self.client.get("/openapi.json").json()
         self.assertIn("/api/v1/queue", schema["paths"])
         self.assertIn(
@@ -135,7 +142,7 @@ class ApiBehavior(unittest.TestCase):
         self.assertEqual(self.add().status_code, 409)
         self.cancel(first["id"])
         second = self.add(instruction="Replacement").json()
-        self.assertEqual(self.edit(first["id"], "Stale edit", first["revision"]).status_code, 409)
+        self.assertEqual(self.edit(first["id"], "Stale edit", first["revision"]).status_code, 412)
         self.cancel(first["id"])
         self.assertEqual(self.get("queue").json()["items"][0]["id"], second["id"])
 
@@ -161,14 +168,12 @@ class ApiBehavior(unittest.TestCase):
 
     def test_active_delivery_blocks_edit_cancel_but_not_reads(self):
         item = self.add().json()
-        claimed, _ = self.store.claim()
+        claimed = self.store.create_delivery_attempt().entry
         self.assertEqual(self.edit(item["id"], "Change", claimed.revision).status_code, 409)
         self.assertEqual(self.cancel(item["id"]).status_code, 409)
         self.assertEqual(self.get("queue").status_code, 200)
-        self.assertEqual(
-            self.get(f"queue/{item['id']}/deliveries").json()["items"][0]["queue_item_id"],
-            item["id"],
-        )
+        self.assertTrue(self.get(f"queue/{item['id']}").json()["dispatching"])
+        self.assertEqual(self.get(f"queue/{item['id']}/deliveries").status_code, 404)
 
     def test_local_security_and_no_arbitrary_file_or_command_access(self):
         for headers in (
@@ -256,23 +261,15 @@ class ApiBehavior(unittest.TestCase):
 
     def test_chat_pagination_beyond_100_search_and_cursor_scope(self):
         class PagedCodex(LocalCodex):
-            thread_page = AppServer.thread_page
-
-            def request(self, method, params):
-                self.assert_method = method
+            def thread_page(self, search="", cursor=None, limit=25):
                 chats = [
-                    {"id": str(index), "name": f"Chat {index}", "updatedAt": index}
-                    for index in range(125)
+                    ChatSummary(id=str(index), title=f"Chat {index}", cwd=None, last_activity=index)
+                    for index in reversed(range(125))
+                    if search in f"Chat {index}"
                 ]
-                chats = [
-                    chat for chat in reversed(chats) if params.get("searchTerm", "") in chat["name"]
-                ]
-                start = int(params.get("cursor", "0"))
-                end = start + params["limit"]
-                return {
-                    "data": chats[start:end],
-                    "nextCursor": str(end) if end < len(chats) else None,
-                }
+                start = int(cursor or "0")
+                end = start + limit
+                return ChatPage(tuple(chats[start:end]), str(end) if end < len(chats) else None)
 
         with patch("carrie_on.codex.client.AppServer", PagedCodex):
             page = self.get("chats").json()
@@ -298,7 +295,7 @@ class ApiBehavior(unittest.TestCase):
 
     def test_cached_usage_enrolls_without_starting_helper(self):
         self.get("status")
-        with patch("carrie_on.codex.client.AppServer", side_effect=AssertionError("Cache missed")):
+        with patch.object(LocalCodex, "usage", side_effect=AssertionError("Cache missed")):
             response = self.add()
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["account_id"], "account-a")
@@ -326,7 +323,7 @@ class ApiBehavior(unittest.TestCase):
             self.get("status")
             self.assertEqual(self.add().status_code, 422)
             with patch(
-                "carrie_on.codex.client.AppServer",
+                "tests.fixtures.LocalCodex.usage",
                 side_effect=AssertionError("Selected cache missed"),
             ):
                 self.assertEqual(self.add(limit_id="other").status_code, 201)
@@ -352,7 +349,7 @@ class ApiBehavior(unittest.TestCase):
             finally:
                 release.set()
             future.result()
-        with patch("carrie_on.codex.client.AppServer", side_effect=AssertionError("Cache missed")):
+        with patch.object(LocalCodex, "usage", side_effect=AssertionError("Cache missed")):
             self.assertEqual(self.add().json()["account_id"], "account-a")
 
     def test_slow_enrollment_allows_other_queue_actions(self):
@@ -396,7 +393,7 @@ class ApiBehavior(unittest.TestCase):
         restart = threading.Event()
         worker = DispatchWorker(self.store, self.connections, on_failure=restart.set)
         with patch(
-            "carrie_on.dispatch.dispatch_next", side_effect=AssertionError("Worker crashed")
+            "carrie_on.dispatch.DispatchWorker.send", side_effect=AssertionError("Worker crashed")
         ):
             worker.thread.start()
             worker.thread.join(3)
@@ -405,15 +402,15 @@ class ApiBehavior(unittest.TestCase):
 
     def test_doctor_and_readiness_inspection_do_not_create_deliveries(self):
         item = self.add().json()
-        before = self.store.get(item["id"])
+        before = self.store.get_entry(UUID(item["id"]))
         report = self.get("diagnostics", params={"chat_id": CHAT_ID})
         self.assertEqual(report.json()["model_turns_started"], 0)
         readiness = self.get("queue/check")
         self.assertEqual(readiness.status_code, 200)
-        self.assertEqual(readiness.json()["items"][0]["outcome"], "deferred")
+        self.assertEqual(readiness.json()["items"][0]["outcome"], "failed")
         self.assertIn("reset", readiness.json()["items"][0]["reason"])
-        self.assertEqual(self.store.get(item["id"]), before)
-        self.assertEqual(self.store.deliveries(item["id"])[0], [])
+        self.assertEqual(self.store.get_entry(UUID(item["id"])), before)
+        self.assertEqual(self.store.get_queue_summary().dispatching, 0)
 
     def test_declared_headers_match_required_runtime_contract(self):
         schema = self.app.openapi()
@@ -440,12 +437,10 @@ class ApiBehavior(unittest.TestCase):
         )
 
     def test_cursor_numbers_rejected_before_sqlite_binding(self):
-        item = self.add().json()
+        self.add()
         cases = [
-            ("queue", ["queue", "open", None], [2**100, 1, "id"]),
-            ("queue", ["queue", "open", None], [0, float("inf"), "id"]),
-            (f"queue/{item['id']}/deliveries", ["deliveries", item["id"]], [2**100, "id"]),
-            (f"queue/{item['id']}/deliveries", ["deliveries", item["id"]], [float("nan"), "id"]),
+            ("queue", ["queue", ["queued", "failed", "stale"], None], [value, str(uuid4())])
+            for value in (2**100, -(2**100), 10**1000, float("inf"), float("nan"))
         ]
         for path, scope, position in cases:
             with self.subTest(path=path, position=position):

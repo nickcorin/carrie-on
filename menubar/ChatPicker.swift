@@ -51,26 +51,21 @@ struct PickerQueue: Decodable {
         let prompt: String
         var state = "queued"
         var revision = 1
-        var note: String? = nil
-        var reactivation_error: String? = nil
-        var attempted_at: Double? = nil
-        var processing_until: Double? = nil
+        var error = ""
+        var dispatching = false
         var id: String { enrollmentID }
-        var hasActiveDelivery: Bool { (processing_until ?? 0) > Date().timeIntervalSince1970 }
+        var hasActiveDelivery: Bool { dispatching }
         var cardState: ChatCardState {
-            if reactivation_error != nil || state == "changed" || state == "failed" { return .failed }
-            if attempted_at != nil && hasActiveDelivery { return .processing }
+            if state == "stale" || state == "failed" { return .failed }
+            if dispatching { return .processing }
             return .queued
         }
-        var failureTitle: String {
-            if attempted_at != nil { return "Resume unconfirmed" }
-            return state == "changed" || state == "failed" ? "Needs attention" : "Couldn’t resume"
-        }
+        var failureTitle: String { state == "stale" ? "Conversation continued" : "Couldn’t resume" }
         var failureDetail: String {
-            let reason = reactivation_error ?? note
-                ?? "The chat could not be resumed."
+            if state == "stale" { return "The conversation continued after enrollment. This instruction will not be sent." }
+            let reason = error.isEmpty ? "The chat could not be resumed" : error
             let sentence = reason.hasSuffix(".") ? reason : reason + "."
-            return sentence + (state == "queued" ? " Will retry automatically." : " Inspect the chat before re-queueing.")
+            return sentence + " Will retry automatically."
         }
         var statusDescription: String {
             switch cardState {
@@ -82,9 +77,8 @@ struct PickerQueue: Decodable {
         var cardHeight: CGFloat { 84 }
         enum CodingKeys: String, CodingKey {
             case enrollmentID = "id"
-            case thread_id = "chat_id", prompt = "instruction", note = "reason", reactivation_error = "error"
-            case attempted_at = "sending_at", processing_until = "lease_expires_at"
-            case title, state, revision
+            case thread_id = "chat_id", prompt = "instruction"
+            case title, state, revision, error, dispatching
         }
         init(enrollmentID: String, thread_id: String, title: String, prompt: String) {
             self.enrollmentID = enrollmentID
@@ -100,21 +94,8 @@ struct PickerQueue: Decodable {
             prompt = try values.decode(String.self, forKey: .prompt)
             state = try values.decode(String.self, forKey: .state)
             revision = try values.decode(Int.self, forKey: .revision)
-            note = try values.decodeIfPresent(String.self, forKey: .note)
-            reactivation_error = try values.decodeIfPresent(String.self, forKey: .reactivation_error)
-            func timestamp(_ key: CodingKeys) throws -> Double? {
-                guard let text = try values.decodeIfPresent(String.self, forKey: key) else { return nil }
-                let formatter = ISO8601DateFormatter()
-                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                if let date = formatter.date(from: text) { return date.timeIntervalSince1970 }
-                formatter.formatOptions = [.withInternetDateTime]
-                guard let date = formatter.date(from: text) else {
-                    throw DecodingError.dataCorruptedError(forKey: key, in: values, debugDescription: "Invalid timestamp")
-                }
-                return date.timeIntervalSince1970
-            }
-            attempted_at = try timestamp(.attempted_at)
-            processing_until = try timestamp(.processing_until)
+            error = try values.decode(String.self, forKey: .error)
+            dispatching = try values.decode(Bool.self, forKey: .dispatching)
         }
     }
     let entries: [Entry]
@@ -546,7 +527,7 @@ final class ChatPickerModel: ObservableObject {
                 case .confirmed(let item):
                     pendingCreations.removeValue(forKey: chatID)
                     activities[chatID] = .complete(item.state == "queued" ? "Queued" : "Previous request: \(item.state).")
-                    if ["queued", "changed", "failed"].contains(item.state), seen.insert(item.enrollmentID).inserted {
+                    if ["queued", "stale", "failed"].contains(item.state), seen.insert(item.enrollmentID).inserted {
                         entries.append(item)
                     }
                 case .missing:
@@ -607,7 +588,7 @@ final class ChatPickerModel: ObservableObject {
             pendingCreations.removeValue(forKey: chat.id)
             try savePendingCreations()
             queuedEntries.removeAll { $0.enrollmentID == entry.enrollmentID }
-            if ["queued", "changed", "failed"].contains(entry.state) { queuedEntries.append(entry) }
+            if ["queued", "stale", "failed"].contains(entry.state) { queuedEntries.append(entry) }
             finish(chat.id, result: .complete(entry.state == "queued" ? "Queued" : "Previous request: \(entry.state)."))
             return true
         } catch {
@@ -1468,8 +1449,8 @@ struct ChatCard: View {
                     }
                 case .queued(let entry, let save, _):
                     instructionField($editedInstruction, action: "Save instruction", symbol: "arrow.up",
-                                     canSubmit: !blocked && entry.state == "queued" && editedInstruction != savedInstruction,
-                                     editable: entry.state == "queued") {
+                                     canSubmit: !blocked && ["queued", "failed"].contains(entry.state) && editedInstruction != savedInstruction,
+                                     editable: ["queued", "failed"].contains(entry.state)) {
                         Task { if await save(editedInstruction, savedInstruction) { flipped = false } }
                     }
                 }

@@ -16,7 +16,7 @@ Queued chats show plain saved instructions with an amber clock beside the title.
 
 Search, usage, and queue status refresh in the background with a small activity indicator. Each card has its own action state: an in-progress or unconfirmed write blocks only that card's action controls. Other cards, search, scrolling, and flipping remain usable. Hover over a card's warning icon for an error; uncertain writes are checked against the saved queue before retrying. Opening **Carrie On Menu** from Applications also opens the picker; login startup keeps it hidden.
 
-If a queued chat cannot be reactivated, its card turns red and shows the reason. It remains in Queued and can be removed from its hover control. Temporary failures retry automatically; uncertain delivery retries after fresh Codex state checks; changed work requires inspection before re-queueing. Ordinary waiting and errors while adding or editing a card do not use this failed state.
+If a queued chat cannot be reactivated, its card turns red and shows the reason. It remains in Queued and can be removed from its hover control. Retryable failures, including quota waits and busy chats, retry after the active attempt expires. A stale entry means the conversation already continued and will not receive this instruction. Errors while adding or editing remain separate from entry state.
 
 The native popover follows the Mac's light or dark appearance and accent color. AppKit supplies the popover material, including Liquid Glass where supported; compact action controls sit inside the instruction editors. Native controls honor system accessibility preferences. See Apple's [Liquid Glass adoption guidance](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass).
 
@@ -44,7 +44,6 @@ carrie-on queue show UUID
 carrie-on queue edit UUID --instruction-file instruction.txt
 carrie-on queue cancel UUID
 carrie-on queue list --history
-carrie-on queue deliveries UUID
 ```
 
 Use an exact unique title, UUID, or `codex://threads/UUID` link when adding. The default instruction is “Please continue with your last task.” `--instruction-file -` reads stdin; files and stdin preserve Unicode and newlines. Use `--instruction=--text` when the instruction starts with a dash. Several quota buckets require `--limit-id`, selected using `usage`. Remote hosts and ChatGPT conversations are unsupported.
@@ -60,7 +59,7 @@ JSON results go to stdout and errors to stderr. Exit codes are 0 for success, 1 
 | `chats list [--search TEXT] [--limit N] [--cursor CURSOR]` | Paginated unarchived catalog |
 | `queue add CHAT [--id UUID] [--instruction TEXT / --instruction-file PATH] [--limit-id ID]` | Durable, idempotent creation |
 | `queue list [--history] [--state STATE] [--limit N] [--cursor CURSOR]` | Visible work or retained history |
-| `queue show UUID` / `queue deliveries UUID` | Item state or paginated delivery attempts |
+| `queue show UUID` | Saved instructions, state, and the last error |
 | `queue edit UUID --instruction TEXT` / `queue cancel UUID` | Edit unclaimed work or cancel/dismiss, retaining history |
 | `queue check [--limit N] [--cursor CURSOR]` | Read-only readiness, without claims, opening chats, or sending |
 | `service status` / `start` / `stop` / `uninstall` | Manage the selected profile's backend, preserving data |
@@ -70,9 +69,9 @@ JSON results go to stdout and errors to stderr. Exit codes are 0 for success, 1 
 
 Each queue item authorizes an instruction after its recorded usage reset. Enrollment anchors the task, model, account, and quota bucket. Busy work, approval/input, and blocked Codex goals are deferred. Task/model changes, completed busy work, and unrelated manual stops prevent sending. Changed or failed items remain visible for inspection and removal. There is no queue pause control; Quit or `service stop` stops processing while preserving state.
 
-A worker claims the next eligible item ordered by its deferral count, enqueue time, and UUID. Deferral moves it behind less-deferred work. Every attempt fetches fresh usage, including before the original reset deadline, so an early reset is detected. Every recorded reset window must advance to a future time and all reported windows need headroom. Empty queues make no Codex calls.
+A worker acquires the next queued or failed entry without a live attempt, ordered by enqueue time and UUID. Every attempt fetches fresh usage, including before the original reset deadline, so an early reset is detected. Every recorded reset window must advance to a future time and all reported windows need headroom. Empty queues make no Codex calls.
 
-Attempts have expiring leases. If the worker dies, a later iteration reclaims the item. Before sending, it checks fresh conversation state: if the message was accepted already it records success; if the work changed it records that outcome. Temporary failures and uncertain send replies retry through these checks. The external send and SQLite commit cannot be atomic, so duplicate suppression cannot guarantee exactly-once delivery.
+Attempts have expiring leases. If the worker dies, a later iteration reclaims the item. Before sending, it checks fresh conversation state: if the message was accepted already it records success; if the conversation advanced it marks the entry stale and does not retry. Temporary failures and uncertain send replies retry through these checks. The external send and SQLite commit cannot be atomic, so duplicate suppression cannot guarantee exactly-once delivery.
 
 The backend owns `queue.sqlite3`; clients never access it directly. Setup stops the retired JSON worker, imports existing JSON transactionally, and preserves the source file. Import ignores the old pause setting. See [queue behavior](features/queue.md), [migration](ARCHITECTURE.md#installation-and-migration), and the [feature verification matrix](features/verification.md).
 

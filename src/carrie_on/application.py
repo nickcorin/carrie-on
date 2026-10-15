@@ -1,9 +1,9 @@
 """Enrollment and read operations over typed Codex observations and queue state."""
 
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -18,8 +18,9 @@ from carrie_on.codex.models import (
     UsageSelectionError,
     UsageSnapshot,
 )
-from carrie_on.queue import Eligibility, EnqueueCommand, QueueEntry, QueueError, QueueItem, evaluate
-from carrie_on.storage import QueueStore, QueueSummary, cursor_decode, cursor_encode
+from carrie_on.pagination import decode_cursor, encode_cursor
+from carrie_on.ports import QueueStorage, StorageUnavailable
+from carrie_on.queue import Eligibility, QueueEntry, QueueError, QueueSummary
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ class Status:
 
 @dataclass(frozen=True)
 class Readiness:
-    id: str
+    id: UUID
     title: str
     eligibility: Eligibility
 
@@ -45,16 +46,23 @@ class Diagnostic:
 
 
 def observe_eligibility(
-    item: QueueItem, server: AppServer, desktop: Desktop, now: float
+    entry: QueueEntry, server: AppServer, desktop: Desktop, now: datetime
 ) -> Eligibility:
     """Read quota, check catalog before any opening, then evaluate live state."""
     try:
-        usage = server.usage().select(item.limit_id)
+        usage = server.usage().select(entry.limit_id)
     except UsageSelectionError as error:
         raise QueueError("quota_changed", str(error)) from error
-    present = any(chat.id == item.chat_id for chat in server.threads(item.title))
-    chat = server.snapshot(item.chat_id, desktop, receipt_id=item.id) if present else None
-    return evaluate(item, usage, chat, now)
+    present = any(chat.id == str(entry.chat_id) for chat in server.threads(entry.title))
+    chat = server.snapshot(str(entry.chat_id), desktop) if present else None
+    if (
+        chat is not None
+        and str(entry.id) not in chat.seen_message_ids
+        and not entry.matches_anchor(chat)
+        and server.has_message(str(entry.chat_id), str(entry.id))
+    ):
+        chat = replace(chat, seen_message_ids=chat.seen_message_ids | {str(entry.id)})
+    return entry.assess(usage, chat, now)
 
 
 class QueueService:
@@ -64,7 +72,7 @@ class QueueService:
     queue transaction. The store rechecks mutable membership at commit time.
     """
 
-    def __init__(self, store: QueueStore, connections: CodexConnections):
+    def __init__(self, store: QueueStorage, connections: CodexConnections):
         self.store = store
         self.connections = connections
         self.usage_observations: dict[str, UsageObservation] = {}
@@ -116,48 +124,58 @@ class QueueService:
             if not any(value.id == chat_id for value in server.threads(chat.title)):
                 raise QueueError("chat_absent", "Chat is archived or absent from the local catalog")
 
-    def enqueue(self, command: EnqueueCommand) -> tuple[QueueEntry, bool]:
-        """Replay original identity or enroll the latest live turn with available quota metadata."""
-        existing = self.store.replay(command)
+    def enqueue(
+        self, entry_id: UUID, chat_id: UUID, instructions: str, *, limit_id: str | None = None
+    ) -> tuple[QueueEntry, bool]:
+        """Replay original identity or capture the latest live turn and quota baseline."""
+        existing = self.store.get_entry(entry_id)
         if existing:
+            existing.require_creation_input(chat_id, instructions, limit_id)
             return existing, False
-        queued, _ = self.store.page(state="queued", chat_id=command.chat_id, limit=1)
+        queued, _ = self.store.list_entries(chat_id=chat_id, limit=1)
         if queued:
             raise QueueError("chat_already_queued", "Chat is already queued")
-        with self.connections.app_server() as server, self.connections.desktop(open_if_needed=True) as desktop:
+        with (
+            self.connections.app_server() as server,
+            self.connections.desktop(open_if_needed=True) as desktop,
+        ):
             chat = server.snapshot(
-                command.chat_id, desktop, include_goal=False,
-                before_open=lambda: self._validate_catalog(command.chat_id)
+                str(chat_id),
+                desktop,
+                include_goal=False,
+                before_open=lambda: self._validate_catalog(str(chat_id)),
             )
-        if chat.thread_id != command.chat_id:
+        if chat.thread_id != str(chat_id):
             raise QueueError("chat_mismatch", "Desktop returned a different chat")
-        observed = self._enrollment_usage(command.limit_id)
+        observed = self._enrollment_usage(limit_id)
         if observed and observed.usable_for_enrollment(time.time()):
             usage = observed.usage
         else:
             with self.connections.app_server() as server:
                 try:
-                    usage = server.usage().select(command.limit_id)
+                    usage = server.usage().select(limit_id)
                 except UsageSelectionError as error:
                     raise QueueError("invalid_bucket", str(error)) from error
-        item = QueueItem.enroll(command, chat, usage, time.time())
-        return self.store.enqueue(item, command)
+        entry = QueueEntry.enroll(
+            entry_id, instructions, chat, usage, datetime.now(timezone.utc), limit_id=limit_id
+        )
+        return self.store.create_entry(entry)
 
     def chats(self, search: str = "", cursor: str | None = None, limit: int = 25) -> ChatPage:
         scope = ["chats", search, limit]
-        upstream = cursor_decode(cursor, scope) if cursor else None
+        upstream = decode_cursor(cursor, scope) if cursor else None
         if upstream is not None and not isinstance(upstream, str):
             raise QueueError("invalid_cursor", "Invalid chat cursor")
         with self.connections.app_server() as server:
             page = server.thread_page(search, cursor=upstream, limit=limit)
-        next_cursor = cursor_encode(scope, page.next_cursor) if page.next_cursor else None
+        next_cursor = encode_cursor(scope, page.next_cursor) if page.next_cursor else None
         return ChatPage(page.items, next_cursor)
 
     def queued_chats(self, cursor: str | None = None, limit: int = 50) -> ChatPage:
         """Return live activity when available and saved enrollment titles offline."""
-        entries, next_cursor = self.store.page(limit=limit, cursor=cursor)
+        entries, next_cursor = self.store.list_entries(limit=limit, cursor=cursor)
         result = [
-            ChatSummary(id=entry.item.chat_id, title=entry.item.title, cwd=None, last_activity=None)
+            ChatSummary(id=str(entry.chat_id), title=entry.title, cwd=None, last_activity=None)
             for entry in entries
         ]
         if not entries:
@@ -166,8 +184,8 @@ class QueueService:
             with self.connections.app_server() as server:
                 for index, entry in enumerate(entries):
                     try:
-                        chat = server.read_chat(entry.item.chat_id)
-                        result[index] = replace(chat, title=chat.title or entry.item.title)
+                        chat = server.read_chat(str(entry.chat_id))
+                        result[index] = replace(chat, title=chat.title or entry.title)
                     except (CodexUnavailable, CodexProtocolError):
                         pass
         except (CodexUnavailable, CodexProtocolError):
@@ -186,8 +204,8 @@ class QueueService:
         queue = usage = None
         queue_error = usage_error = None
         try:
-            queue = self.store.summary()
-        except sqlite3.Error as error:
+            queue = self.store.get_queue_summary()
+        except StorageUnavailable as error:
             queue_error = str(error)
         try:
             usage = self.read_usage()
@@ -199,21 +217,23 @@ class QueueService:
         """Read connection/turn diagnostics without opening a chat or starting a turn."""
         with self.connections.app_server() as server, self.connections.desktop() as desktop:
             usage = server.usage()
-            return Diagnostic(usage.account_id, server.snapshot(chat_id, desktop) if chat_id else None)
+            return Diagnostic(
+                usage.account_id, server.snapshot(chat_id, desktop) if chat_id else None
+            )
 
     def inspect(
         self, limit: int = 50, cursor: str | None = None
     ) -> tuple[list[Readiness], str | None]:
         """Read-only readiness inspection; no opening chats, claiming, or sending."""
-        entries, next_cursor = self.store.page(state="queued", limit=limit, cursor=cursor)
+        entries, next_cursor = self.store.list_entries(limit=limit, cursor=cursor)
         if not entries:
             return [], next_cursor
         with self.connections.app_server() as server, self.connections.desktop() as desktop:
             results = [
                 Readiness(
-                    entry.item.id,
-                    entry.item.title,
-                    observe_eligibility(entry.item, server, desktop, time.time()),
+                    entry.id,
+                    entry.title,
+                    observe_eligibility(entry, server, desktop, datetime.now(timezone.utc)),
                 )
                 for entry in entries
             ]

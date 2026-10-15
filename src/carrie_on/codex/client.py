@@ -24,7 +24,6 @@ from carrie_on.codex.models import (
     object_value,
     text_value,
 )
-
 from carrie_on.codex.sdk import AppServer
 
 P = ParamSpec("P")
@@ -76,8 +75,8 @@ def remaining_time(timeout, deadline):
 class Desktop:
     """Coordinate with the running desktop app over its private IPC socket.
 
-    The protocol versions below match the inspected desktop build. Unknown
-    snapshot versions fail closed. Never claim ownership of another chat.
+    Read only compact settings and ask the owning app to start a turn.
+    Never subscribe to conversation history or claim ownership of another chat.
     """
 
     def __init__(self, path=None, timeout=15, open_if_needed=False, deadline=None):
@@ -177,10 +176,14 @@ class Desktop:
             return object_value(reply.get("result"), "desktop result")
 
     @transport_errors
-    def read_settings(self, thread_id: str, *, before_open: Callable[[], None] | None = None) -> dict:
+    def read_settings(
+        self, thread_id: str, *, before_open: Callable[[], None] | None = None
+    ) -> dict:
         """Read compact settings; open a dormant chat only after catalog validation."""
         try:
-            result = self.request("thread-follower-read-model-settings", {"conversationId": thread_id})
+            result = self.request(
+                "thread-follower-read-model-settings", {"conversationId": thread_id}
+            )
         except CodexUnavailable as error:
             if not self.open_if_needed or "no-client-found" not in str(error):
                 raise
@@ -188,20 +191,26 @@ class Desktop:
             if before_open is not None:
                 before_open()
             subprocess.run(
-                ["/usr/bin/open", "-g", f"codex://threads/{thread_id}"], check=True,
-                timeout=remaining_time(10, self.deadline), stdout=subprocess.DEVNULL,
+                ["/usr/bin/open", "-g", f"codex://threads/{thread_id}"],
+                check=True,
+                timeout=remaining_time(10, self.deadline),
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             deadline = min(time.monotonic() + 20, self.deadline or float("inf"))
             while True:
                 try:
-                    result = self.request("thread-follower-read-model-settings", {"conversationId": thread_id})
+                    result = self.request(
+                        "thread-follower-read-model-settings", {"conversationId": thread_id}
+                    )
                     break
                 except CodexUnavailable as retry:
                     if "no-client-found" not in str(retry):
                         raise
                     if time.monotonic() >= deadline:
-                        raise CodexUnavailable("Open the queued chat in Codex; its owner is unavailable") from error
+                        raise CodexUnavailable(
+                            "Open the queued chat in Codex; its owner is unavailable"
+                        ) from error
                     time.sleep(0.5)
         return object_value(result.get("settings"), "desktop model settings")
 

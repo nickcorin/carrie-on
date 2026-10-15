@@ -10,18 +10,17 @@ import json
 import os
 import plistlib
 import shutil
-import sqlite3
 import subprocess
 import tempfile
 import time
 from collections.abc import Iterator
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from carrie_on.legacy import LegacyQueue
-from carrie_on.storage import QueueStore
+from carrie_on.legacy import LegacyImporter, LegacyQueue
+from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 
 PREVIOUS_IDENTIFIER = "com.nickcorin.tokenmaxxer.app"
 PREVIOUS_LABELS = (
@@ -154,12 +153,13 @@ class LegacyMigration:
                         atomic_write(self.data / name, source.read_bytes())
                 journal["state"] = "applied"
                 atomic_write(self.journal, json_bytes(journal))
-            store = QueueStore(self.data / "queue.sqlite3")
-            store.initialize()
+            database = self.data / "queue.sqlite3"
+            SqliteStorageMaintenance(database).initialize()
+            importer = LegacyImporter(SqliteQueueStorage(database))
             queue_snapshot = self.recovery / "import/resume-queue.json"
             if queue_snapshot.exists():
                 # Recover a durable plan written by an earlier installer version.
-                store.import_legacy_snapshot(queue_snapshot, "previous_installation_import")
+                importer.import_file(queue_snapshot, "previous_installation_import")
             else:
                 queues = [
                     LegacyQueue.read(self.recovery / name / "resume-queue.json")
@@ -168,7 +168,7 @@ class LegacyMigration:
                     for name in ("previous", "current")
                 ]
                 records = queues[0].merge(queues[1], journal.get("prepared_at", time.time()))
-                store.import_legacy(records, "previous_installation_import")
+                importer.import_records(records, "previous_installation_import")
             yield
 
     def stop_services(self, labels: tuple[str, ...]) -> None:
@@ -209,12 +209,7 @@ class LegacyMigration:
             if database.exists():
                 backup = temporary / "current/queue.sqlite3"
                 backup.parent.mkdir(parents=True, exist_ok=True)
-                with (
-                    closing(sqlite3.connect(database)) as source_database,
-                    closing(sqlite3.connect(backup)) as backup_database,
-                ):
-                    source_database.backup(backup_database)
-                backup.chmod(0o600)
+                SqliteStorageMaintenance(database).create_backup(backup)
             agents = temporary / "agents"
             for label in PREVIOUS_LABELS:
                 source = self.login_agent(label)

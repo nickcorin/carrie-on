@@ -6,9 +6,10 @@ Carrie On is a local client/server application. The native Swift app and Typer C
 
 | Location | Responsibility |
 | --- | --- |
-| `src/carrie_on/queue.py` | Queue items, deliveries, states, and reset eligibility |
-| `src/carrie_on/storage.py` | SQLite schema, explicit row mappings, transactions, queries, leases, and atomic import |
-| `src/carrie_on/legacy.py` | Retired JSON decoding, merge precedence, and normalized import records |
+| `src/carrie_on/queue.py` | QueueEntry, DeliveryAttempt, lifecycle transitions, and reset eligibility |
+| `src/carrie_on/ports.py` | Application-owned storage and maintenance protocols |
+| `src/carrie_on/storage/` | Declarative SQL migrations, private connections, row mappings, and atomic queries |
+| `src/carrie_on/legacy.py` | Retired JSON decoding, merge precedence, and import orchestration through the storage protocol |
 | `src/carrie_on/application.py` | Enrollment and read operations using Codex observations |
 | `src/carrie_on/dispatch.py` | Delivery orchestration and supervised worker lifetime |
 | `src/carrie_on/api.py` | HTTP contract, input validation, response serialization, and error mapping |
@@ -22,19 +23,46 @@ Carrie On is a local client/server application. The native Swift app and Typer C
 
 The domain and application layers do not depend on FastAPI or Typer. The service owns decisions; adapters translate inputs and results. Network operations occur outside database transactions. Every SQLite operation uses its own connection, so a slow Codex call does not prevent another client from reading or changing unrelated work. `pyproject.toml` installs the `src` package and exposes `carrie-on` and `carrie-on-server`.
 
-`EnqueueCommand` retains the original creation identity. `QueueItem` represents durable intent; `QueueEntry` groups it with an optional `ActiveDelivery` for reads. The HTTP serializer flattens that relationship for clients. Eligibility is a pure function of typed observations. Codex adapters normalize protocol variants into complete quota, catalog, and chat records, and return an accepted turn ID after sending. Expected connection failures, malformed upstream data, and domain rejections have distinct exception types; programming and persistence failures reach worker supervision with their tracebacks.
+`QueueEntry` represents captured intent and lifecycle state. It owns enrollment, immutable instruction/state changes, creation identity checks, and eligibility decisions over typed observations. UUIDs and aware UTC datetimes remain typed until an adapter serializes them. Original instructions and the requested quota bucket preserve creation identity after editing. `DeliveryAttempt` is an immutable lease containing an entry snapshot and expiry. Clients receive a derived `dispatching` flag; attempts are private to the worker that creates them.
 
+Application code depends on `QueueStorage`, not its SQLite implementation. `SqliteQueueStorage` owns both entries and attempts because acquiring work requires an atomic query across both tables. Domain rules live on `QueueEntry`; storage enforces uniqueness, revisions, and exclusive delivery acquisition. Connections, transactions, SQL, and SQLite errors never cross `storage/`. `StorageUnavailable` represents persistence failure; `QueueError` identifies an expected rejection. Codex connection failures and malformed upstream data remain distinct from programming errors.
+
+The read adapter uses the official Codex Python SDK. It reads compact thread metadata, a latest-turn header, and a bounded opening-message page. Missing completion evidence means the chat is busy. It pages older headers only when reconciling a changed conversation against an uncertain send. Desktop IPC reads settings and sends through the owning app; it never subscribes to full conversation history.
 The server constructs a shared connection configuration, while every operation owns separate context-managed connections. Platform entrypoints resolve `Runtime` and validated `Settings` explicitly; importing a component does not select a profile or inspect an installed app. Both installation paths load settings under the same installation lock and publish the same launchd configuration. Module dependency tests and `just typecheck` guard these contracts. `just reference` generates Python API pages and native symbol graphs under `build/reference/`.
 
-## Durable state
+## Storage services
 
-`queue_items` records intent, exact instructions, chat/task/model/account anchors, reset windows, state, revision, and `deferrals`. `deliveries` records each attempt, its instruction snapshot, UUID, lease expiry, send-start time, receipt, and outcome. `metadata` records schema-import markers and last-check time. IDs for new items and deliveries are UUIDs. A partial unique index permits only a single queued item for a chat; another permits only a single unfinished delivery per item.
+The caller-facing protocol is in `ports.py`; `storage/queue.py` implements it with parameterized queries and explicit row mappings:
 
-SQLite runs in WAL mode with foreign keys, full synchronization, a five-second busy timeout, and short `BEGIN IMMEDIATE` writes. Claiming selects a queued item without an unexpired delivery, ordered by `deferrals`, enqueue timestamp, and UUID. The claim closes any expired attempt and creates a delivery atomically. Deferring increments that item's `deferrals`; the counter is neither globally unique nor a sequence. New items start at the current minimum deferral count. There is no per-item next-check timestamp.
+```python
+get_entry(entry_id: UUID) -> QueueEntry | None
+list_entries(*, states=("queued", "failed"), chat_id=None, limit=50, cursor=None)
+    -> tuple[list[QueueEntry], str | None]
+get_queue_summary() -> QueueSummary
+create_entry(entry: QueueEntry) -> tuple[QueueEntry, bool]
+update_instructions(entry_id: UUID, instructions: str, *, revision: int) -> QueueEntry
+update_entry_state(entry_id: UUID, state: EntryState, *, error: str = "") -> QueueEntry
+create_delivery_attempt() -> DeliveryAttempt | None
+create_entries(entries: Sequence[QueueEntry], *, import_id: UUID) -> bool
+```
 
-The worker processes an item at a time. A delivery lease lasts 120 seconds, with a 100-second external-operation budget. Sending and completion require the same unexpired delivery UUID. A stale worker cannot finish another worker's attempt. The worker waits between selections, targeting the configured interval for a round through the queue, with a minimum one-second wait. Fatal worker failure makes health fail and requests process exit; launchd restarts the service. Shutdown is bounded, and abandoned leases recover on a later loop.
+`get_entry` returns `None` for an unknown UUID; mutations reject missing entries. Creation returns the stored entry and whether it was newly created. A UUID replay compares original caller input, including the originally requested bucket. Edits compare the supplied current revision atomically. Every mutation returns the persisted state; a repeated identical state update is a no-op. The import batch inserts current domain records and its opaque marker atomically. It does not interpret source formats or decide which older work should survive.
 
-The queue item UUID is also the outgoing client message ID. Every attempt observes fresh Codex state. An already-observed message is recorded as sent; a changed task or model is recorded as changed. After an uncertain reply or a process crash, the next attempt checks again before sending. SQLite cannot make a transaction atomic with Codex, so this is recoverable delivery with duplicate suppression, not an exactly-once guarantee.
+`QueueSummary` contains counts for each state and the number currently dispatching, with pending-count and attention-count properties. `list_entries` supports 1–100 records per page, query-bound opaque cursors, and `states=None` for history. Results are live observations rather than a transaction spanning multiple calls.
+
+`SqliteStorageMaintenance` implements `initialize()` and `create_backup(destination)`. `storage/database.py` owns connections and transaction lifetimes. `storage/schema.py` runs Yoyo against the declarative files in `storage/migrations/`. Startup applies pending schema migrations under the migration lock, then requires the current schema. Query code has no paths for older schemas. Unknown/newer migrations fail startup; JSON conversion lives outside this package.
+
+## Durable state and dispatch
+
+`queue_entries` stores instructions, conversation/model/account anchors, reset windows, state, last error, revision, timestamps, and original creation input. `delivery_attempts` stores immutable UUIDs, entry references, creation times, and expiries. `queue_imports` records completed imports. A partial unique index allows a pending entry per chat; a constraint trigger rejects overlapping attempts for the same entry.
+
+SQLite uses WAL, foreign keys, full synchronization, a five-second busy timeout, and short write transactions. Acquisition selects the next `queued` or `failed` entry without a live attempt, ordered by `(queued_at, id)`, and inserts its attempt in the same transaction. There are no deferrals or per-entry check timestamps. Other entries remain available while an attempt is active.
+
+The worker's `send()` owns observation and delivery. An attempt lasts 120 seconds; external operations have a budget of at most 100 seconds, bounded by remaining ownership. The worker reads fresh quota and conversation state before sending. Busy chats, unavailable quota, model changes, and transport failures become `failed` with an error and may retry after expiry. A newer conversation anchor becomes terminal `stale`. Recorded acceptance becomes `sent`. `cancelled` never retries; its optional error distinguishes a terminal failure from user removal. State changes do not mutate attempts or release ownership early.
+
+The entry UUID is the outgoing client message ID. Accepted-message reconciliation takes precedence over stale detection. After an uncertain reply or process crash, another attempt checks Codex again before sending. A database transaction cannot be atomic with the desktop send, so this is recoverable delivery with duplicate suppression. Entry updates do not carry an attempt token; they do not fence a worker that has outlived its lease.
+
+The worker waits between selections, targeting the configured interval for a pass through pending work with a minimum one-second wait. Fatal worker failure makes health fail and requests process exit; launchd restarts the service. Shutdown is bounded, and abandoned attempts expire naturally.
 
 ## HTTP contract
 
@@ -42,7 +70,7 @@ The service binds to `127.0.0.1`. Requests require the exact configured Host and
 
 | Method and path | Behavior |
 | --- | --- |
-| `GET /api/v1/health` | Database schema and worker health; no Codex calls |
+| `GET /api/v1/health` | Storage availability and worker health; no Codex calls |
 | `GET /api/v1/status` | Compact connection, usage, and queue summary for the menu |
 | `GET /api/v1/connection` | Bounded desktop handshake |
 | `GET /api/v1/usage` | Account and quota observations |
@@ -53,7 +81,6 @@ The service binds to `127.0.0.1`. Requests require the exact configured Host and
 | `GET /api/v1/queue/{id}` | Read an item and its ETag |
 | `PATCH /api/v1/queue/{id}` | Edit the instruction with merge-patch JSON and `If-Match` |
 | `POST /api/v1/queue/{id}/cancel` | Cancel/dismiss with an empty JSON object, preserving history |
-| `GET /api/v1/queue/{id}/deliveries` | Paginated attempt history |
 | `GET /api/v1/queue/metadata` | Independent queued-chat metadata, with offline fallback |
 | `GET /api/v1/queue/check` | Paginated read-only readiness inspection |
 | `GET /api/v1/diagnostics` | Read-only connectivity/usage checks, optionally for a chat |
@@ -82,12 +109,14 @@ If-Match: "revision-7"
 
 After a 412 response, read the item again before deciding whether to apply the edit. After an uncertain creation, get the original UUID or repeat the exact original POST payload. A failed read does not establish that creation failed. Health returns a health representation with 503 when its worker fails; database unavailability returns a 503 Problem. Both representations are declared in OpenAPI.
 
-Lists use opaque query-scoped cursors and bounded page sizes. Cursors are not snapshots: concurrent changes can move items, so clients deduplicate UUIDs. The default queue view includes queued items and the latest changed/failed item for each chat; `state=all` retains every outcome. Re-enrolling a chat removes its earlier warning from the default view without deleting history.
+Lists use opaque query-scoped cursors and bounded page sizes. Cursors are not snapshots: concurrent changes can move items, so clients deduplicate UUIDs. The default queue view includes pending and stale entries; `state=all` retains every outcome. Stale warnings can be dismissed without deleting history. Attempts have no public read or mutation endpoints. Clients store their own refresh/check time.
 
 ## Installation and migration
 
 The backend and menu have separate launchd registrations. The backend replaces both the old scheduled worker and HTTP process; setup retires the old writer before importing its queue. Release and Dev use independent databases, settings, services, logs, and ports.
 
-On first start, the database imports the adjacent `resume-queue.json` transactionally and leaves it untouched for recovery. UUIDs, anchors, instructions, and complete history survive. Old in-flight attempts become expired deliveries; held entries become changed items. Partial historical records are retained verbatim in database metadata because they lack dispatch anchors. Pause settings are ignored. A durable import marker prevents replay on restart. Invalid active data aborts import and rolls back rather than starting with an empty queue.
+Before serving requests, the composition root initializes the schema and invokes `LegacyImporter` for an adjacent `resume-queue.json`. The importer decodes JSON into current `QueueEntry` values, reconciles them against current work, and calls the atomic batch operation. It preserves UUIDs, exact instructions, both supported conversation identities, and complete entry history. Recorded acceptance imports as sent; uncertain work is checked again before sending. Pause settings are ignored.
 
-Older installation migration retains its recovery journal and immutable source snapshots. Portable conversion produces normalized import records directly; the platform coordinator does not stage an operational JSON queue. Import into an existing database preserves current SQLite work, keeps conflicting older queued work as cancelled history, and never reactivates an existing UUID. Schema version 2 upgrades the prototype SQLite schema atomically while preserving queue and delivery records. Downgrades do not export new SQLite state to the old JSON file; back up Application Support before changing data formats. See [source installation modes](INSTALL.md) for direct and registered service data locations.
+The original JSON remains unchanged and retains partial history and historical attempt details that are no longer part of current storage. Immutable installation snapshots and the recovery journal protect retries. A durable import marker prevents reactivation on restart; an existing UUID is never overwritten. Malformed active records abort import while preserving source files and the initialized schema.
+
+Older-installation migration uses the same importer and storage backup service. Current work wins over conflicting older enrollment; older records remain cancelled history. Schema migrations only transform database representation. They contain no Codex calls, JSON-file import, installation decisions, or runtime compatibility branches. Downgrades do not export SQLite state back to JSON. See [installation modes](INSTALL.md) for data locations.

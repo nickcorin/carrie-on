@@ -17,7 +17,8 @@ Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix socket
 
 | Component | Responsibility |
 | --- | --- |
-| `src/carrie_on/queue.py`, `storage.py` | Domain records, SQLite transactions, claims, and delivery leases |
+| `src/carrie_on/queue.py`, `ports.py` | Domain behavior and application-owned storage protocols |
+| `src/carrie_on/storage/` | Declarative migrations, private connections, and atomic entry/attempt queries |
 | `src/carrie_on/application.py`, `dispatch.py` | Enrollment, observations, readiness, and dispatch |
 | `src/carrie_on/codex/` | Read-only app-server calls, validated snapshots, and desktop-owned dispatch |
 | `src/carrie_on/cli.py` | Typer HTTP client and explicit service commands |
@@ -28,7 +29,7 @@ Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix socket
 | `tools/` | Build, release, package acceptance, artwork, and OpenAPI export |
 | `tests/` | Python and Swift behavior tests plus isolated visual fixtures |
 
-Keep database writes inside `QueueStore` transactions and external calls outside them. Every send requires an unexpired delivery lease and fresh Codex checks. Preserve original creation input for idempotent retries; edits require current revisions. Clients use HTTP exclusively. Read the [architecture](ARCHITECTURE.md) and [feature contracts](features/index.md) before changing these boundaries.
+Keep all database concepts inside `storage/`; application consumers depend only on `ports.py`. `SqliteQueueStorage` owns both entry and attempt tables and encapsulates their atomic queries. Domain rules belong on `QueueEntry`; external calls occur outside storage operations. Every send requires a freshly created, unexpired attempt and fresh Codex checks. Preserve original creation input for idempotent retries; edits require current revisions. Clients use HTTP exclusively. Add ordered SQL files under `storage/migrations/` for schema changes; never edit a migration after release. Yoyo applies pending files at startup. Runtime queries target only the current schema. JSON imports and installation reconciliation belong outside storage. Read the [architecture](ARCHITECTURE.md) and [feature contracts](features/index.md) before changing these boundaries.
 
 `just setup` installs the `src` package in editable mode. Run tools as modules, such as `python -m tools.build_bundle`, and tests with `python -m unittest discover -v`. Regenerate `openapi.json` with `python -m tools.export_openapi` after contract changes; `just api-check` detects drift. The [verification matrix](features/verification.md) links retained behavior to its automated and manual checks.
 

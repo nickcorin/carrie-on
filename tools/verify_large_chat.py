@@ -1,125 +1,115 @@
-#!/usr/bin/env python3
-"""Compare released and current CLIs against the same oversized desktop history.
+"""Verify bounded queue dispatch with an oversized desktop history, entirely locally.
 
-Uses a real framed Unix socket and a fake Codex executable with compact SDK
-responses. No installed app, actual conversation, or production queue is used.
-The fixture includes a 33 MiB historical user message, preserving the latest
-message/turn anchor. The baseline source comes from the local v0.5.6 Git tag.
+Exercise HTTP enrollment, JSON import, worker dispatch, SDK subprocess reads,
+framed desktop IPC, SQLite persistence, and restart against synthetic peers.
+No installed app, real conversation, or production queue is accessed.
 """
 
-import argparse
-import copy
 import json
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
+from dataclasses import asdict
+from uuid import UUID, uuid4
 
-from test_desktop_protocol import DesktopProtocol
-from test_sdk_protocol import SDKProtocol
-
-
-ROOT = Path(__file__).resolve().parent
+from carrie_on.legacy import LegacyEntry, LegacyImporter
+from tests.fixtures import CHAT_ID
+from tests.test_composed_service import ComposedService
 
 
-def command(source):
-    """Run a source checkout with this interpreter, or an already bundled CLI."""
-    return [sys.executable, str(source / "carrie_on.py")] if source.is_dir() else [str(source)]
+class LargeHistoryFixture(ComposedService):
+    def setUp(self):
+        self.snapshot_requests = 0
+        self.desktop_history = {"text": "x" * (33 * 1024 * 1024)}
+        super().setUp()
 
-
-def run_cli(source, codex, state, arguments, *, large):
-    fixture = DesktopProtocol()
-    fixture.setUp()
-    fixture.allow_snapshot_disconnect = True
-    if large:
-        fixture.snapshot_data["turnHistory"]["history"]["entitiesByKey"]["earlier"] = {
-            "turnId": "older-turn", "status": "completed",
-            "params": {"clientUserMessageId": "older-message",
-                       "input": [{"type": "text", "text": "x" * (33 * 1024 * 1024)}]},
-        }
-    # Desktop and SDK expose different IDs for the same latest accepted turn.
-    fixture.snapshot_data["turnHistory"]["history"]["entitiesByKey"]["latest"]["turnId"] = "turn-a"
-    fixture.worker.start()
-    try:
-        result = subprocess.run(
-            [*command(source), "--state", str(state),
-             "--codex", str(codex), "--socket", str(fixture.path), "--json", *arguments],
-            cwd=ROOT, capture_output=True, text=True, timeout=20,
+    def send_history(self, connection):
+        self.snapshot_requests += 1
+        self.send(
+            connection,
+            {
+                "type": "broadcast",
+                "method": "thread-stream-state-changed",
+                "version": 11,
+                "params": {
+                    "conversationId": CHAT_ID,
+                    "change": {"type": "snapshot", "conversationState": self.desktop_history},
+                },
+            },
         )
-        fixture.finish()
-        return {"exit_code": result.returncode,
-                "result": json.loads(result.stdout) if result.returncode == 0 else result.stderr.strip(),
-                "snapshot_requests": fixture.snapshot_requests, "snapshot_bytes": fixture.snapshot_bytes,
-                "desktop_sends": len(fixture.requests)}, json.loads(state.read_text()) if state.exists() else None
-    finally:
-        fixture.doCleanups()
 
 
-def lower_reset_baselines(state_path):
-    """Subtract a second from each saved reset time."""
-    data = json.loads(state_path.read_text())
-    for entry in data["entries"]:
-        entry["reset_windows"] = {name: reset - 1 for name, reset in entry["reset_windows"].items()}
-    state_path.write_text(json.dumps(data))
-
-
-def verify(current=ROOT):
-    sdk = SDKProtocol()
-    sdk.setUp()
-    try:
-        sdk.fixture("quota")
-        text = sdk.executable.read_text().replace('import json, sys', 'import json, sys, time')
-        sdk.executable.write_text(text.replace('"resetsAt":200', '"resetsAt":int(time.time())+3600'))
-        with tempfile.TemporaryDirectory(prefix="carrie-large-chat-") as directory:
-            directory = Path(directory)
-            baseline = directory / "v0.5.6"
-            baseline.mkdir()
-            archive = subprocess.check_output(["git", "archive", "v0.5.6"], cwd=ROOT)
-            subprocess.run(["tar", "-x", "-C", str(baseline)], input=archive, check=True)
-            state = directory / "queue.json"
-            report = {"baseline_commit": subprocess.check_output(
-                ["git", "rev-parse", "v0.5.6^{commit}"], cwd=ROOT, text=True).strip()}
-            report["released_enrollment"], _ = run_cli(baseline, sdk.executable, state, ["queue", "Finish feature"], large=False)
-            assert report["released_enrollment"]["exit_code"] == 0, report
-            lower_reset_baselines(state)
-            report["released_large_chat_tick"], failed = run_cli(baseline, sdk.executable, state, ["tick"], large=True)
-            assert failed["entries"][0]["reactivation_error"] == "Invalid or oversized Codex desktop frame", report
-            original = copy.deepcopy(failed)
-            sdk.request_log.write_text("")
-            report["existing_entry_after_upgrade"], upgraded = run_cli(current, sdk.executable, state, ["tick"], large=True)
-            report["migration_sdk_reads"] = [json.loads(line) for line in sdk.request_log.read_text().splitlines()
-                                             if json.loads(line)["method"] in {"thread/turns/list", "thread/items/list"}]
-            report["existing_entry_outcome"] = (upgraded["history"][-1]["outcome"] if upgraded["history"]
-                                                 else upgraded["entries"][0]["reactivation_error"])
-            report["same_entry_id_preserved"] = (original["entries"][0]["id"] ==
-                (upgraded["history"][-1]["id"] if upgraded["history"] else upgraded["entries"][0]["id"]))
-            assert report["existing_entry_outcome"] == "resumed", report
-            assert report["same_entry_id_preserved"], report
-            assert report["existing_entry_after_upgrade"]["desktop_sends"] == 1, report
-            assert report["existing_entry_after_upgrade"]["snapshot_requests"] == 0, report
-            assert upgraded["history"][0]["anchor_turn_id"] == "turn-a", report
-            assert upgraded["history"][0]["prompt"] == original["entries"][0]["prompt"], report
-            retry = subprocess.run(
-                [*command(current), "--state", str(state), "--json", "tick"],
-                cwd=ROOT, capture_output=True, text=True, check=True, timeout=10,
+def verify():
+    reports = []
+    for imported in (False, True):
+        fixture = LargeHistoryFixture()
+        try:
+            fixture.setUp()
+            if imported:
+                entry = LegacyEntry(
+                    id=str(uuid4()),
+                    thread_id=CHAT_ID,
+                    title="Fixture task",
+                    account_id="account-a",
+                    limit_id="codex",
+                    anchor_message_id="original",
+                    model="model-a",
+                    prompt="Finish café tests\nKeep exact text.\n",
+                    reset_windows={"primary": 100},
+                    enrolled_while_busy=False,
+                    state="sending",
+                    attempted_at=50,
+                )
+                source = fixture.root / "resume-queue.json"
+                source.write_text(
+                    json.dumps({"version": 2, "entries": [asdict(entry)], "history": []})
+                )
+                LegacyImporter(fixture.store).import_file(source, "large-chat")
+                fixture.state["usage"]["ordinaryUsageAllowed"] = True
+                fixture.state["usage"]["rateLimitsByLimitId"]["codex"]["primary"]["usedPercent"] = 0
+                fixture.save_state()
+                fixture.app.state.worker.wakeup.set()
+                entry_id, instruction = entry.id, entry.prompt
+            else:
+                entry_id, instruction = fixture.enroll_and_reset()
+            fixture.wait_for(
+                lambda: fixture.http.get(f"queue/{entry_id}").json()["state"] == "sent"
             )
-            report["existing_entry_fresh_worker_check"] = json.loads(retry.stdout)
-            assert report["existing_entry_fresh_worker_check"] == {"status":"waiting", "due":0}, report
-            new_state = directory / "new-queue.json"
-            report["new_enrollment_large_chat"], _ = run_cli(current, sdk.executable, new_state, ["queue", "Finish feature"], large=True)
-            assert report["new_enrollment_large_chat"]["exit_code"] == 0, report
-            lower_reset_baselines(new_state)
-            report["new_entry_large_chat_tick"], fresh = run_cli(current, sdk.executable, new_state, ["tick"], large=True)
-            assert fresh["history"][0]["outcome"] == "resumed", report
-            assert report["new_entry_large_chat_tick"]["desktop_sends"] == 1, report
-            assert report["new_entry_large_chat_tick"]["snapshot_requests"] == 0, report
-            return report
-    finally:
-        sdk.doCleanups()
+            fixture.stop_server()
+            fixture.start_server()
+            assert fixture.store.get_entry(UUID(entry_id)).state == "sent"
+            assert len(fixture.sends) == 1
+            assert fixture.sends[0]["turnStart"]["request"]["input"][0]["text"] == instruction
+            requests = [
+                json.loads(line)
+                for line in fixture.state_path.with_suffix(".requests.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            assert all(
+                r["params"]["includeTurns"] is False
+                for r in requests
+                if r["method"] == "thread/read"
+            )
+            assert all(
+                r["params"]["limit"] == 1 and r["params"]["itemsView"] == "notLoaded"
+                for r in requests
+                if r["method"] == "thread/turns/list"
+            )
+            largest = max(r["reply_bytes"] for r in requests)
+            assert largest < 10_000
+            assert fixture.snapshot_requests == 0
+            reports.append(
+                {
+                    "imported": imported,
+                    "entry_id": entry_id,
+                    "sends": 1,
+                    "desktop_history_bytes": len(json.dumps(fixture.desktop_history)),
+                    "largest_sdk_reply_bytes": largest,
+                    "restart_preserved_sent": True,
+                }
+            )
+        finally:
+            fixture.doCleanups()
+    return reports
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--current-cli", type=Path, default=ROOT,
-                        help="Current source checkout or extracted Dev CLI to verify")
-    print(json.dumps(verify(parser.parse_args().current_cli), indent=2))
+    print(json.dumps(verify(), indent=2))

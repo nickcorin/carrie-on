@@ -32,10 +32,10 @@ sys.frozen = True
 sys._MEIPASS = sys.argv[1]
 import argparse, json, plistlib
 from carrie_on.macos import runtime as app_runtime, lifecycle as app_lifecycle, installation as bundle_install
-from carrie_on.storage import QueueStore
+from carrie_on.storage import SqliteStorageMaintenance
 runtime = app_runtime.Runtime.current()
 runtime.data.mkdir(parents=True)
-QueueStore(runtime.state).initialize()
+SqliteStorageMaintenance(runtime.state).initialize()
 settings = bundle_install.Settings.load(runtime, bundle_install.SettingsOverrides(codex="/bin/echo"))
 (runtime.data / "settings.json").write_text(json.dumps({"port": settings.port}))
 bundle_install.install_service(runtime, bundle_install.SettingsOverrides(codex="/bin/echo"), start=False)

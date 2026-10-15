@@ -114,140 +114,6 @@
         "title": "ConnectionResponse",
         "type": "object"
       },
-      "DeliveryPage": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/DeliveryResponse"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Cursor"
-          }
-        },
-        "required": [
-          "items",
-          "next_cursor"
-        ],
-        "title": "DeliveryPage",
-        "type": "object"
-      },
-      "DeliveryResponse": {
-        "properties": {
-          "finished_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Finished At"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "instruction": {
-            "title": "Instruction",
-            "type": "string"
-          },
-          "lease_expires_at": {
-            "format": "date-time",
-            "title": "Lease Expires At",
-            "type": "string"
-          },
-          "outcome": {
-            "anyOf": [
-              {
-                "enum": [
-                  "sent",
-                  "changed",
-                  "deferred",
-                  "failed",
-                  "expired"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Outcome"
-          },
-          "queue_item_id": {
-            "format": "uuid",
-            "title": "Queue Item Id",
-            "type": "string"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "receipt": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Receipt"
-          },
-          "sending_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sending At"
-          },
-          "started_at": {
-            "format": "date-time",
-            "title": "Started At",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "queue_item_id",
-          "instruction",
-          "started_at",
-          "lease_expires_at",
-          "sending_at",
-          "finished_at",
-          "outcome",
-          "reason",
-          "receipt"
-        ],
-        "title": "DeliveryResponse",
-        "type": "object"
-      },
       "DiagnosticResponse": {
         "properties": {
           "account_id": {
@@ -350,10 +216,6 @@
             ],
             "title": "Build Id"
           },
-          "schema_version": {
-            "title": "Schema Version",
-            "type": "integer"
-          },
           "version": {
             "title": "Version",
             "type": "string"
@@ -377,7 +239,6 @@
         "required": [
           "version",
           "build_id",
-          "schema_version",
           "worker_healthy",
           "worker_error"
         ],
@@ -406,51 +267,50 @@
         "title": "Instruction",
         "type": "object"
       },
-      "QueueItemResponse": {
+      "QueueEntryResponse": {
         "properties": {
           "account_id": {
             "title": "Account Id",
             "type": "string"
           },
           "anchor_message_id": {
-            "title": "Anchor Message Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor Message Id"
+          },
+          "anchor_turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor Turn Id"
           },
           "chat_id": {
             "format": "uuid",
             "title": "Chat Id",
             "type": "string"
           },
-          "deferrals": {
-            "title": "Deferrals",
-            "type": "integer"
-          },
-          "delivery_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Delivery Id"
+          "dispatching": {
+            "title": "Dispatching",
+            "type": "boolean"
           },
           "enrolled_while_busy": {
             "title": "Enrolled While Busy",
             "type": "boolean"
           },
           "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
+            "title": "Error",
+            "type": "string"
           },
           "finished_at": {
             "anyOf": [
@@ -473,18 +333,6 @@
             "title": "Instruction",
             "type": "string"
           },
-          "lease_expires_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lease Expires At"
-          },
           "limit_id": {
             "title": "Limit Id",
             "type": "string"
@@ -498,10 +346,6 @@
             "title": "Queued At",
             "type": "string"
           },
-          "reason": {
-            "title": "Reason",
-            "type": "string"
-          },
           "reset_windows": {
             "additionalProperties": {
               "type": "integer"
@@ -513,25 +357,13 @@
             "title": "Revision",
             "type": "integer"
           },
-          "sending_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sending At"
-          },
           "state": {
             "enum": [
               "queued",
-              "sent",
-              "changed",
+              "failed",
+              "stale",
               "cancelled",
-              "failed"
+              "sent"
             ],
             "title": "State",
             "type": "string"
@@ -553,30 +385,27 @@
           "account_id",
           "limit_id",
           "anchor_message_id",
+          "anchor_turn_id",
           "model",
           "instruction",
           "reset_windows",
           "enrolled_while_busy",
           "state",
-          "reason",
           "error",
-          "deferrals",
           "revision",
           "queued_at",
           "updated_at",
           "finished_at",
-          "delivery_id",
-          "lease_expires_at",
-          "sending_at"
+          "dispatching"
         ],
-        "title": "QueueItemResponse",
+        "title": "QueueEntryResponse",
         "type": "object"
       },
       "QueuePage": {
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/QueueItemResponse"
+              "$ref": "#/components/schemas/QueueEntryResponse"
             },
             "title": "Items",
             "type": "array"
@@ -606,16 +435,25 @@
             "title": "Count",
             "type": "integer"
           },
-          "last_check": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Check"
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "propertyNames": {
+              "enum": [
+                "queued",
+                "failed",
+                "stale",
+                "cancelled",
+                "sent"
+              ]
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "dispatching": {
+            "title": "Dispatching",
+            "type": "integer"
           },
           "needs_attention": {
             "title": "Needs Attention",
@@ -625,7 +463,8 @@
         "required": [
           "count",
           "needs_attention",
-          "last_check"
+          "counts",
+          "dispatching"
         ],
         "title": "QueueSummary",
         "type": "object"
@@ -716,8 +555,8 @@
             "enum": [
               "ready",
               "sent",
-              "changed",
-              "deferred"
+              "stale",
+              "failed"
             ],
             "title": "Outcome",
             "type": "string"
@@ -933,7 +772,7 @@
   "info": {
     "description": "Local queue service. Send X-Carrie-On: 1 on every request. Create with a client UUID; replay the same original payload after an uncertain response. Read an item's ETag before editing with If-Match. See ARCHITECTURE.md for examples.",
     "title": "Carrie On",
-    "version": "0.5.6"
+    "version": "0.5.7"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -3014,7 +2853,7 @@
                 "all",
                 "queued",
                 "sent",
-                "changed",
+                "stale",
                 "cancelled",
                 "failed"
               ],
@@ -3457,7 +3296,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/QueueItemResponse"
+                  "$ref": "#/components/schemas/QueueEntryResponse"
                 }
               }
             },
@@ -3482,7 +3321,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/QueueItemResponse"
+                  "$ref": "#/components/schemas/QueueEntryResponse"
                 }
               }
             },
@@ -4741,7 +4580,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/QueueItemResponse"
+                  "$ref": "#/components/schemas/QueueEntryResponse"
                 }
               }
             },
@@ -5171,7 +5010,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/QueueItemResponse"
+                  "$ref": "#/components/schemas/QueueEntryResponse"
                 }
               }
             },
@@ -5592,7 +5431,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/QueueItemResponse"
+                  "$ref": "#/components/schemas/QueueEntryResponse"
                 }
               }
             },
@@ -5960,437 +5799,6 @@
           }
         },
         "summary": "Cancel"
-      }
-    },
-    "/api/v1/queue/{item_id}/deliveries": {
-      "get": {
-        "operationId": "deliveries_api_v1_queue__item_id__deliveries_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "item_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Item Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 50,
-              "maximum": 100,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 16384,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Cursor"
-            }
-          },
-          {
-            "description": "Required local-client marker; send 1.",
-            "in": "header",
-            "name": "x-carrie-on",
-            "required": true,
-            "schema": {
-              "const": "1",
-              "description": "Required local-client marker; send 1.",
-              "title": "X-Carrie-On",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeliveryPage"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "403": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "title": "Code",
-                      "type": "string"
-                    },
-                    "detail": {
-                      "title": "Detail",
-                      "type": "string"
-                    },
-                    "status": {
-                      "title": "Status",
-                      "type": "integer"
-                    },
-                    "title": {
-                      "title": "Title",
-                      "type": "string"
-                    },
-                    "type": {
-                      "title": "Type",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "title",
-                    "status",
-                    "detail",
-                    "code"
-                  ],
-                  "title": "Problem",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "404": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "title": "Code",
-                      "type": "string"
-                    },
-                    "detail": {
-                      "title": "Detail",
-                      "type": "string"
-                    },
-                    "status": {
-                      "title": "Status",
-                      "type": "integer"
-                    },
-                    "title": {
-                      "title": "Title",
-                      "type": "string"
-                    },
-                    "type": {
-                      "title": "Type",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "title",
-                    "status",
-                    "detail",
-                    "code"
-                  ],
-                  "title": "Problem",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Not Found"
-          },
-          "409": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "title": "Code",
-                      "type": "string"
-                    },
-                    "detail": {
-                      "title": "Detail",
-                      "type": "string"
-                    },
-                    "status": {
-                      "title": "Status",
-                      "type": "integer"
-                    },
-                    "title": {
-                      "title": "Title",
-                      "type": "string"
-                    },
-                    "type": {
-                      "title": "Type",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "title",
-                    "status",
-                    "detail",
-                    "code"
-                  ],
-                  "title": "Problem",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Conflict"
-          },
-          "412": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "title": "Code",
-                      "type": "string"
-                    },
-                    "detail": {
-                      "title": "Detail",
-                      "type": "string"
-                    },
-                    "status": {
-                      "title": "Status",
-                      "type": "integer"
-                    },
-                    "title": {
-                      "title": "Title",
-                      "type": "string"
-                    },
-                    "type": {
-                      "title": "Type",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "title",
-                    "status",
-                    "detail",
-                    "code"
-                  ],
-                  "title": "Problem",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Precondition Failed"
-          },
-          "413": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "title": "Code",
-                      "type": "string"
-                    },
-                    "detail": {
-                      "title": "Detail",
-                      "type": "string"
-                    },
-                    "status": {
-                      "title": "Status",
-                      "type": "integer"
-                    },
-                    "title": {
-                      "title": "Title",
-                      "type": "string"
-                    },
-                    "type": {
-                      "title": "Type",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "title",
-                    "status",
-                    "detail",
-                    "code"
-                  ],
-                  "title": "Problem",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Content Too Large"
-          },
-          "415": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "title": "Code",
-                      "type": "string"
-                    },
-                    "detail": {
-                      "title": "Detail",
-                      "type": "string"
-                    },
-                    "status": {
-                      "title": "Status",
-                      "type": "integer"
-                    },
-                    "title": {
-                      "title": "Title",
-                      "type": "string"
-                    },
-                    "type": {
-                      "title": "Type",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "title",
-                    "status",
-                    "detail",
-                    "code"
-                  ],
-                  "title": "Problem",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Unsupported Media Type"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "title": "Code",
-                      "type": "string"
-                    },
-                    "detail": {
-                      "title": "Detail",
-                      "type": "string"
-                    },
-                    "status": {
-                      "title": "Status",
-                      "type": "integer"
-                    },
-                    "title": {
-                      "title": "Title",
-                      "type": "string"
-                    },
-                    "type": {
-                      "title": "Type",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "title",
-                    "status",
-                    "detail",
-                    "code"
-                  ],
-                  "title": "Problem",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Unprocessable Content"
-          },
-          "428": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "title": "Code",
-                      "type": "string"
-                    },
-                    "detail": {
-                      "title": "Detail",
-                      "type": "string"
-                    },
-                    "status": {
-                      "title": "Status",
-                      "type": "integer"
-                    },
-                    "title": {
-                      "title": "Title",
-                      "type": "string"
-                    },
-                    "type": {
-                      "title": "Type",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "title",
-                    "status",
-                    "detail",
-                    "code"
-                  ],
-                  "title": "Problem",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Precondition Required"
-          },
-          "503": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "title": "Code",
-                      "type": "string"
-                    },
-                    "detail": {
-                      "title": "Detail",
-                      "type": "string"
-                    },
-                    "status": {
-                      "title": "Status",
-                      "type": "integer"
-                    },
-                    "title": {
-                      "title": "Title",
-                      "type": "string"
-                    },
-                    "type": {
-                      "title": "Type",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "title",
-                    "status",
-                    "detail",
-                    "code"
-                  ],
-                  "title": "Problem",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "Deliveries"
       }
     },
     "/api/v1/status": {
