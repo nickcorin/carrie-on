@@ -62,7 +62,7 @@ alongside Carrie On. To update it later, open Settings and choose
 **Update to &lt;short hash&gt;**. This rebuilds the native interface, bundled Python,
 and backend while displaying the build output.
 
-The action runs `build_bundle.py --profile dev --prepare-app`. Tests and bundle
+The action runs `python -m tools.build_bundle --profile dev --prepare-app`. Tests and bundle
 checks must pass before it replaces the app and restarts Dev's services. It
 preserves the queue, settings, and login preference. A build failure leaves the
 current app running and keeps the error output open. This command does not
@@ -97,6 +97,8 @@ validated release stable. There is no rolling beta feed. The existing in-app
 updater offers stable releases only, so beta installation is manual. Dev never
 installs a production update over itself.
 
+Source services preserve the virtual-environment interpreter used for registration and native rebuilds; they do not depend on an activated shell. Registered source backends store data in the selected profile’s Application Support directory. Direct source servers default to checkout-local data. See [source installation and migration](INSTALL.md#update-a-source-installation) before switching between them.
+
 ## Publish a versioned release
 
 Update `VERSION` and add exactly one nonempty `## MAJOR.MINOR.PATCH` section to `CHANGELOG.md`. Commit all source changes with signed Conventional Commits, then push the reviewed commits to `master`. A new published build always gets a new version.
@@ -129,7 +131,7 @@ Publishing requires the matching source, tag, packages, and an existing draft. N
 
 Run `just --list` to discover recipes and `just --dry-run release` to inspect the commands without executing them. Recipe dependencies handle ordering and run once per invocation. Paths are quoted and extra `package` arguments are forwarded unchanged. `just` stops at the first failed command. A failed check prevents later tag pushes and release creation.
 
-The underlying `python3 release.py [--tag TAG]` prints Markdown notes. Its validation flags check the following conditions:
+The underlying `python -m tools.release [--tag TAG]` prints Markdown notes. Its validation flags check the following conditions:
 
 - `--check-source` requires a clean Git commit.
 - `--check-assets DIRECTORY` verifies that package metadata and checksums match the source and version.

@@ -3,6 +3,8 @@ __pycache__/
 .playwright-mcp/
 resume-queue.json
 resume-queue.lock
+queue.sqlite3*
+src/*.egg-info/
 .build-venv/
 .build-python/
 .build-cache/
@@ -18,7 +20,7 @@ dist/
 .env
 .env.*
 !.env.example
-verification.md
+/verification.md
 .resume-queue-*
 
 # Local artwork explorations

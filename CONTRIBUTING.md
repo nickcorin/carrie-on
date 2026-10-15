@@ -1,6 +1,6 @@
 # Contributing
 
-Use an Apple Silicon Mac with Apple's command-line tools, just 1.58 or later, uv, Node.js, and Go. Python dependencies, including the official Codex SDK, are pinned in `requirements.txt`; packaging dependencies are pinned in `requirements-build.txt`. See [build setup](RELEASING.md#toolchain).
+Use an Apple Silicon Mac with Apple's command-line tools, just 1.58 or later, uv, Node.js, and Go. The backend uses FastAPI, SQLite, Typer, and the official Codex SDK. Runtime and build dependencies are pinned separately in `requirements.txt` and `requirements-build.txt`. See [build setup](RELEASING.md#toolchain).
 
 ```sh
 git clone https://github.com/nickcorin/carrie-on.git
@@ -17,39 +17,22 @@ Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix socket
 
 | Component | Responsibility |
 | --- | --- |
-| `resume_queue.py` | Queue persistence, enrollment anchors, quota eligibility, and uncertain-send recovery |
-| `codex_bridge.py` | Public Codex SDK reads and desktop-owned continuation over IPC |
-| `verify_desktop.py` | Desktop history observation for integration tests |
-| `carrie_on.py` | CLI and scheduled worker |
-| `carrie_on_ui.py` | Loopback HTTP API for the native card |
+| `src/carrie_on/queue.py`, `storage.py` | Domain records, SQLite transactions, claims, and delivery leases |
+| `src/carrie_on/application.py`, `dispatch.py` | Enrollment, observations, readiness, and dispatch |
+| `src/carrie_on/codex/` | Read-only app-server calls, validated snapshots, and desktop-owned dispatch |
+| `src/carrie_on/cli.py` | Typer HTTP client and explicit service commands |
+| `src/carrie_on/api.py`, `server.py` | HTTP contract and separate executable composition |
+| `src/carrie_on/legacy.py` | Retired queue decoding, merge policy, and normalized imports |
 | `menubar/` | Native AppKit menu, chat picker, setup, and lifecycle |
-| `app_runtime.py`, `app_lifecycle.py`, `bundle_install.py` | Runtime paths, login services, and installation |
-| `legacy_migration.py` | Import of older bundled installations, recovery copies, and old service removal |
-| `app_update.py`, `menubar/AppUpdate.swift` | GitHub release checks, verified staging, atomic replacement, and restart |
-| `build_bundle.py`, `release.py`, `verify_bundle.py` | Release metadata, packaging, and archive acceptance |
-| `disk_image.py`, `assets/DMGBackground.swift` | Drag-to-Applications disk image, installer artwork, and mounted-image verification |
+| `src/carrie_on/macos/` | Platform installation, migration, lifecycle, updates, and compatibility |
+| `tools/` | Build, release, package acceptance, artwork, and OpenAPI export |
+| `tests/` | Python and Swift behavior tests plus isolated visual fixtures |
 
-Keep queue mutations behind `locked_queue`. Persist sending state before dispatch and never turn a missing reply into an automatic retry. The CLI and native card share that contract. Changes to installed service identities and data paths require explicit migration guidance. More detail is in the [feature contracts](features/index.md).
+Keep database writes inside `QueueStore` transactions and external calls outside them. Every send requires an unexpired delivery lease and fresh Codex checks. Preserve original creation input for idempotent retries; edits require current revisions. Clients use HTTP exclusively. Read the [architecture](ARCHITECTURE.md) and [feature contracts](features/index.md) before changing these boundaries.
 
-`CodexClient.connect()` owns the SDK session. Its methods return chat observations, summaries, quota data, and legacy turn matches. `DesktopClient` owns the local socket and exposes settings reads, chat opening, and continuation. `resume_queue.py` owns queue state and imports `Chat` from `codex_bridge.py`. Production code does not import the history observer.
+`just setup` installs the `src` package in editable mode. Run tools as modules, such as `python -m tools.build_bundle`, and tests with `python -m unittest discover -v`. Regenerate `openapi.json` with `python -m tools.export_openapi` after contract changes; `just api-check` detects drift. The [verification matrix](features/verification.md) links retained behavior to its automated and manual checks.
 
-Generate the client reference with `.venv/bin/python -m pydoc -w codex_bridge`. The command writes `codex_bridge.html` in the current directory.
-
-With an authenticated Codex CLI on `PATH`, this read-only example prints the IDs and titles of all unarchived local chats:
-
-```python
-from codex_bridge import CodexClient
-
-with CodexClient.connect() as client:
-	cursor = None
-	while True:
-		page = client.list_chats(cursor=cursor)
-		for chat in page["chats"]:
-			print(chat["id"], chat["title"])
-		cursor = page["next_cursor"]
-		if cursor is None:
-			break
-```
+`just lint-python` checks Ruff formatting and imports as well as correctness rules. `just typecheck` checks the shared Python contracts with mypy. Dependency tests prevent inner components from importing frameworks or platform configuration. `just reference` generates the Python interface reference at `build/reference/python/index.html` and native symbol graphs under `build/reference/native/`; inspect these after changing callable contracts.
 
 ## Changes
 

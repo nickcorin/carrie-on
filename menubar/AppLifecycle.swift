@@ -5,7 +5,7 @@ import Foundation
 
 struct LifecycleFiles {
     static let labels = Bundle.main.object(forInfoDictionaryKey: "CarrieOnServiceLabels") as? [String]
-        ?? ["com.nickcorin.carrieon", "com.nickcorin.carrieon.ui", "com.nickcorin.carrieon.menu"]
+        ?? ["com.nickcorin.carrieon.ui", "com.nickcorin.carrieon.menu"]
     static let dataDirectory = Bundle.main.object(forInfoDictionaryKey: "CarrieOnDataDirectory") as? String ?? "Carrie On"
     let home: URL
     var data: URL { home.appendingPathComponent("Library/Application Support/\(Self.dataDirectory)") }
@@ -21,7 +21,7 @@ struct LifecycleFiles {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    /// Reconcile all three login registrations without changing running services.
+    /// Reconcile login registrations without changing running services.
     /// Nil preserves the saved preference. Repeating repairs partial changes.
     func reconcile(launchAtLogin requested: Bool? = nil) throws -> Bool {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -76,13 +76,13 @@ enum LifecycleServices {
         return (process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 
-    /// Start or stop only Carrie On's worker and interface. The app exits itself.
+    /// Start or stop Carrie On's backend. The app exits itself.
     static func setRunning(_ running: Bool, files: LifecycleFiles,
                            run: ([String]) throws -> (Int32, String) = launchctl,
                            attempts: Int = 100,
                            pause: () -> Void = { Thread.sleep(forTimeInterval: 0.1) }) throws {
         let domain = "gui/\(getuid())"
-        for label in LifecycleFiles.labels.prefix(2) {
+        for label in LifecycleFiles.labels.dropLast() {
             let target = "\(domain)/\(label)"
             let loaded = try run(["print", target]).0 == 0
             if loaded == running { continue }
@@ -137,7 +137,7 @@ func lifecycleSelfTest() throws {
     }
     try LifecycleServices.setRunning(true, files: files, run: run)
     try LifecycleServices.setRunning(true, files: files, run: run)
-    guard loaded == Set(LifecycleFiles.labels.prefix(2)), launches == 2 else { fatalError("Manual launch duplicated services") }
+    guard loaded == Set(LifecycleFiles.labels.dropLast()), launches == 1 else { fatalError("Manual launch duplicated services") }
     try LifecycleServices.setRunning(false, files: files, run: run)
     try LifecycleServices.setRunning(false, files: files, run: run)
     guard loaded.isEmpty else { fatalError("Quit left background services running") }

@@ -53,7 +53,13 @@ If the replacement fails to start immediately, the updater restores the previous
 
 ### Update a source installation
 
-Update your Git checkout and rebuild. To switch from a source installation to the bundled app, uninstall the source installation's services using that version's instructions. Finish or cancel queued work before switching, or copy the project-local queue while all workers are stopped. Automatic migration applies only to bundled installations.
+Update your Git checkout, run `just setup`, and register its backend with `.venv/bin/carrie-on service install`. Registration uses `~/Library/Application Support/Carrie On`, including `queue.sqlite3`, `settings.json`, and `.runtime/` logs. It shares the release app’s service names and data, so choose either the source service or the release app as the owner of that installation. Prefer `just dev` for an independent development app.
+
+When registering a release source backend, the installer stops the retired worker and backend, takes a private copy of the checkout’s `resume-queue.json` in `Migration/source-checkout/resume-queue.json` under Application Support, and imports it transactionally. The original file and snapshot remain intact. Repeating registration does not reactivate completed work. Existing SQLite enrollments take precedence over an old JSON enrollment for the same chat. `--profile dev service install` uses the Dev namespace and does not adopt the release checkout queue.
+
+A directly launched `carrie-on-server serve` instead defaults to `queue.sqlite3` beside the checkout, with adjacent `settings.json` when present. It imports an adjacent legacy JSON queue on first start. Its output goes to the terminal. `--state /absolute/path/queue.sqlite3` selects another database and settings directory. These direct servers are separate from registered services; use a different port when running both.
+
+To switch from a registered source backend to the bundled release app, stop the source service and open the app; both use the same Application Support data. If you have only used a direct source server, stop it first and register the release source backend to migrate its legacy JSON. A direct source SQLite database is not merged automatically: finish or cancel its queued work before switching, or back up and move its entire data directory while all affected processes are stopped. Never overwrite an existing installation’s database to combine queues.
 
 ## Configuration and recovery
 
@@ -64,7 +70,7 @@ The bundled backend is `Carrie On.app/Contents/MacOS/carrie_on`. These examples 
 "$HOME/Applications/Carrie On.app/Contents/MacOS/carrie_on" setup --codex /absolute/path/to/codex
 "$HOME/Applications/Carrie On.app/Contents/MacOS/carrie_on" setup --socket /absolute/path/to/ipc.sock --codex-home /absolute/path/to/codex-home
 "$HOME/Applications/Carrie On.app/Contents/MacOS/carrie_on" doctor
-"$HOME/Applications/Carrie On.app/Contents/MacOS/carrie_on" list --history
+"$HOME/Applications/Carrie On.app/Contents/MacOS/carrie_on" queue list --history
 ```
 
 Setup options update only the specified settings. Reopen the menu after changing its port. To clear a custom socket or Codex home, set its value to `null` in `settings.json` and reopen. Setup reads `CODEX_HOME` from the environment only when no choice is saved. Later launches preserve the saved choice, including `null` for the default.
@@ -73,7 +79,9 @@ Run `doctor` to check sign-in and desktop connectivity without starting a model 
 
 If setup is interrupted, reopen the app or choose **Retry** in the error dialog to repair the worker and local API. A failure can leave services stopped until setup succeeds. For an occupied port, run setup with a free port and reopen.
 
-Logs are in `~/Library/Application Support/Carrie On/.runtime/`. The login jobs are `com.nickcorin.carrieon`, `com.nickcorin.carrieon.ui`, and `com.nickcorin.carrieon.menu`. macOS Background Items settings must allow these services. Advanced repair is available through `setup --repair`.
+Logs are in `~/Library/Application Support/Carrie On/.runtime/`, including `server.log` and `server-error.log`. The login jobs are `com.nickcorin.carrieon.ui` (backend and dispatch worker) and `com.nickcorin.carrieon.menu`. Setup retires the former standalone worker. macOS Background Items settings must allow these services. Advanced repair is available through `setup --repair`.
+
+Queue state and delivery history live in `queue.sqlite3`. First start imports the adjacent `resume-queue.json` once and retains it as a recovery copy. Pause is removed. Expired delivery leases recover interrupted sends through fresh Codex checks. Back up the whole data directory with the app stopped, or use SQLite's backup API while it runs; copying only an open database file can omit its WAL. Old releases cannot read new SQLite state. See [migration details](ARCHITECTURE.md#installation-and-migration).
 
 To uninstall, remove the login services before deleting the app:
 
@@ -81,7 +89,7 @@ To uninstall, remove the login services before deleting the app:
 "$HOME/Applications/Carrie On.app/Contents/MacOS/carrie_on" remove-installation --yes
 ```
 
-Then quit Carrie On and move it to Trash. Your settings, queue, history, and logs remain in Application Support. Delete that directory only if you also want to discard personal data. The source CLI's `uninstall` command removes only the worker.
+Then quit Carrie On and move it to Trash. Your settings, queue, history, and logs remain in Application Support. Delete that directory only if you also want to discard personal data. The CLI's `service uninstall` removes only the backend registration.
 
 ## Build and release
 
@@ -101,6 +109,6 @@ Before broader distribution, test Gatekeeper approval, first launch, login start
 
 ## Command reference
 
-`carrie_on setup [--codex PATH] [--socket PATH] [--codex-home PATH] [--port PORT] [--interval SECONDS] [--repair] [--no-start] [--json]` registers per-user services and saves settings. The default port is 8766, with allowed values from 1024 to 65535. The default interval is 60 seconds, with a minimum of 30. The bundled queue location is fixed. Worker commands accept `--state PATH` to inspect other queues.
+`carrie_on setup [--codex PATH] [--socket PATH] [--codex-home PATH] [--port PORT] [--interval SECONDS] [--repair] [--no-start] [--json]` registers per-user services and saves settings. The default port is 8766, with allowed values from 1024 to 65535. The default interval is 60 seconds, with a minimum of 30. The bundled queue location is fixed. An isolated server accepts `--state PATH`; clients select it with `--server URL`.
 
-`carrie_on remove-installation --yes` stops and removes all three login services, retaining the app and personal data. Setup commands return 0 on success, 1 for environment errors, 2 for argument errors, and 130 for interruption. `--json` returns structured setup success or failure on stdout. Ordinary failures use stderr. Worker `--version` and the app's Info.plist report `VERSION`.
+`carrie_on remove-installation --yes` stops and removes both current login services and any retired worker registration, retaining the app and personal data. Setup commands return 0 on success, 1 for environment errors, 2 for argument errors, and 130 for interruption. `--json` returns structured setup success or failure on stdout. Ordinary failures use stderr. CLI `--version` and the app's Info.plist report `VERSION`.
