@@ -1,4 +1,4 @@
-"""Synthetic Codex state; fixtures never contact a user conversation."""
+"""Provide synthetic Codex responses without contacting user chats."""
 
 import time
 from datetime import datetime, timezone
@@ -135,7 +135,6 @@ def queue_entry(**changes):
         anchor_message_id="original",
         model="model-a",
         instructions="Continue",
-        original_instructions="Continue",
         reset_windows={"primary": 100},
         enrolled_while_busy=False,
         queued_at=instant(50),

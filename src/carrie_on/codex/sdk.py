@@ -1,4 +1,7 @@
-"""Bounded, read-only Codex SDK access; no conversation history subscriptions."""
+"""Read Codex data through SDK calls with timeouts and page limits.
+
+The client does not subscribe to desktop history.
+"""
 
 import shutil
 import threading
@@ -10,7 +13,6 @@ from typing import TYPE_CHECKING, TypeVar
 from openai_codex.client import CodexClient, CodexConfig
 from openai_codex.errors import CodexError
 from openai_codex.generated.v2_all import (
-    CodexErrorInfoValue,
     GetAccountRateLimitsResponse,
     ThreadGoalGetResponse,
     ThreadGoalStatus,
@@ -38,7 +40,7 @@ T = TypeVar("T")
 
 
 class AppServer:
-    """Own an SDK session, bounded by a per-call timeout and optional overall deadline."""
+    """Manage an SDK session with a timeout for each call and an optional session deadline."""
 
     def __init__(self, executable="codex", timeout=30, deadline=None, codex_home=None):
         self.timeout, self.deadline = timeout, deadline
@@ -122,7 +124,7 @@ class AppServer:
         )
 
     def threads(self, search=None) -> tuple[ChatSummary, ...]:
-        """Read all matching catalog pages, rejecting repeated pagination cursors."""
+        """Read every matching catalog page and reject repeated cursors."""
         entries: list[ChatSummary] = []
         seen: set[str] = set()
         cursor = None
@@ -158,10 +160,11 @@ class AppServer:
         include_goal: bool = True,
         before_open: Callable[[], None] | None = None,
     ) -> Chat:
-        """Read a compact turn header, opening message identity, and desktop settings.
+        """Read the latest turn's metadata, opening message ID, and desktop settings.
 
-        No full turn is loaded. Missing completion evidence remains busy. Receipt
-        recovery pages older turn headers only when a particular send needs checking.
+        Keep the chat busy until Codex reports that the turn ended. Read older turn
+        metadata only when checking for a specified message. These requests do not
+        load the full turn history.
         """
         summary = self.read_chat(chat_id)
         settings = desktop.read_settings(chat_id, before_open=before_open)
@@ -209,11 +212,6 @@ class AppServer:
                     ThreadGoalStatus.blocked,
                 }
             ),
-            quota_failed=bool(
-                turn.error
-                and turn.error.codex_error_info
-                and turn.error.codex_error_info.root == CodexErrorInfoValue.usage_limit_exceeded
-            ),
             seen_message_ids=frozenset(seen),
         )
 
@@ -233,7 +231,7 @@ class AppServer:
         )
 
     def has_message(self, chat_id: str, message_id: str) -> bool:
-        """Find accepted send evidence through bounded header and opening-item pages."""
+        """Look for an accepted message in pages of turn metadata and opening messages."""
         cursor, seen = None, set()
         while True:
             page = self._turns(chat_id, cursor=cursor)

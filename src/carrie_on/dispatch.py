@@ -1,4 +1,4 @@
-"""Fresh observation and sending, with immutable, expiring delivery attempts."""
+"""Check current Codex state and send queued instructions under expiring delivery attempts."""
 
 import logging
 import threading
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class DispatchWorker:
-    """Send queued work and supervise the dispatch thread."""
+    """Run the dispatch thread and report any failure that stops it."""
 
     def __init__(
         self,
@@ -34,10 +34,11 @@ class DispatchWorker:
         self.thread = threading.Thread(target=self.run, name="queue-dispatch", daemon=True)
 
     def send(self) -> bool:
-        """Acquire the next entry, reconcile Codex state, then send if still eligible.
+        """Claim the next entry and check current Codex state before sending it.
 
-        Attempts expire without a completion write. A failed entry remains retryable;
-        a confirmed send or a conversation that has advanced is terminal.
+        Leave delivery attempts unchanged so they expire at their saved deadlines.
+        Failed entries can retry after expiry. Entries whose messages were accepted,
+        or whose chats have continued, leave the queue.
         """
         attempt = self.store.create_delivery_attempt()
         if attempt is None:
@@ -54,7 +55,7 @@ class DispatchWorker:
                 self.connections.app_server(deadline=deadline) as server,
                 self.connections.desktop(open_if_needed=True, deadline=deadline) as desktop,
             ):
-                decision = observe_eligibility(entry, server, desktop, self.clock())
+                decision = observe_eligibility(entry, server, desktop)
                 if decision.outcome == "ready":
                     if time.monotonic() >= deadline:
                         raise CodexUnavailable("Delivery attempt expired before sending")
@@ -85,7 +86,10 @@ class DispatchWorker:
             self.on_failure()
 
     def stop(self) -> None:
-        """Request shutdown; unfinished attempts expire on restart."""
+        """Request shutdown and wait up to three seconds for the dispatch thread.
+
+        Active delivery attempts keep their expiry times.
+        """
         self.stopping.set()
         self.wakeup.set()
         self.thread.join(timeout=3)

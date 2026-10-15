@@ -1,4 +1,4 @@
-"""Exercise the HTTP contract and retained application features with isolated state."""
+"""Test HTTP queue operations against isolated application state."""
 
 import base64
 import json
@@ -19,7 +19,6 @@ from carrie_on.codex.models import (
     ChatSummary,
     CodexProtocolError,
     CodexUnavailable,
-    UsageObservation,
     UsageSnapshot,
 )
 from carrie_on.dispatch import DispatchWorker
@@ -127,15 +126,33 @@ class ApiBehavior(unittest.TestCase):
         item = self.add(id=item_id).json()
         self.assertEqual(self.edit(item_id, "Changed", item["revision"]).status_code, 200)
         self.cancel(item_id)
-        with patch(
-            "carrie_on.codex.client.Desktop", side_effect=AssertionError("Replay contacted Codex")
+        restarted = create_application(
+            SqliteQueueStorage(self.path),
+            self.connections,
+            maintenance=SqliteStorageMaintenance(self.path),
+            run_worker=False,
+        )
+        with (
+            TestClient(
+                restarted, base_url="http://127.0.0.1:8766", headers={"X-Carrie-On": "1"}
+            ) as client,
+            patch(
+                "carrie_on.codex.client.Desktop",
+                side_effect=AssertionError("Replay contacted Codex"),
+            ),
         ):
-            response = self.add(id=item_id)
+            response = client.post(
+                "/api/v1/queue",
+                json={"id": item_id, "chat_id": CHAT_ID, "instruction": "Continue tests"},
+            )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             (response.json()["instruction"], response.json()["state"]), ("Changed", "cancelled")
         )
-        self.assertEqual(self.add(id=item_id, instruction="Different input").status_code, 409)
+        replay = self.add(id=item_id, instruction="Different input", limit_id="different")
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay.json()["instruction"], "Changed")
+        self.assertEqual(self.add(id=item_id, chat_id=str(uuid4())).status_code, 409)
 
     def test_duplicate_chat_and_stale_item_ids_cannot_change_replacement(self):
         first = self.add().json()
@@ -293,26 +310,23 @@ class ApiBehavior(unittest.TestCase):
             self.assertEqual(self.get("chats").status_code, 503)
         self.assertEqual(self.get("chats").status_code, 200)
 
-    def test_cached_usage_enrolls_without_starting_helper(self):
-        self.get("status")
-        with patch.object(LocalCodex, "usage", side_effect=AssertionError("Cache missed")):
+    def test_reset_before_enrollment_does_not_authorize_a_new_entry(self):
+        reset = int(time.time()) + 3600
+        with patch.object(
+            LocalCodex, "usage", return_value=UsageSnapshot.parse(usage(100, reset - 3600))
+        ):
+            self.get("status")
+        with patch.object(LocalCodex, "usage", return_value=UsageSnapshot.parse(usage(0, reset))):
             response = self.add()
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["account_id"], "account-a")
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.json()["reset_windows"], {"primary": reset})
+            self.assertEqual(self.get("queue/check").json()["items"][0]["outcome"], "failed")
+        with patch.object(
+            LocalCodex, "usage", return_value=UsageSnapshot.parse(usage(0, reset + 3600))
+        ):
+            self.assertEqual(self.get("queue/check").json()["items"][0]["outcome"], "ready")
 
-    def test_expired_usage_and_elapsed_reset_are_refetched(self):
-        now = time.time()
-        for observed_at, reset in ((now - 61, int(now) + 3600), (now, int(now) - 1)):
-            self.service.usage_observations = {
-                "codex": UsageObservation(
-                    UsageSnapshot.parse(usage(100, reset, account="old")).select(), observed_at
-                )
-            }
-            response = self.add()
-            self.assertEqual(response.json()["account_id"], "account-a")
-            self.cancel(response.json()["id"])
-
-    def test_failed_usage_invalidates_cache_and_ambiguous_buckets_require_selection(self):
+    def test_enrollment_requires_fresh_usage_and_ambiguous_buckets_require_selection(self):
         self.get("status")
         with patch.object(LocalCodex, "usage", side_effect=CodexUnavailable("Offline")):
             self.get("status")
@@ -322,11 +336,9 @@ class ApiBehavior(unittest.TestCase):
         with patch.object(LocalCodex, "usage", return_value=UsageSnapshot.parse(raw)):
             self.get("status")
             self.assertEqual(self.add().status_code, 422)
-            with patch(
-                "tests.fixtures.LocalCodex.usage",
-                side_effect=AssertionError("Selected cache missed"),
-            ):
-                self.assertEqual(self.add(limit_id="other").status_code, 201)
+            response = self.add(limit_id="other")
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.json()["limit_id"], "other")
 
     def test_late_usage_observation_cannot_replace_newer_account(self):
         entered, release = threading.Event(), threading.Event()
@@ -349,8 +361,7 @@ class ApiBehavior(unittest.TestCase):
             finally:
                 release.set()
             future.result()
-        with patch.object(LocalCodex, "usage", side_effect=AssertionError("Cache missed")):
-            self.assertEqual(self.add().json()["account_id"], "account-a")
+        self.assertEqual(self.add().json()["account_id"], "account-a")
 
     def test_slow_enrollment_allows_other_queue_actions(self):
         existing = self.add().json()
@@ -383,10 +394,26 @@ class ApiBehavior(unittest.TestCase):
             item_id = str(uuid4())
             with ThreadPoolExecutor(2) as pool, patch.object(LocalCodex, "snapshot", simultaneous):
                 futures = [
-                    pool.submit(self.add, id=item_id if same_id else str(uuid4())) for _ in range(2)
+                    pool.submit(
+                        self.add,
+                        id=item_id if same_id else str(uuid4()),
+                        instruction=f"Concurrent instruction {index}",
+                    )
+                    for index in range(2)
                 ]
-                results = sorted(future.result().status_code for future in futures)
-            self.assertEqual(results, [200, 201] if same_id else [201, 409])
+                responses = [future.result() for future in futures]
+            self.assertEqual(
+                sorted(response.status_code for response in responses),
+                [200, 201] if same_id else [201, 409],
+            )
+            if same_id:
+                self.assertEqual(
+                    responses[0].json()["instruction"], responses[1].json()["instruction"]
+                )
+                self.assertIn(
+                    responses[0].json()["instruction"],
+                    {"Concurrent instruction 0", "Concurrent instruction 1"},
+                )
             self.cancel(self.get("queue").json()["items"][0]["id"])
 
     def test_worker_failure_requests_restart_and_is_visible(self):
@@ -408,7 +435,7 @@ class ApiBehavior(unittest.TestCase):
         readiness = self.get("queue/check")
         self.assertEqual(readiness.status_code, 200)
         self.assertEqual(readiness.json()["items"][0]["outcome"], "failed")
-        self.assertIn("reset", readiness.json()["items"][0]["reason"])
+        self.assertIn("quota window", readiness.json()["items"][0]["reason"])
         self.assertEqual(self.store.get_entry(UUID(item["id"])), before)
         self.assertEqual(self.store.get_queue_summary().dispatching, 0)
 

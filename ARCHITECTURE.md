@@ -23,7 +23,7 @@ Carrie On is a local client/server application. The native Swift app and Typer C
 
 The domain and application layers do not depend on FastAPI or Typer. The service owns decisions; adapters translate inputs and results. Network operations occur outside database transactions. Every SQLite operation uses its own connection, so a slow Codex call does not prevent another client from reading or changing unrelated work. `pyproject.toml` installs the `src` package and exposes `carrie-on` and `carrie-on-server`.
 
-`QueueEntry` represents captured intent and lifecycle state. It owns enrollment, immutable instruction/state changes, creation identity checks, and eligibility decisions over typed observations. UUIDs and aware UTC datetimes remain typed until an adapter serializes them. Original instructions and the requested quota bucket preserve creation identity after editing. `DeliveryAttempt` is an immutable lease containing an entry snapshot and expiry. Clients receive a derived `dispatching` flag; attempts are private to the worker that creates them.
+`QueueEntry` represents captured intent and lifecycle state. It owns enrollment, immutable instruction/state changes, and eligibility decisions over typed observations. UUIDs and aware UTC datetimes remain typed until an adapter serializes them. Instructions have a single current value. Request replay belongs to the HTTP boundary. `DeliveryAttempt` is an immutable lease containing an entry snapshot and expiry. Clients receive a derived `dispatching` flag; attempts are private to the worker that creates them.
 
 Application code depends on `QueueStorage`, not its SQLite implementation. `SqliteQueueStorage` owns both entries and attempts because acquiring work requires an atomic query across both tables. Domain rules live on `QueueEntry`; storage enforces uniqueness, revisions, and exclusive delivery acquisition. Connections, transactions, SQL, and SQLite errors never cross `storage/`. `StorageUnavailable` represents persistence failure; `QueueError` identifies an expected rejection. Codex connection failures and malformed upstream data remain distinct from programming errors.
 
@@ -39,14 +39,13 @@ get_entry(entry_id: UUID) -> QueueEntry | None
 list_entries(*, states=("queued", "failed"), chat_id=None, limit=50, cursor=None)
     -> tuple[list[QueueEntry], str | None]
 get_queue_summary() -> QueueSummary
-create_entry(entry: QueueEntry) -> tuple[QueueEntry, bool]
+create_entry(entry: QueueEntry) -> QueueEntry
 update_instructions(entry_id: UUID, instructions: str, *, revision: int) -> QueueEntry
 update_entry_state(entry_id: UUID, state: EntryState, *, error: str = "") -> QueueEntry
 create_delivery_attempt() -> DeliveryAttempt | None
-create_entries(entries: Sequence[QueueEntry], *, import_id: UUID) -> bool
 ```
 
-`get_entry` returns `None` for an unknown UUID; mutations reject missing entries. Creation returns the stored entry and whether it was newly created. A UUID replay compares original caller input, including the originally requested bucket. Edits compare the supplied current revision atomically. Every mutation returns the persisted state; a repeated identical state update is a no-op. The import batch inserts current domain records and its opaque marker atomically. It does not interpret source formats or decide which older work should survive.
+`get_entry` returns `None` for an unknown UUID; mutations reject missing entries. Creation inserts a record and returns its persisted state. Duplicate UUIDs raise `entry_exists`; conflicting pending chats raise `chat_already_queued`. Storage does not interpret request replays or import batches. Edits compare the supplied current revision atomically. A repeated identical state update is a no-op.
 
 `QueueSummary` contains counts for each state and the number currently dispatching, with pending-count and attention-count properties. `list_entries` supports 1–100 records per page, query-bound opaque cursors, and `states=None` for history. Results are live observations rather than a transaction spanning multiple calls.
 
@@ -54,7 +53,9 @@ create_entries(entries: Sequence[QueueEntry], *, import_id: UUID) -> bool
 
 ## Durable state and dispatch
 
-`queue_entries` stores instructions, conversation/model/account anchors, reset windows, state, last error, revision, timestamps, and original creation input. `delivery_attempts` stores immutable UUIDs, entry references, creation times, and expiries. `queue_imports` records completed imports. A partial unique index allows a pending entry per chat; a constraint trigger rejects overlapping attempts for the same entry.
+`queue_entries` stores instructions, conversation/model/account anchors, quota-window reset timestamps, state, last error, revision, and timestamps. `delivery_attempts` stores immutable UUIDs, entry references, creation times, and expiries. A partial unique index allows a pending entry per chat; a constraint trigger rejects overlapping attempts for the same entry.
+
+Enrollment reads fresh usage and captures each named window's `resetsAt` timestamp in `reset_windows`. Within the captured account and quota bucket, a different timestamp identifies a different quota window. Sending requires a changed timestamp in any captured window, current usage permission, and headroom in every reported window. The new timestamp need not be later than the saved timestamp, and the saved deadline need not have elapsed. Percentage decreases and exhaustion observations do not establish window identity. Existing saved reset timestamps retain the same representation through schema upgrades and external imports.
 
 SQLite uses WAL, foreign keys, full synchronization, a five-second busy timeout, and short write transactions. Acquisition selects the next `queued` or `failed` entry without a live attempt, ordered by `(queued_at, id)`, and inserts its attempt in the same transaction. There are no deferrals or per-entry check timestamps. Other entries remain available while an attempt is active.
 
@@ -85,7 +86,7 @@ The service binds to `127.0.0.1`. Requests require the exact configured Host and
 | `GET /api/v1/queue/check` | Paginated read-only readiness inspection |
 | `GET /api/v1/diagnostics` | Read-only connectivity/usage checks, optionally for a chat |
 
-Creation returns 201 and Location, or 200 when the same UUID and original input are replayed. Reusing a UUID with different input returns 409. Replay remains valid after edits and terminal outcomes. Clients retain the UUID after an unknown result. Active deliveries block edits and cancellation with 409. Missing `If-Match` returns 428; stale revisions return 412. A sent instruction cannot be cancelled. Repeated cancellation is safe.
+Creation returns 201 and Location, or 200 with the current entry when its UUID is replayed. The HTTP boundary resolves concurrent creation conflicts by reading that UUID. Replays never change instructions, quota selection, or state; the first successful creation wins. Using an existing UUID for another chat returns 409. Replay remains valid after edits, terminal outcomes, and server restarts. Clients retain the UUID after an unknown result and use PATCH for instruction edits. Active deliveries block edits and cancellation with 409. Missing `If-Match` returns 428; stale revisions return 412. A sent instruction cannot be cancelled. Repeated cancellation is safe.
 
 For example, read the item before editing and copy its exact ETag into the update:
 
@@ -115,8 +116,8 @@ Lists use opaque query-scoped cursors and bounded page sizes. Cursors are not sn
 
 The backend and menu have separate launchd registrations. The backend replaces both the old scheduled worker and HTTP process; setup retires the old writer before importing its queue. Release and Dev use independent databases, settings, services, logs, and ports.
 
-Before serving requests, the composition root initializes the schema and invokes `LegacyImporter` for an adjacent `resume-queue.json`. The importer decodes JSON into current `QueueEntry` values, reconciles them against current work, and calls the atomic batch operation. It preserves UUIDs, exact instructions, both supported conversation identities, and complete entry history. Recorded acceptance imports as sent; uncertain work is checked again before sending. Pause settings are ignored.
+Before serving requests, the composition root initializes the schema and invokes `LegacyImporter` for an adjacent `resume-queue.json`. The importer decodes JSON into current `QueueEntry` values, reconciles them against current work, and inserts entries individually. It preserves UUIDs, exact instructions, both supported conversation identities, and complete entry history. Recorded acceptance imports as sent; uncertain work is checked again before sending. Pause settings are ignored.
 
-The original JSON remains unchanged and retains partial history and historical attempt details that are no longer part of current storage. Immutable installation snapshots and the recovery journal protect retries. A durable import marker prevents reactivation on restart; an existing UUID is never overwritten. Malformed active records abort import while preserving source files and the initialized schema.
+The original JSON remains unchanged and retains partial history and historical attempt details that are no longer part of current storage. Immutable installation snapshots and the recovery journal protect retries. Existing UUIDs are skipped, preserving edits and terminal outcomes across interrupted imports. A failure may leave some entries imported; retry continues with the missing entries. Malformed active records are rejected during decoding, before insertion.
 
 Older-installation migration uses the same importer and storage backup service. Current work wins over conflicting older enrollment; older records remain cancelled history. Schema migrations only transform database representation. They contain no Codex calls, JSON-file import, installation decisions, or runtime compatibility branches. Downgrades do not export SQLite state back to JSON. See [installation modes](INSTALL.md) for data locations.

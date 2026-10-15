@@ -1,4 +1,4 @@
-"""Exercise the native picker with deterministic, delayed HTTP responses."""
+"""Test the native chat picker with HTTP fixtures that control response order and delays."""
 
 import json
 import platform
@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def queue_contract_fixtures(directory: Path) -> Path:
-    """Capture actual HTTP projections for the native decoder and action model."""
+    """Record API responses for native decoding and queue-action tests."""
 
     def enqueue(
         store: SqliteQueueStorage,
@@ -34,7 +34,6 @@ def queue_contract_fixtures(directory: Path) -> Path:
             chat_id=chat_id or uuid4(),
             title=title,
             instructions=instruction,
-            original_instructions=instruction,
             queued_at=instant(timestamp),
             updated_at=instant(timestamp),
         )
@@ -107,7 +106,7 @@ class NativeChatPagination(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="carrie-pagination-") as temporary:
             build = Path(temporary)
             fixtures = queue_contract_fixtures(build)
-            # Keep the app's shared declarations, replacing only its startup entry point.
+            # Use the app's declarations and replace its startup entry point for the test.
             declarations = (
                 (ROOT / "menubar/main.swift")
                 .read_text()

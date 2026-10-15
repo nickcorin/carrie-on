@@ -1,4 +1,4 @@
-"""Quota and conversation safeguards exercised against a real SQLite queue."""
+"""Test dispatch decisions with SQLite and synthetic Codex responses."""
 
 import tempfile
 import unittest
@@ -94,28 +94,85 @@ class DispatchBehavior(unittest.TestCase):
         self.tick()
         self.assertEqual(len(self.codex.delivered), 1)
 
-    def test_early_manual_reset_does_not_wait_for_old_deadline(self):
+    def test_changed_window_does_not_wait_for_saved_deadline(self):
+        self.codex.limits = usage(0, 200)
         self.tick(now=70)
         self.assertEqual(self.item_state().state, "sent")
 
-    def test_headroom_without_advanced_or_future_timestamp_waits(self):
-        for reset in (100, 105):
-            self.codex.limits = usage(0, reset)
-            self.tick(now=110)
-            self.assertEqual(self.item_state().state, "failed")
-        self.assertFalse(self.codex.delivered)
+    def test_changed_window_identity_need_not_increase(self):
+        self.codex.limits = usage(0, 90)
+        self.tick(now=70)
+        self.assertEqual(self.item_state().state, "sent")
 
-    def test_all_exhausted_windows_must_advance_and_all_windows_need_headroom(self):
+    def test_percentage_drop_and_elapsed_deadline_do_not_change_window_identity(self):
+        self.codex.limits = usage(30, 100)
+        self.tick(now=110)
+        self.assertEqual(self.item_state().state, "failed")
+        self.assertEqual(self.codex.delivered, [])
+        self.codex.limits = usage(0, 100)
+        self.tick()
+        self.assertEqual(self.item_state().state, "failed")
+        self.assertEqual(self.codex.delivered, [])
+        self.codex.limits = usage(0, 200)
+        self.tick()
+        self.assertEqual(self.item_state().state, "sent")
+
+    def test_first_reset_waits_for_current_capacity_without_requiring_all_deadlines_to_advance(
+        self,
+    ):
         self.replace_item(reset_windows={"primary": 100, "secondary": 500})
-        for secondary in (
-            {"usedPercent": 100, "resetsAt": 600},
-            {"usedPercent": 0, "resetsAt": 500},
-            None,
-        ):
-            self.codex.limits = usage(0, 200, secondary)
+        self.codex.limits = usage(0, 200, {"usedPercent": 100, "resetsAt": 500})
+        self.tick()
+        self.assertEqual(self.item_state().state, "failed")
+        self.assertEqual(self.codex.delivered, [])
+        self.codex.limits = usage(0, 200, {"usedPercent": 0, "resetsAt": 500})
+        self.tick()
+        self.assertEqual(self.item_state().state, "sent")
+
+    def test_secondary_window_change_after_restart_needs_no_observed_exhaustion(self):
+        self.store.update_entry_state(self.item.id, "cancelled")
+        self.codex.chat = snapshot("completed", error=None)
+        self.item = QueueEntry.enroll(
+            uuid4(),
+            "Finish tests",
+            Chat.parse(self.codex.chat),
+            UsageSnapshot.parse(usage(20, 100, {"usedPercent": 40, "resetsAt": 500})).select(),
+            instant(50),
+        )
+        self.store.create_entry(self.item)
+        self.store = SqliteQueueStorage(self.path, clock=lambda: instant(self.now))
+        self.worker = DispatchWorker(self.store, self.connections, clock=lambda: instant(self.now))
+        self.codex.limits = usage(20, 100, {"usedPercent": 60, "resetsAt": 600})
+        self.tick(now=70)
+        self.assertEqual(self.item_state().state, "sent")
+        self.assertEqual(
+            self.codex.delivered,
+            [{"thread_id": CHAT_ID, "prompt": "Finish tests", "message_id": str(self.item.id)}],
+        )
+
+    def test_unrecorded_window_does_not_establish_a_changed_window(self):
+        self.codex.limits = usage(0, 100, {"usedPercent": 0, "resetsAt": 500})
+        self.tick()
+        self.assertEqual(self.item_state().state, "failed")
+        self.assertEqual(self.codex.delivered, [])
+        self.codex.limits = usage(0, 200, {"usedPercent": 0, "resetsAt": 500})
+        self.tick()
+        self.assertEqual(self.item_state().state, "sent")
+
+    def test_a_reset_does_not_override_reported_usage_or_spending_blocks(self):
+        for flag in ("ordinary", "spending", "rate_limit"):
+            self.codex.limits = usage(0, 200)
+            bucket = self.codex.limits["rateLimitsByLimitId"]["codex"]
+            if flag == "ordinary":
+                self.codex.limits["ordinaryUsageAllowed"] = False
+            elif flag == "spending":
+                bucket["spendControlReached"] = True
+            else:
+                bucket["rateLimitReachedType"] = "weekly"
             self.tick()
             self.assertEqual(self.item_state().state, "failed")
-        self.codex.limits = usage(0, 200, {"usedPercent": 0, "resetsAt": 600})
+        self.assertEqual(self.codex.delivered, [])
+        self.codex.limits = usage(0, 200)
         self.tick()
         self.assertEqual(self.item_state().state, "sent")
 
@@ -183,19 +240,23 @@ class DispatchBehavior(unittest.TestCase):
         self.assertEqual(self.item_state().state, "failed")
         self.assertFalse(self.codex.delivered)
 
-    def test_busy_enrollment_completed_or_interrupted_is_not_resumed(self):
+    def test_busy_enrollment_completed_normally_is_not_resumed(self):
         self.replace_item(enrolled_while_busy=True)
         self.codex.chat = snapshot("completed")
         self.tick()
         self.assertEqual(self.item_state().state, "stale")
         self.assertFalse(self.codex.delivered)
 
-    def test_manual_interruption_is_not_a_quota_failure(self):
+    def test_busy_enrollment_can_resume_after_window_change_without_quota_failure(self):
         self.replace_item(enrolled_while_busy=True)
         self.codex.chat = snapshot("interrupted", error="other")
+        self.codex.limits = usage(50, 100)
         self.tick()
         self.assertEqual(self.item_state().state, "failed")
         self.assertFalse(self.codex.delivered)
+        self.codex.limits = usage(50, 200)
+        self.tick()
+        self.assertEqual(self.item_state().state, "sent")
 
     def test_enrollment_captures_anchors_without_deciding_readiness(self):
         for changes in (

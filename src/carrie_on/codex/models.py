@@ -1,4 +1,4 @@
-"""Validated Codex observations shared by policy and application operations."""
+"""Parse Codex responses into the chat and quota records the queue uses."""
 
 import math
 from dataclasses import dataclass
@@ -6,15 +6,15 @@ from typing import Any
 
 
 class CodexUnavailable(Exception):
-    """A connection failed; a write may have been accepted before the failure."""
+    """Report a connection failure. Codex may have accepted a write before it failed."""
 
 
 class CodexProtocolError(Exception):
-    """Codex returned an unsupported or incomplete observation."""
+    """Report a Codex response that the application cannot parse or use."""
 
 
 class UsageSelectionError(Exception):
-    """The requested quota bucket is missing or requires explicit selection."""
+    """Report a missing quota bucket or ask the caller to choose between buckets."""
 
 
 def object_value(value: Any, description: str) -> dict[str, Any]:
@@ -44,7 +44,11 @@ def finite_number(value: Any, description: str) -> float:
 
 @dataclass(frozen=True)
 class Window:
-    """A usage window; reset_at is Unix seconds and duration_minutes may be absent."""
+    """Record usage for a quota window.
+
+    reset_at is a Unix timestamp in seconds. duration_minutes is None when Codex
+    does not report the window's length.
+    """
 
     name: str
     used: float
@@ -54,7 +58,7 @@ class Window:
 
 @dataclass(frozen=True)
 class Usage:
-    """Validated quota for an account and a selected limit bucket."""
+    """Record quota usage and permission to send for an account and quota bucket."""
 
     account_id: str
     limit_id: str
@@ -66,14 +70,18 @@ class Usage:
 
 @dataclass(frozen=True)
 class UsageSnapshot:
-    """Complete normalized account quota, including the supported legacy format."""
+    """Store an account's quota buckets after parsing the Codex usage response."""
 
     account_id: str
     ordinary_usage_allowed: bool
     buckets: tuple[Usage, ...]
 
     def select(self, limit_id: str | None = None) -> Usage:
-        """Select a named bucket, or the sole bucket; never guess between buckets."""
+        """Return the named bucket, or the only bucket if no name was supplied.
+
+        Raise UsageSelectionError if the named bucket does not exist or several
+        buckets exist and the caller has not chosen one.
+        """
         if limit_id is None:
             if len(self.buckets) != 1:
                 names = ", ".join(bucket.limit_id for bucket in self.buckets)
@@ -143,19 +151,6 @@ class UsageSnapshot:
         return cls(account_id=account_id, ordinary_usage_allowed=ordinary, buckets=tuple(parsed))
 
 
-@dataclass(frozen=True)
-class UsageObservation:
-    """Recent quota may anchor enrollment, but never authorize dispatch."""
-
-    usage: Usage
-    observed_at: float
-
-    def usable_for_enrollment(self, now: float) -> bool:
-        return 0 <= now - self.observed_at <= 60 and all(
-            window.reset_at > now for window in self.usage.windows
-        )
-
-
 @dataclass(frozen=True, kw_only=True)
 class ChatSummary:
     id: str
@@ -195,7 +190,7 @@ class ChatPage:
 
 @dataclass(frozen=True, kw_only=True)
 class Chat:
-    """Live desktop state relevant to continuing an enrolled chat."""
+    """Record the chat state needed to check whether a queued message can be sent."""
 
     thread_id: str
     title: str
@@ -204,13 +199,12 @@ class Chat:
     status: str
     busy: bool
     blocked: bool
-    quota_failed: bool
     seen_message_ids: frozenset[str]
     turn_id: str | None = None
 
     @classmethod
     def parse(cls, snapshot: Any) -> "Chat":
-        """Read the latest accepted/provisional turn from either supported history."""
+        """Read the latest turn from a desktop snapshot in either supported history format."""
         snapshot = object_value(snapshot, "desktop snapshot")
         thread_id = text_value(snapshot.get("id"), "desktop chat ID")
         message_id = text_value(
@@ -236,7 +230,7 @@ class Chat:
                 raise CodexProtocolError("Invalid turn message ID")
             if turn_id is not None and not isinstance(turn_id, str):
                 raise CodexProtocolError("Invalid accepted turn ID")
-            # Provisional messages without an accepted turn ID are not receipts.
+            # A turn ID confirms that Codex accepted the message.
             if turn_id and isinstance(client_id, str):
                 seen_ids.add(client_id)
             if client_id == message_id:
@@ -252,7 +246,6 @@ class Chat:
             "interrupted",
         }:
             raise CodexProtocolError(f"Unsupported turn status: {status!r}")
-        error = object_value(turn.get("error") or {}, "turn error")
         runtime = object_value(snapshot.get("threadRuntimeStatus") or {}, "runtime status")
         goal = object_value(snapshot.get("threadGoal") or {}, "goal")
         runtime_type, goal_status = runtime.get("type"), goal.get("status")
@@ -279,6 +272,5 @@ class Chat:
             status=status,
             busy=runtime_type == "active" or status == "inProgress",
             blocked=blocked,
-            quota_failed=error.get("codexErrorInfo") == "usageLimitExceeded",
             seen_message_ids=frozenset(seen_ids),
         )

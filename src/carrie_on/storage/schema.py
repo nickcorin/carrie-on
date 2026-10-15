@@ -1,4 +1,4 @@
-"""Run declarative migrations before permitting current-schema operations."""
+"""Apply SQL migrations and check that the database matches this release's schema."""
 
 import sqlite3
 from contextlib import closing
@@ -10,11 +10,11 @@ from yoyo.exceptions import BadMigration, LockTimeout
 
 from carrie_on.ports import StorageUnavailable
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def migrate(path: Path) -> None:
-    """Apply the packaged migration chain under Yoyo's cross-process lock."""
+    """Apply pending migrations while holding Yoyo's lock against other migration processes."""
     try:
         with closing(sqlite3.connect(path)) as connection:
             if connection.execute("PRAGMA user_version").fetchone()[0] > SCHEMA_VERSION:

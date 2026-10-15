@@ -1,4 +1,4 @@
-"""HTTP validation, serialization, and resource contracts for the local service."""
+"""Expose the local queue service through HTTP."""
 
 import re
 from dataclasses import asdict
@@ -211,11 +211,9 @@ def problem(code, detail, status):
 
 
 def queue_response(entry: QueueEntry) -> dict:
-    """Publish entry state without exposing delivery ownership or creation identity."""
+    """Convert an entry to an HTTP response with instructions named instruction."""
     fields = asdict(entry)
     fields["instruction"] = fields.pop("instructions")
-    fields.pop("original_instructions")
-    fields.pop("requested_limit_id")
     return fields
 
 
@@ -242,23 +240,21 @@ def usage_response(usage: UsageSnapshot) -> dict:
 
 
 def local_client(
-    x_carrie_on: Annotated[
-        Literal["1"], Header(description="Required local-client marker; send 1.")
-    ],
+    x_carrie_on: Annotated[Literal["1"], Header(description="Set this required header to 1.")],
 ):
-    """Declare the marker checked by middleware before request processing."""
+    """Document the required header that the middleware checks on each request."""
 
 
 ETAG_HEADER = {
     "ETag": {
-        "description": "Strong item revision; reuse as If-Match when editing.",
+        "description": "Strong ETag for the entry's revision. Send it as If-Match when editing.",
         "schema": {"type": "string", "example": '"revision-1"'},
     }
 }
 CREATION_HEADERS = {
     **ETAG_HEADER,
     "Location": {
-        "description": "Canonical item resource, also returned on replay.",
+        "description": "URL of the entry. Repeated creation requests return the same URL.",
         "schema": {"type": "string"},
     },
 }
@@ -273,10 +269,11 @@ def create_app(
     worker: DispatchWorker | None = None,
     lifespan=None,
 ) -> FastAPI:
-    """Adapt supplied application operations to HTTP; construction has no storage/process I/O.
+    """Create HTTP routes for the supplied queue service.
 
-    The composition root owns initialization and worker lifetime through lifespan.
-    A missing worker means read/command service mode with dispatch disabled.
+    Construction does not access storage or start processes. The caller supplies
+    a lifespan handler to initialize storage and start and stop the worker.
+    Without a worker, clients can read and edit the queue, but no messages are sent.
     """
     errors: dict[int | str, dict[str, Any]] = {
         status: {"content": {"application/problem+json": {"schema": Problem.model_json_schema()}}}
@@ -290,9 +287,11 @@ def create_app(
         redoc_url=None,
         responses=errors,
         dependencies=[Depends(local_client)],
-        description="Local queue service. Send X-Carrie-On: 1 on every request. "
-        "Create with a client UUID; replay the same original payload after an uncertain response. "
-        "Read an item's ETag before editing with If-Match. See ARCHITECTURE.md for examples.",
+        description="Manage queued instructions through the local HTTP service. "
+        "Set X-Carrie-On to 1 on every request. Supply a UUID when creating an entry. "
+        "Repeating that UUID returns the existing entry without changing it. "
+        "Before editing, read the entry's ETag and send it as If-Match. "
+        "See ARCHITECTURE.md for examples.",
     )
     app.state.worker = worker
     origin = f"http://127.0.0.1:{port}"
@@ -351,7 +350,6 @@ def create_app(
             "precondition_required": 428,
             "invalid_chat": 422,
             "invalid_bucket": 422,
-            "stale_usage": 422,
             "chat_absent": 422,
         }.get(error.code, 409)
         return problem(error.code, str(error), status)
@@ -502,9 +500,28 @@ def create_app(
         },
     )
     def enqueue(body: Enqueue, response: Response):
-        entry, created = service.enqueue(
-            body.id, body.chat_id, body.instruction, limit_id=body.limit_id
-        )
+        """Create an entry or return the entry already saved with the supplied UUID.
+
+        Repeated requests leave the existing entry unchanged. A UUID cannot be
+        reused for a different chat. Use PATCH to edit instructions and a new UUID
+        to enqueue more work.
+        """
+        entry = service.store.get_entry(body.id)
+        created = False
+        if entry is None:
+            try:
+                entry = service.enqueue(
+                    body.id, body.chat_id, body.instruction, limit_id=body.limit_id
+                )
+                created = True
+            except QueueError as error:
+                if error.code not in {"entry_exists", "chat_already_queued"}:
+                    raise
+                entry = service.store.get_entry(body.id)
+                if entry is None:
+                    raise
+        if entry.chat_id != body.chat_id:
+            raise QueueError("id_reused", "This UUID belongs to another chat")
         response.status_code = 201 if created else 200
         response.headers["Location"] = f"/api/v1/queue/{entry.id}"
         response.headers["ETag"] = f'"revision-{entry.revision}"'
@@ -535,7 +552,7 @@ def create_app(
         response: Response,
         if_match: Annotated[
             str,
-            Header(description="Current strong ETag from GET; required to prevent lost updates."),
+            Header(description="Send the strong ETag from the entry's latest GET response."),
         ],
     ):
         matched = re.fullmatch(r'"revision-([1-9][0-9]{0,18})"', if_match)

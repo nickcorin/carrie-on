@@ -770,7 +770,7 @@
     }
   },
   "info": {
-    "description": "Local queue service. Send X-Carrie-On: 1 on every request. Create with a client UUID; replay the same original payload after an uncertain response. Read an item's ETag before editing with If-Match. See ARCHITECTURE.md for examples.",
+    "description": "Manage queued instructions through the local HTTP service. Set X-Carrie-On to 1 on every request. Supply a UUID when creating an entry. Repeating that UUID returns the existing entry without changing it. Before editing, read the entry's ETag and send it as If-Match. See ARCHITECTURE.md for examples.",
     "title": "Carrie On",
     "version": "0.5.7"
   },
@@ -821,13 +821,13 @@
             }
           },
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -1224,13 +1224,13 @@
             }
           },
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -1616,13 +1616,13 @@
         "operationId": "connection_api_v1_connection_get",
         "parameters": [
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -2025,13 +2025,13 @@
             }
           },
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -2417,13 +2417,13 @@
         "operationId": "health_api_v1_health_get",
         "parameters": [
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -2879,13 +2879,13 @@
             }
           },
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -3266,16 +3266,17 @@
         "summary": "Queue"
       },
       "post": {
+        "description": "Create an entry or return the entry already saved with the supplied UUID.\n\nRepeated requests leave the existing entry unchanged. A UUID cannot be\nreused for a different chat. Use PATCH to edit instructions and a new UUID\nto enqueue more work.",
         "operationId": "enqueue_api_v1_queue_post",
         "parameters": [
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -3303,14 +3304,14 @@
             "description": "OK",
             "headers": {
               "ETag": {
-                "description": "Strong item revision; reuse as If-Match when editing.",
+                "description": "Strong ETag for the entry's revision. Send it as If-Match when editing.",
                 "schema": {
                   "example": "\"revision-1\"",
                   "type": "string"
                 }
               },
               "Location": {
-                "description": "Canonical item resource, also returned on replay.",
+                "description": "URL of the entry. Repeated creation requests return the same URL.",
                 "schema": {
                   "type": "string"
                 }
@@ -3328,14 +3329,14 @@
             "description": "Successful Response",
             "headers": {
               "ETag": {
-                "description": "Strong item revision; reuse as If-Match when editing.",
+                "description": "Strong ETag for the entry's revision. Send it as If-Match when editing.",
                 "schema": {
                   "example": "\"revision-1\"",
                   "type": "string"
                 }
               },
               "Location": {
-                "description": "Canonical item resource, also returned on replay.",
+                "description": "URL of the entry. Repeated creation requests return the same URL.",
                 "schema": {
                   "type": "string"
                 }
@@ -3740,13 +3741,13 @@
             }
           },
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -4161,13 +4162,13 @@
             }
           },
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -4563,13 +4564,13 @@
             }
           },
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -4587,7 +4588,7 @@
             "description": "Successful Response",
             "headers": {
               "ETag": {
-                "description": "Strong item revision; reuse as If-Match when editing.",
+                "description": "Strong ETag for the entry's revision. Send it as If-Match when editing.",
                 "schema": {
                   "example": "\"revision-1\"",
                   "type": "string"
@@ -4972,24 +4973,24 @@
             }
           },
           {
-            "description": "Current strong ETag from GET; required to prevent lost updates.",
+            "description": "Send the strong ETag from the entry's latest GET response.",
             "in": "header",
             "name": "if-match",
             "required": true,
             "schema": {
-              "description": "Current strong ETag from GET; required to prevent lost updates.",
+              "description": "Send the strong ETag from the entry's latest GET response.",
               "title": "If-Match",
               "type": "string"
             }
           },
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -5017,7 +5018,7 @@
             "description": "Successful Response",
             "headers": {
               "ETag": {
-                "description": "Strong item revision; reuse as If-Match when editing.",
+                "description": "Strong ETag for the entry's revision. Send it as If-Match when editing.",
                 "schema": {
                   "example": "\"revision-1\"",
                   "type": "string"
@@ -5404,13 +5405,13 @@
             }
           },
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -5806,13 +5807,13 @@
         "operationId": "status_api_v1_status_get",
         "parameters": [
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }
@@ -6198,13 +6199,13 @@
         "operationId": "usage_api_v1_usage_get",
         "parameters": [
           {
-            "description": "Required local-client marker; send 1.",
+            "description": "Set this required header to 1.",
             "in": "header",
             "name": "x-carrie-on",
             "required": true,
             "schema": {
               "const": "1",
-              "description": "Required local-client marker; send 1.",
+              "description": "Set this required header to 1.",
               "title": "X-Carrie-On",
               "type": "string"
             }

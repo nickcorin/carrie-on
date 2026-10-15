@@ -193,7 +193,7 @@ func testUncertainCreationRecovery() async throws {
     let retrying = try await ChatPageProtocol.next()
     guard retrying.request.httpMethod == "POST" else { fatalError("Original retry received \(retrying.request)") }
     guard try requestBody(retrying.request) == original else { fatalError("Retry used changed instruction, bucket, or identity") }
-    retrying.reply(#"{"code":"id_reused","detail":"Existing creation has a different payload"}"#, status: 409)
+    retrying.reply(#"{"code":"id_reused","detail":"This UUID belongs to another chat"}"#, status: 409)
     guard await retry.value == false else { fatalError("Conflicting identity was reported as confirmed") }
     let stillUnknown = try await ChatPageProtocol.next()
     guard stillUnknown.request.url!.path == "/api/v1/queue/\(itemID)" else { fatalError("id_reused discarded recovery identity") }

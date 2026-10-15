@@ -1,7 +1,5 @@
-"""Enrollment and read operations over typed Codex observations and queue state."""
+"""Add chats to the queue and read their current Codex and queue state."""
 
-import threading
-import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -14,7 +12,6 @@ from carrie_on.codex.models import (
     ChatSummary,
     CodexProtocolError,
     CodexUnavailable,
-    UsageObservation,
     UsageSelectionError,
     UsageSnapshot,
 )
@@ -45,10 +42,12 @@ class Diagnostic:
     chat: Chat | None = None
 
 
-def observe_eligibility(
-    entry: QueueEntry, server: AppServer, desktop: Desktop, now: datetime
-) -> Eligibility:
-    """Read quota, check catalog before any opening, then evaluate live state."""
+def observe_eligibility(entry: QueueEntry, server: AppServer, desktop: Desktop) -> Eligibility:
+    """Check quota and chat state to decide whether an entry can be sent.
+
+    Check the local catalog before reading or opening the chat. If the chat has
+    continued, look for the queued message before treating the entry as stale.
+    """
     try:
         usage = server.usage().select(entry.limit_id)
     except UsageSelectionError as error:
@@ -62,48 +61,27 @@ def observe_eligibility(
         and server.has_message(str(entry.chat_id), str(entry.id))
     ):
         chat = replace(chat, seen_message_ids=chat.seen_message_ids | {str(entry.id)})
-    return entry.assess(usage, chat, now)
+    return entry.assess(usage, chat)
 
 
 class QueueService:
-    """Enrollment owns a short-lived quota cache; dispatch always reads fresh state.
+    """Create queue entries and read queue status using current Codex data.
 
-    Each operation opens independent connections. No network I/O occurs inside a
-    queue transaction. The store rechecks mutable membership at commit time.
+    Each operation opens its own Codex connections. Enrollment reads current quota
+    instead of reusing a status response. Storage rejects duplicate pending entries
+    when saving, so a concurrent enrollment cannot queue the same chat twice.
     """
 
     def __init__(self, store: QueueStorage, connections: CodexConnections):
         self.store = store
         self.connections = connections
-        self.usage_observations: dict[str, UsageObservation] = {}
-        self.usage_observed_at = 0.0
-        self.usage_lock = threading.Lock()
 
     def read_usage(self) -> UsageSnapshot:
-        """Cache only successful, ordered observations, exclusively for enrollment."""
-        observed_at = time.time()
-        observations = {}
-        try:
-            with self.connections.app_server() as server:
-                usage = server.usage()
-            observations = {
-                bucket.limit_id: UsageObservation(bucket, observed_at) for bucket in usage.buckets
-            }
-            return usage
-        finally:
-            with self.usage_lock:
-                if observed_at >= self.usage_observed_at:
-                    self.usage_observations = observations
-                    self.usage_observed_at = observed_at
-
-    def _enrollment_usage(self, limit_id: str | None) -> UsageObservation | None:
-        with self.usage_lock:
-            if limit_id is None and len(self.usage_observations) == 1:
-                return next(iter(self.usage_observations.values()))
-            return self.usage_observations.get(limit_id) if limit_id is not None else None
+        with self.connections.app_server() as server:
+            return server.usage()
 
     def resolve_chat(self, query: str) -> str:
-        """Resolve a UUID/deep link or an exact, unambiguous catalog title."""
+        """Return a chat UUID from a UUID, a deep link, or a unique exact title."""
         if query.startswith("codex://threads/"):
             query = urlparse(query).path.strip("/")
         try:
@@ -126,12 +104,8 @@ class QueueService:
 
     def enqueue(
         self, entry_id: UUID, chat_id: UUID, instructions: str, *, limit_id: str | None = None
-    ) -> tuple[QueueEntry, bool]:
-        """Replay original identity or capture the latest live turn and quota baseline."""
-        existing = self.store.get_entry(entry_id)
-        if existing:
-            existing.require_creation_input(chat_id, instructions, limit_id)
-            return existing, False
+    ) -> QueueEntry:
+        """Create an entry with the chat's latest turn and current reset timestamps."""
         queued, _ = self.store.list_entries(chat_id=chat_id, limit=1)
         if queued:
             raise QueueError("chat_already_queued", "Chat is already queued")
@@ -147,18 +121,11 @@ class QueueService:
             )
         if chat.thread_id != str(chat_id):
             raise QueueError("chat_mismatch", "Desktop returned a different chat")
-        observed = self._enrollment_usage(limit_id)
-        if observed and observed.usable_for_enrollment(time.time()):
-            usage = observed.usage
-        else:
-            with self.connections.app_server() as server:
-                try:
-                    usage = server.usage().select(limit_id)
-                except UsageSelectionError as error:
-                    raise QueueError("invalid_bucket", str(error)) from error
-        entry = QueueEntry.enroll(
-            entry_id, instructions, chat, usage, datetime.now(timezone.utc), limit_id=limit_id
-        )
+        try:
+            usage = self.read_usage().select(limit_id)
+        except UsageSelectionError as error:
+            raise QueueError("invalid_bucket", str(error)) from error
+        entry = QueueEntry.enroll(entry_id, instructions, chat, usage, datetime.now(timezone.utc))
         return self.store.create_entry(entry)
 
     def chats(self, search: str = "", cursor: str | None = None, limit: int = 25) -> ChatPage:
@@ -172,7 +139,7 @@ class QueueService:
         return ChatPage(page.items, next_cursor)
 
     def queued_chats(self, cursor: str | None = None, limit: int = 50) -> ChatPage:
-        """Return live activity when available and saved enrollment titles offline."""
+        """Read queued chat details from Codex, using saved titles if Codex is unavailable."""
         entries, next_cursor = self.store.list_entries(limit=limit, cursor=cursor)
         result = [
             ChatSummary(id=str(entry.chat_id), title=entry.title, cwd=None, last_activity=None)
@@ -200,7 +167,7 @@ class QueueService:
             return False
 
     def status(self) -> Status:
-        """Read independent menu sections; an upstream outage cannot hide the queue."""
+        """Read queue and usage status separately so either can survive the other's failure."""
         queue = usage = None
         queue_error = usage_error = None
         try:
@@ -214,7 +181,7 @@ class QueueService:
         return Status(self.connected(), usage, queue, usage_error, queue_error)
 
     def doctor(self, chat_id: str | None = None) -> Diagnostic:
-        """Read connection/turn diagnostics without opening a chat or starting a turn."""
+        """Check the connection and optional chat without opening it or starting a turn."""
         with self.connections.app_server() as server, self.connections.desktop() as desktop:
             usage = server.usage()
             return Diagnostic(
@@ -224,7 +191,7 @@ class QueueService:
     def inspect(
         self, limit: int = 50, cursor: str | None = None
     ) -> tuple[list[Readiness], str | None]:
-        """Read-only readiness inspection; no opening chats, claiming, or sending."""
+        """Check which entries can be sent without opening chats or changing the queue."""
         entries, next_cursor = self.store.list_entries(limit=limit, cursor=cursor)
         if not entries:
             return [], next_cursor
@@ -233,7 +200,7 @@ class QueueService:
                 Readiness(
                     entry.id,
                     entry.title,
-                    observe_eligibility(entry, server, desktop, datetime.now(timezone.utc)),
+                    observe_eligibility(entry, server, desktop),
                 )
                 for entry in entries
             ]

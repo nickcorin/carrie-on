@@ -1,4 +1,4 @@
-"""Validated, serialized installation of per-user Carrie On services."""
+"""Install Carrie On services for the current user under an installation lock."""
 
 import argparse
 import fcntl
@@ -29,7 +29,7 @@ from carrie_on.ports import StorageUnavailable
 
 
 class SetupError(ValueError):
-    """Recoverable setup failure with a stable code for the native client."""
+    """Report a setup failure with a code the native client can handle."""
 
     def __init__(self, code: str, message: str):
         self.code = code
@@ -38,7 +38,7 @@ class SetupError(ValueError):
 
 @dataclass(frozen=True, kw_only=True)
 class SettingsOverrides:
-    """Per-invocation choices; absent values preserve saved configuration."""
+    """Supply settings for this invocation. None leaves each saved value unchanged."""
 
     codex: str | None = None
     port: int | None = None
@@ -49,7 +49,7 @@ class SettingsOverrides:
 
 @dataclass(frozen=True, kw_only=True)
 class Settings:
-    """Validated connection settings; paths are absolute before publication."""
+    """Hold the Codex connection and polling settings for an installation."""
 
     codex: str
     port: int
@@ -66,14 +66,15 @@ class Settings:
         *,
         legacy: bool = False,
     ) -> "Settings":
-        """Read saved or legacy settings and apply overrides before validating.
+        """Read saved settings, apply supplied values, and validate the result.
 
-        The installation owner calls this while holding install.lock. Relative
-        input paths are resolved once against the invoking process's directory;
-        the normalized values are saved so later launches cannot reinterpret them.
-        Invalid settings raise ValueError before any service definition changes.
-        Only installers enable legacy launchd discovery. Direct servers read their
-        own settings directory and never inherit another installation's settings.
+        Installers call this while holding install.lock. Resolve relative paths
+        against the current working directory. Saving those absolute paths keeps
+        later launches pointed at the same files. Invalid settings raise ValueError
+        before the installer changes any service definitions.
+
+        Only installers enable discovery of old launchd settings. Servers read
+        settings from their own data directory.
         """
         path = runtime.data / "settings.json"
         if path.exists():
@@ -112,7 +113,7 @@ class Settings:
         )
 
     def environment(self) -> dict[str, str]:
-        """Return the child environment without altering the invoking process."""
+        """Build environment variables for child processes without changing os.environ."""
         environment = {
             "PATH": f"{Path(self.codex).parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
         }
@@ -130,7 +131,7 @@ def absolute_setting_path(name: str, value: object) -> str | None:
 
 
 def legacy_settings(profile: BuildProfile) -> dict:
-    """Preserve connection settings from pre-0.4 services without importing queues."""
+    """Read connection settings from service definitions written before version 0.4."""
     saved = {}
     for label in (profile.service_prefix, profile.labels[0]):
         path = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
@@ -203,7 +204,7 @@ def check_bundle(runtime: Runtime) -> dict:
 
 
 def write_private(path: Path, contents: bytes) -> None:
-    """Atomically replace a user-private settings or marker file."""
+    """Replace a settings or marker file atomically with permissions set to 0600."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_bytes(contents)
@@ -213,7 +214,7 @@ def write_private(path: Path, contents: bytes) -> None:
 
 @contextmanager
 def installation_lock(runtime: Runtime) -> Iterator[None]:
-    """Serialize installation and expose storage failures as recoverable setup errors."""
+    """Hold install.lock and convert StorageUnavailable failures to SetupError."""
     runtime.data.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (runtime.data / "install.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -238,7 +239,7 @@ def service_loaded(label: str) -> bool:
 
 
 def stop_services(labels: tuple[str, ...]) -> None:
-    """Stop selected writers and wait until launchd releases their registrations."""
+    """Stop the named services and wait until launchd reports that they are unloaded."""
     for label in reversed(labels):
         subprocess.run(
             ["/bin/launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
@@ -253,12 +254,12 @@ def stop_services(labels: tuple[str, ...]) -> None:
 
 
 def import_source_queue(runtime: Runtime) -> None:
-    """Import a stopped release source installation's immutable JSON snapshot once.
+    """Import the saved JSON queue from a release installation run from source.
 
-    The caller owns install.lock and has stopped the retired worker and backend.
-    Development profiles never adopt the release queue. The original JSON and a
-    private snapshot remain available for recovery; a transaction marker prevents
-    retrying setup from reactivating completed items.
+    The caller holds install.lock and has stopped the old worker and backend.
+    Dev installations do not import the release queue. Keep the original JSON and
+    a private copy for recovery. Skip existing entry UUIDs so setup retries cannot
+    reactivate completed entries.
     """
     if runtime.bundled or runtime.profile.name != "release":
         return
@@ -275,16 +276,16 @@ def import_source_queue(runtime: Runtime) -> None:
 
     SqliteStorageMaintenance(runtime.state).initialize()
     importer = LegacyImporter(SqliteQueueStorage(runtime.state))
-    importer.import_file(runtime.data / "resume-queue.json", "json_import")
-    importer.import_file(snapshot, "source_checkout_import")
+    importer.import_file(runtime.data / "resume-queue.json")
+    importer.import_file(snapshot)
 
 
 def register_backend(runtime: Runtime, settings: Settings) -> Path:
-    """Publish settings and the backend definition under the caller's install lock.
+    """Write settings and the backend's launchd definition while the caller holds install.lock.
 
-    Settings are published first, so a restarted native client discovers the same
-    endpoint as launchd. A failure can leave partial registration; repeating setup
-    reconciles it. This operation does not start or stop processes.
+    Write settings first so the native client uses the same endpoint as launchd
+    after restarting. If a write fails, repeating setup finishes the registration.
+    This function does not start or stop processes.
     """
     runtime.logs.mkdir(mode=0o700, parents=True, exist_ok=True)
     command = runtime.command("server") + [
@@ -339,11 +340,11 @@ def install_service(
     *,
     start: bool = True,
 ) -> dict:
-    """Install the selected backend, preserving settings, queue, and login policy.
+    """Install the backend while preserving the queue and existing login settings.
 
-    Repeated calls converge to the same configuration. Configuration validation
-    precedes service changes; partial publication or launch failure is repaired by
-    repeating this call. With start=False, only settings and definitions change.
+    Validate settings before changing services. Repeating the call with the same
+    settings repairs an interrupted installation or failed launch. With start=False,
+    write only settings and service definitions.
     """
     with installation_lock(runtime):
         settings = Settings.load(runtime, overrides, legacy=True)
@@ -368,11 +369,12 @@ def setup(
     no_start: bool = False,
     repair: bool = False,
 ) -> dict:
-    """Reconcile a frozen app's services without changing its signed bundle.
+    """Set up the packaged app's services without changing its signed bundle.
 
-    Holds install.lock across migration, settings validation, and publication.
-    --no-start prepares a fresh installation without touching launchd. Failures
-    may leave stopped services; rerunning setup repairs them and preserves data.
+    Hold install.lock while migrating data, validating settings, and writing service
+    definitions. --no-start prepares a fresh installation without loading services.
+    A failure may leave services stopped. Run setup again to repair them using the
+    saved data.
     """
     metadata = check_bundle(runtime)
     with installation_lock(runtime):
@@ -500,27 +502,29 @@ def main(argv: list[str] | None = None) -> int:
     install = commands.add_parser(
         "setup", help="Set up or repair this app's per-user login services"
     )
-    install.add_argument("--codex", help="Codex executable; saved for future launches")
-    install.add_argument("--socket", type=Path, help="Custom desktop IPC socket")
-    install.add_argument("--codex-home", type=Path, help="Custom Codex data directory")
+    install.add_argument("--codex", help="Save this Codex executable for future launches")
+    install.add_argument("--socket", type=Path, help="Use this Codex desktop socket")
+    install.add_argument("--codex-home", type=Path, help="Use this Codex data directory")
     install.add_argument(
-        "--port", type=int, help="Dashboard port (first-install default: profile port)"
+        "--port",
+        type=int,
+        help="Use this API port. A new installation defaults to its profile's port.",
     )
     install.add_argument(
         "--interval",
         type=int,
-        help="Polling interval (first-install default: 60 seconds)",
+        help="Set the polling interval in seconds. A new installation defaults to 60.",
     )
     install.add_argument(
         "--no-start",
         action="store_true",
         help="Prepare a fresh installation without loading services",
     )
-    install.add_argument("--repair", action="store_true", help="Restart the worker and dashboard")
-    install.add_argument("--json", action="store_true", help="Emit a structured result or error")
+    install.add_argument("--repair", action="store_true", help="Restart the backend and menu app")
+    install.add_argument("--json", action="store_true", help="Print the result or error as JSON")
     remove = commands.add_parser(
         "remove-installation",
-        help="Remove login services; keep the app, queue, and settings",
+        help="Remove login services and keep the app, queue, and settings",
     )
     remove.add_argument("--yes", action="store_true", help="Confirm removal of login services")
     args = parser.parse_args(argv)

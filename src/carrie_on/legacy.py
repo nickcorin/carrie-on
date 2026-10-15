@@ -1,4 +1,4 @@
-"""Decode and reconcile retired JSON queues into current, portable import records."""
+"""Read saved JSON queues and convert their records to queue entries."""
 
 import json
 import math
@@ -7,15 +7,15 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import UUID
 
 from carrie_on.ports import QueueStorage
-from carrie_on.queue import PENDING_STATES, EntryState, QueueEntry
+from carrie_on.queue import PENDING_STATES, EntryState, QueueEntry, QueueError
 
 
 @dataclass(frozen=True, kw_only=True)
 class LegacyEntry:
-    """Validated enrollment from the retired version 2 queue format."""
+    """Represent an entry from version 2 of the JSON queue format."""
 
     id: str
     thread_id: str
@@ -37,7 +37,7 @@ class LegacyEntry:
 
     @classmethod
     def parse(cls, raw: dict[str, Any]) -> "LegacyEntry":
-        """Validate saved enrollment fields without rejecting previously accepted text."""
+        """Check the saved entry's fields without applying new-request text restrictions."""
         entry = cls(**raw)
         if not isinstance(entry.id, str):
             raise TypeError("Invalid queue entry ID")
@@ -93,8 +93,8 @@ class LegacyEntry:
         *,
         current_enrollment: bool = False,
     ) -> QueueEntry:
-        """Convert validated saved intent into the current entry representation."""
-        # JSON queues did not record enrollment time. Imported history precedes pending work.
+        """Convert a saved JSON record to a QueueEntry with the supplied state and times."""
+        # JSON queues did not save enqueue times. Place imported history before pending work.
         terminal_time = finished_at if finished_at is not None else now
         queued_at = now if current_enrollment else min(terminal_time, now - 1)
         return QueueEntry(
@@ -107,8 +107,6 @@ class LegacyEntry:
             anchor_turn_id=self.anchor_turn_id,
             model=self.model,
             instructions=self.prompt,
-            original_instructions=self.prompt,
-            requested_limit_id=self.limit_id,
             reset_windows=dict(self.reset_windows),
             enrolled_while_busy=self.enrolled_while_busy,
             queued_at=datetime.fromtimestamp(queued_at, timezone.utc),
@@ -123,14 +121,14 @@ class LegacyEntry:
 
 @dataclass(frozen=True, kw_only=True)
 class LegacyQueue:
-    """Read-only retired queue. Only this module knows its representation and merge rules."""
+    """Read and merge saved JSON queues without changing the source files."""
 
     entries: tuple[LegacyEntry, ...] = ()
     history: tuple[Any, ...] = ()
 
     @classmethod
     def read(cls, path: Path) -> "LegacyQueue":
-        """Read a version 1 empty or version 2 JSON queue, ignoring removed pause state."""
+        """Read a version 2 JSON queue or an empty version 1 queue. Ignore the pause setting."""
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text())
@@ -151,10 +149,11 @@ class LegacyQueue:
         return cls(entries=entries, history=tuple(raw["history"]))
 
     def merge(self, current: "LegacyQueue", now: float) -> tuple[QueueEntry, ...]:
-        """Prefer terminal history, then uncertain sends, with current entries winning ties.
+        """Merge saved queues into QueueEntry records without writing a merged JSON file.
 
-        Each chat retains a single enrollment. Superseded enrollments become
-        cancelled history. No merged copy of the retired format is written.
+        History takes precedence over pending entries. For each chat, needs_attention
+        takes precedence over sending, then waiting. Entries from current win ties.
+        Keep the other entries as cancelled history.
         """
         history: list[Any] = []
         for record in self.history + current.history:
@@ -194,7 +193,7 @@ class LegacyQueue:
                 if type(finished_at) not in (int, float) or not math.isfinite(finished_at):
                     raise ValueError("Invalid completion timestamp")
             except (ValueError, TypeError, KeyError):
-                # Partial history is retained verbatim in the immutable source snapshot.
+                # The source snapshot keeps history records that cannot be imported.
                 continue
             outcome = raw.get("outcome")
             if outcome == "resumed":
@@ -222,38 +221,41 @@ class LegacyQueue:
         return tuple(imported)
 
     def normalize(self, now: float) -> tuple[QueueEntry, ...]:
-        """Translate a single queue using the same precedence rules as installation merge."""
+        """Convert this queue's records using the same rules as merging installations."""
         return LegacyQueue().merge(self, now)
 
 
 class LegacyImporter:
-    """Reconcile a retired queue before serving requests; preserve current work and history.
+    """Import saved JSON queue entries before the server accepts requests.
 
-    Original JSON files remain the recovery source for partial history and old
-    attempt details. Storage receives only current entries and an opaque import ID.
+    Insert entries individually and skip UUIDs already in storage. An interrupted
+    import can resume without overwriting edits or reactivating finished entries.
+    Keep the source JSON for history and attempt details that cannot be imported.
     """
 
     def __init__(self, storage: QueueStorage):
         self.storage = storage
 
-    def import_file(self, path: Path, marker: str) -> bool:
+    def import_file(self, path: Path) -> bool:
         if not path.exists():
             return False
-        return self.import_records(
-            LegacyQueue.read(path).normalize(datetime.now().timestamp()), marker
-        )
+        return self.import_records(LegacyQueue.read(path).normalize(datetime.now().timestamp()))
 
-    def import_records(self, records: Sequence[QueueEntry], marker: str) -> bool:
+    def import_records(self, records: Sequence[QueueEntry]) -> bool:
+        source_ids = {entry.id for entry in records}
         current: dict[UUID, datetime] = {}
         cursor = None
         while True:
             entries, cursor = self.storage.list_entries(states=None, limit=100, cursor=cursor)
             for entry in entries:
-                current.setdefault(entry.chat_id, entry.queued_at)
+                if entry.id not in source_ids:
+                    current.setdefault(entry.chat_id, entry.queued_at)
             if cursor is None:
                 break
-        reconciled = []
+        imported = False
         for entry in records:
+            if self.storage.get_entry(entry.id) is not None:
+                continue
             if entry.chat_id in current:
                 entry = replace(
                     entry,
@@ -263,6 +265,11 @@ class LegacyImporter:
                     entry = replace(
                         entry, state="cancelled", error="", finished_at=entry.updated_at
                     )
-            reconciled.append(entry)
-        import_id = uuid5(NAMESPACE_URL, "carrie-on/import/" + marker)
-        return self.storage.create_entries(reconciled, import_id=import_id)
+            try:
+                self.storage.create_entry(entry)
+            except QueueError as error:
+                if error.code != "entry_exists":
+                    raise
+            else:
+                imported = True
+        return imported

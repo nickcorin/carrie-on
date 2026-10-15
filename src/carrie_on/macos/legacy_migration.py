@@ -1,8 +1,8 @@
-"""Retire the previous bundled installation without replaying queued sends.
+"""Move data from the previous packaged app during release setup.
 
-Only release first-launch setup uses this module. Snapshots and a durable import
-plan live under the current data directory; retries never reimport an applied
-plan. Recovery copies retain malformed data and superseded enrollments.
+Save source copies and the migration journal in the current data directory.
+Setup retries skip entries whose UUIDs already exist in storage. Keep the source
+copies for recovery, including malformed records and entries replaced during import.
 """
 
 import fcntl
@@ -41,7 +41,7 @@ def sync_directory(path: Path) -> None:
 
 
 def atomic_write(path: Path, payload: bytes) -> None:
-    """Persist a private file before publishing its name, including journal state."""
+    """Write and sync a private temporary file, then replace the destination and sync its directory."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, temporary = tempfile.mkstemp(dir=path.parent)
     try:
@@ -62,11 +62,12 @@ def json_bytes(value: Any) -> bytes:
 
 @dataclass(frozen=True)
 class LegacyMigration:
-    """Own the previous installation and its recoverable transition to current data.
+    """Import the previous installation and keep copies for recovery.
 
-    The caller holds the current installation lock and has quit the previous
-    native app. prepare() holds both queues and the previous installer/lifecycle
-    locks until setup succeeds or fails. complete() requires a healthy new API.
+    The caller must hold the current installation lock and quit the previous native
+    app. The prepare context holds both queue locks and the previous installation
+    and lifecycle locks until setup exits. Call complete only after the new API
+    passes its health check.
     """
 
     home: Path
@@ -91,7 +92,7 @@ class LegacyMigration:
             return json.loads(self.journal.read_text())["state"] != "complete"
         if self.previous.exists():
             return True
-        # Source checkouts used these labels too; only adopt bundled installations.
+        # Source installations used the same labels. Import only packaged installations.
         for label in PREVIOUS_LABELS:
             path = self.login_agent(label)
             if path.exists():
@@ -117,7 +118,7 @@ class LegacyMigration:
             return
         if self.previous.is_symlink() or self.recovery.is_symlink():
             raise ValueError("Migration directories must not be symbolic links")
-        # Stop writers before locking: a worker can hold its queue during a send.
+        # Stop workers before taking locks because a worker may hold its queue lock during a send.
         self.stop_services(PREVIOUS_LABELS + self.current_labels[:1])
         with ExitStack() as locks:
             paths = [self.data / "resume-queue.lock"]
@@ -158,8 +159,8 @@ class LegacyMigration:
             importer = LegacyImporter(SqliteQueueStorage(database))
             queue_snapshot = self.recovery / "import/resume-queue.json"
             if queue_snapshot.exists():
-                # Recover a durable plan written by an earlier installer version.
-                importer.import_file(queue_snapshot, "previous_installation_import")
+                # An earlier installer may have saved the merged queue here.
+                importer.import_file(queue_snapshot)
             else:
                 queues = [
                     LegacyQueue.read(self.recovery / name / "resume-queue.json")
@@ -168,7 +169,7 @@ class LegacyMigration:
                     for name in ("previous", "current")
                 ]
                 records = queues[0].merge(queues[1], journal.get("prepared_at", time.time()))
-                importer.import_records(records, "previous_installation_import")
+                importer.import_records(records)
             yield
 
     def stop_services(self, labels: tuple[str, ...]) -> None:
@@ -310,7 +311,7 @@ class LegacyMigration:
             return {}
 
     def complete(self) -> None:
-        """Retire old registrations and relocate old files only after setup succeeds."""
+        """Remove old service definitions and move old files to recovery after setup succeeds."""
         if not self.journal.exists() or not self.pending:
             return
         for label in PREVIOUS_LABELS:

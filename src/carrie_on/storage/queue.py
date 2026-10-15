@@ -1,9 +1,9 @@
-"""Queries for queue entries and their immutable delivery attempts."""
+"""Read and write queue entries and delivery attempts in SQLite."""
 
 import json
 import math
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,15 +11,21 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from carrie_on.pagination import decode_cursor, encode_cursor
-from carrie_on.queue import DeliveryAttempt, EntryState, QueueEntry, QueueError, QueueSummary
+from carrie_on.queue import (
+    DeliveryAttempt,
+    EntryState,
+    QueueEntry,
+    QueueError,
+    QueueSummary,
+)
 from carrie_on.storage.database import Database
 
 
 class SqliteQueueStorage:
-    """Own atomic entry writes and delivery selection, without external I/O.
+    """Store queue entries and claim work through delivery attempts.
 
-    Every operation opens its own short transaction. Clock and lease duration
-    are dependencies of this service, not caller-managed transaction parameters.
+    Each operation opens its own transaction. The service uses its clock and lease
+    duration to set attempt expiry times. It makes no Codex calls.
     """
 
     _select = """SELECT q.*, (q.state IN ('queued','failed') AND EXISTS (
@@ -55,8 +61,6 @@ class SqliteQueueStorage:
             enrolled_while_busy=bool(row["enrolled_while_busy"]),
             queued_at=datetime.fromtimestamp(row["queued_at"], timezone.utc),
             updated_at=datetime.fromtimestamp(row["updated_at"], timezone.utc),
-            original_instructions=row["original_instructions"],
-            requested_limit_id=row["requested_limit_id"],
             state=row["state"],
             error=row["error"],
             revision=row["revision"],
@@ -134,54 +138,47 @@ class SqliteQueueStorage:
             next_cursor = encode_cursor(scope, [last.queued_at.timestamp(), str(last.id)])
         return entries, next_cursor
 
-    def _insert(self, connection: sqlite3.Connection, entry: QueueEntry) -> None:
-        try:
-            connection.execute(
-                """INSERT INTO queue_entries (
-                id,chat_id,title,account_id,limit_id,anchor_message_id,model,instructions,
-                reset_windows,enrolled_while_busy,queued_at,updated_at,original_instructions,
-                requested_limit_id,state,error,revision,finished_at,anchor_turn_id
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    str(entry.id),
-                    str(entry.chat_id),
-                    entry.title,
-                    entry.account_id,
-                    entry.limit_id,
-                    entry.anchor_message_id,
-                    entry.model,
-                    entry.instructions,
-                    json.dumps(entry.reset_windows),
-                    entry.enrolled_while_busy,
-                    entry.queued_at.timestamp(),
-                    entry.updated_at.timestamp(),
-                    entry.original_instructions,
-                    entry.requested_limit_id,
-                    entry.state,
-                    entry.error,
-                    entry.revision,
-                    entry.finished_at.timestamp() if entry.finished_at is not None else None,
-                    entry.anchor_turn_id,
-                ),
-            )
-        except sqlite3.IntegrityError as error:
-            if connection.execute(
-                "SELECT 1 FROM queue_entries WHERE chat_id=? AND state IN ('queued','failed')",
-                (str(entry.chat_id),),
-            ).fetchone():
-                raise QueueError("chat_already_queued", "Chat is already queued") from error
-            raise
-
-    def create_entry(self, entry: QueueEntry) -> tuple[QueueEntry, bool]:
+    def create_entry(self, entry: QueueEntry) -> QueueEntry:
         with self._database.connection(write=True) as connection:
-            existing = self._get(connection, entry.id, self._clock())
-            if existing is not None:
-                existing.require_creation_input(
-                    entry.chat_id, entry.original_instructions, entry.requested_limit_id
+            try:
+                connection.execute(
+                    """INSERT INTO queue_entries (
+                id,chat_id,title,account_id,limit_id,anchor_message_id,model,instructions,
+                reset_windows,enrolled_while_busy,queued_at,updated_at,
+                state,error,revision,finished_at,anchor_turn_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        str(entry.id),
+                        str(entry.chat_id),
+                        entry.title,
+                        entry.account_id,
+                        entry.limit_id,
+                        entry.anchor_message_id,
+                        entry.model,
+                        entry.instructions,
+                        json.dumps(entry.reset_windows),
+                        entry.enrolled_while_busy,
+                        entry.queued_at.timestamp(),
+                        entry.updated_at.timestamp(),
+                        entry.state,
+                        entry.error,
+                        entry.revision,
+                        entry.finished_at.timestamp() if entry.finished_at is not None else None,
+                        entry.anchor_turn_id,
+                    ),
                 )
-                return existing, False
-            self._insert(connection, entry)
-            return replace(entry, dispatching=False), True
+            except sqlite3.IntegrityError as error:
+                if connection.execute(
+                    "SELECT 1 FROM queue_entries WHERE id=?", (str(entry.id),)
+                ).fetchone():
+                    raise QueueError("entry_exists", "Queue entry already exists") from error
+                if connection.execute(
+                    "SELECT 1 FROM queue_entries WHERE chat_id=? AND state IN ('queued','failed')",
+                    (str(entry.chat_id),),
+                ).fetchone():
+                    raise QueueError("chat_already_queued", "Chat is already queued") from error
+                raise
+            return replace(entry, dispatching=False)
 
     def update_instructions(
         self, entry_id: UUID, instructions: str, *, revision: int
@@ -276,20 +273,3 @@ class SqliteQueueStorage:
                 (self._clock().timestamp(),),
             ).fetchone()[0]
         return QueueSummary(counts=counts, dispatching=dispatching)
-
-    def create_entries(self, entries: Sequence[QueueEntry], *, import_id: UUID) -> bool:
-        with self._database.connection(write=True) as connection:
-            if connection.execute(
-                "SELECT 1 FROM queue_imports WHERE id=?", (str(import_id),)
-            ).fetchone():
-                return False
-            for entry in entries:
-                if (
-                    connection.execute(
-                        "SELECT 1 FROM queue_entries WHERE id=?", (str(entry.id),)
-                    ).fetchone()
-                    is None
-                ):
-                    self._insert(connection, entry)
-            connection.execute("INSERT INTO queue_imports VALUES (?)", (str(import_id),))
-            return True

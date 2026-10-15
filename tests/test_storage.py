@@ -1,4 +1,4 @@
-"""Durability, concurrency, current-schema upgrades, and lossless external imports."""
+"""Test SQLite persistence, concurrent writes, schema upgrades, and JSON imports."""
 
 import base64
 import json
@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import asdict, replace
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from carrie_on.legacy import LegacyEntry, LegacyImporter
@@ -47,7 +48,7 @@ class StorageBehavior(unittest.TestCase):
             anchor_message_id=self.entry.anchor_message_id,
             model=self.entry.model,
             prompt="Legacy instruction",
-            reset_windows=self.entry.reset_windows,
+            reset_windows=dict(self.entry.reset_windows),
             enrolled_while_busy=False,
         )
         fields.update(changes)
@@ -71,7 +72,7 @@ class StorageBehavior(unittest.TestCase):
         database = self.path.with_name("import.sqlite3")
         SqliteStorageMaintenance(database).initialize()
         store = SqliteQueueStorage(database)
-        LegacyImporter(store).import_file(path, "json_import")
+        LegacyImporter(store).import_file(path)
         return store
 
     def test_concurrent_attempt_creation_acquires_each_entry_once(self):
@@ -110,15 +111,16 @@ os._exit(17)
         self.now = 220
         self.assertEqual(self.store.create_delivery_attempt().entry.id, self.entry.id)
 
-    def test_replay_survives_edit_cancel_and_restart(self):
+    def test_duplicate_insert_cannot_overwrite_edited_or_terminal_entries(self):
         self.store.update_instructions(self.entry.id, "\x00Revised ☃", revision=1)
         self.store.update_entry_state(self.entry.id, "cancelled")
         self.maintenance.initialize()
-        stored, created = SqliteQueueStorage(self.path).create_entry(self.entry)
-        self.assertFalse(created)
+        restarted = SqliteQueueStorage(self.path)
+        with self.assertRaises(QueueError) as error:
+            restarted.create_entry(self.entry)
+        self.assertEqual(error.exception.code, "entry_exists")
+        stored = restarted.get_entry(self.entry.id)
         self.assertEqual((stored.state, stored.instructions), ("cancelled", "\x00Revised ☃"))
-        with self.assertRaisesRegex(QueueError, "different creation"):
-            self.store.create_entry(replace(self.entry, original_instructions="different"))
 
     def test_unique_pending_chat_allows_reenrollment_after_terminal_state(self):
         replacement = replace(self.entry, id=uuid4())
@@ -178,15 +180,27 @@ os._exit(17)
         self.store.update_entry_state(self.entry.id, "sent")
         self.assertEqual(self.store.get_entry(self.entry.id).error, "")
 
-    def test_import_batch_rolls_back_without_partial_entries_or_marker(self):
-        other = queue_entry(chat_id=uuid4())
-        duplicate = replace(other, id=uuid4())
-        marker = uuid4()
-        with self.assertRaises(QueueError):
-            self.store.create_entries([other, duplicate], import_id=marker)
-        self.assertIsNone(self.store.get_entry(other.id))
-        self.assertTrue(self.store.create_entries([other], import_id=marker))
-        self.assertFalse(self.store.create_entries([other], import_id=marker))
+    def test_interrupted_import_resumes_without_overwriting_or_cancelling_its_entries(self):
+        historical = queue_entry(chat_id=uuid4(), state="sent", finished_at=instant(60))
+        pending = replace(historical, id=uuid4(), state="queued", finished_at=None)
+        insert = self.store.create_entry
+
+        def interrupted(entry):
+            if entry.id == pending.id:
+                raise StorageUnavailable("Interrupted import")
+            return insert(entry)
+
+        importer = LegacyImporter(self.store)
+        with patch.object(self.store, "create_entry", side_effect=interrupted):
+            with self.assertRaisesRegex(StorageUnavailable, "Interrupted import"):
+                importer.import_records([historical, pending])
+        self.assertEqual(self.store.get_entry(historical.id).state, "sent")
+        self.assertIsNone(self.store.get_entry(pending.id))
+        self.assertTrue(importer.import_records([historical, pending]))
+        self.assertEqual(self.store.get_entry(pending.id).state, "queued")
+        self.store.update_instructions(pending.id, "Edited after import", revision=1)
+        self.assertFalse(importer.import_records([historical, pending]))
+        self.assertEqual(self.store.get_entry(pending.id).instructions, "Edited after import")
 
     def test_query_bound_pagination_keeps_all_entries_with_equal_timestamps(self):
         for _ in range(4):
@@ -231,7 +245,7 @@ os._exit(17)
         with self.assertRaisesRegex(StorageUnavailable, "newer"):
             self.maintenance.initialize()
 
-    def test_declarative_upgrade_preserves_history_creation_identity_and_active_attempt(self):
+    def test_declarative_upgrade_preserves_instructions_history_and_active_attempt(self):
         path = self.path.with_name("old.sqlite3")
         baseline = Path(__file__).parents[1] / "src/carrie_on/storage/migrations/0001_queue.sql"
         with closing(sqlite3.connect(path)) as connection:
@@ -286,10 +300,11 @@ os._exit(17)
         store = SqliteQueueStorage(path, clock=lambda: instant(150))
         entry = store.get_entry(self.entry.id)
         self.assertEqual(
-            (entry.instructions, entry.original_instructions, entry.state, entry.revision),
-            ("Edited\x00", "Original", "failed", 8),
+            (entry.instructions, entry.state, entry.revision),
+            ("Edited\x00", "failed", 8),
         )
         self.assertTrue(entry.dispatching)
+        self.assertEqual(entry.reset_windows, {"primary": 100})
         self.assertIsNone(store.create_delivery_attempt())
         for previous, current in (
             ("sent", "sent"),
@@ -304,8 +319,8 @@ os._exit(17)
         legacy = self.legacy_entry()
         path = self.write_legacy([legacy])
         importer = LegacyImporter(self.store)
-        self.assertTrue(importer.import_file(path, "previous"))
-        self.assertFalse(importer.import_file(path, "previous"))
+        self.assertTrue(importer.import_file(path))
+        self.assertFalse(importer.import_file(path))
         self.assertEqual(self.store.get_entry(UUID(legacy.id)).state, "cancelled")
         self.assertEqual(self.store.list_entries()[0], [self.entry])
 
@@ -340,6 +355,6 @@ os._exit(17)
         path = self.path.with_name("bad.json")
         path.write_text('{"version":99}')
         with self.assertRaises(ValueError):
-            LegacyImporter(self.store).import_file(path, "bad")
+            LegacyImporter(self.store).import_file(path)
         self.assertEqual(path.read_text(), '{"version":99}')
         self.assertEqual(self.store.get_entry(self.entry.id), self.entry)

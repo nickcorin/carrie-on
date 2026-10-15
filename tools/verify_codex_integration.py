@@ -1,8 +1,9 @@
 """Check a selected real Codex chat using a temporary database.
 
-wait performs read-only inspection. continue and migrate SEND a test instruction
-and are intended only for an explicitly authorized, idle disposable chat.
-Quota baselines are simulated; this does not establish a real usage reset.
+The wait command only reads state. The continue and migrate commands send a test
+instruction. Use them only with permission to send to an idle, disposable chat.
+The tool changes saved reset timestamps to simulate a different quota window.
+It does not verify an actual quota reset.
 """
 
 import argparse
@@ -40,10 +41,11 @@ def verify(mode: str, chat_id: UUID, executable: str):
             uuid4(), "Reply exactly: Carrie On desktop delivery verified.", chat, usage, now
         )
         entry = replace(
-            entry, reset_windows={name: reset - 1 for name, reset in entry.reset_windows.items()}
+            entry,
+            reset_windows={name: reset - 1 for name, reset in entry.reset_windows.items()},
         )
-        if not entry.reset_ready(usage, now):
-            raise ValueError("Available quota and future reset timestamps are required")
+        if not entry.reset_ready(usage):
+            raise ValueError("Available quota is required")
         if mode == "migrate":
             if not entry.anchor_message_id:
                 raise ValueError("This chat has no message identity for the legacy import check")
@@ -56,14 +58,14 @@ def verify(mode: str, chat_id: UUID, executable: str):
                 anchor_message_id=entry.anchor_message_id,
                 model=entry.model,
                 prompt=entry.instructions,
-                reset_windows=entry.reset_windows,
+                reset_windows=dict(entry.reset_windows),
                 enrolled_while_busy=entry.enrolled_while_busy,
             )
             source = path.with_suffix(".json")
             source.write_text(
                 json.dumps({"version": 2, "entries": [asdict(legacy)], "history": []})
             )
-            LegacyImporter(store).import_file(source, "acceptance")
+            LegacyImporter(store).import_file(source)
         else:
             store.create_entry(entry)
         if mode == "wait":

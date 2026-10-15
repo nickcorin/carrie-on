@@ -1,4 +1,4 @@
-"""Executable composition: configuration, persistence startup, worker lifetime, HTTP."""
+"""Configure and run the local HTTP service and dispatch worker."""
 
 import argparse
 import asyncio
@@ -35,10 +35,11 @@ def create_application(
     run_worker: bool = True,
     on_worker_failure: Callable[[], None] = lambda: None,
 ) -> FastAPI:
-    """Assemble collaborators; lifespan initializes storage before accepting requests.
+    """Create the HTTP application with the supplied storage and Codex connections.
 
-    Connections and database paths must be explicit. Tests can disable dispatch,
-    while composed acceptance tests keep the real worker and transport adapters.
+    Before accepting requests, the lifespan handler initializes storage and imports
+    any saved JSON queue. It starts the worker and stops it at shutdown unless
+    run_worker is False.
     """
     worker = DispatchWorker(store, connections, interval, on_worker_failure) if run_worker else None
 
@@ -46,7 +47,7 @@ def create_application(
     async def lifespan(app: FastAPI):
         maintenance.initialize()
         if legacy_path is not None:
-            LegacyImporter(store).import_file(legacy_path, "json_import")
+            LegacyImporter(store).import_file(legacy_path)
         if worker:
             loop = asyncio.get_running_loop()
 
@@ -75,7 +76,7 @@ def create_application(
 
 
 def main() -> int:
-    """Resolve runtime configuration only at process entry, then run the local server."""
+    """Read command-line settings and start the local server."""
     from carrie_on.macos.installation import Settings, SettingsOverrides
     from carrie_on.macos.runtime import Runtime
 

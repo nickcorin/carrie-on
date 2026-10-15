@@ -1,6 +1,5 @@
-"""Consumer-owned persistence contracts; no database types cross this boundary."""
+"""Define the storage operations the application uses without exposing database types."""
 
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
@@ -9,14 +8,14 @@ from carrie_on.queue import DeliveryAttempt, EntryState, QueueEntry, QueueSummar
 
 
 class StorageUnavailable(Exception):
-    """Persistence could not complete; a lost reply does not establish rollback."""
+    """Report a storage failure. A write may have succeeded before its reply was lost."""
 
 
 class QueueStorage(Protocol):
-    """Atomic queue operations. Mutations return persisted entries or raise QueueError."""
+    """Read and change queue entries and delivery attempts. Each operation is atomic."""
 
     def get_entry(self, entry_id: UUID) -> QueueEntry | None:
-        """Return the entry, or None when its identity is unknown."""
+        """Return the entry with this UUID, or None if it does not exist."""
         ...
 
     def list_entries(
@@ -27,51 +26,55 @@ class QueueStorage(Protocol):
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[QueueEntry], str | None]:
-        """Read 1–100 entries in (queued_at, id) order; None includes every state.
+        """List entries ordered by queued_at, then id, with a page size of 1 to 100.
 
-        Cursors are opaque and bound to the filters. Separate pages are live
-        observations, not a snapshot across calls.
+        Pass states=None to include every state. Reuse cursors only with the same
+        filters and page size. Each call reads current data, so entries may change
+        between pages.
         """
         ...
 
     def get_queue_summary(self) -> QueueSummary:
-        """Count entry states and active dispatches in a consistent read."""
+        """Count entries by state and active deliveries from the same storage read."""
         ...
 
-    def create_entry(self, entry: QueueEntry) -> tuple[QueueEntry, bool]:
-        """Create pending work or replay its original UUID/input; bool means created.
+    def create_entry(self, entry: QueueEntry) -> QueueEntry:
+        """Insert an entry and return the saved record.
 
-        Different original input conflicts. A conversation can have at most one
-        pending entry, including failed work. Creation performs no Codex I/O.
+        Raise QueueError with entry_exists if its UUID already exists. Each chat
+        can have at most one queued or failed entry. A duplicate pending entry
+        raises QueueError with chat_already_queued.
         """
         ...
 
     def update_instructions(
         self, entry_id: UUID, instructions: str, *, revision: int
     ) -> QueueEntry:
-        """Edit idle pending work at its current revision; conflict changes nothing."""
+        """Edit a pending entry with no active delivery if its revision still matches.
+
+        Reject a conflicting revision without changing the entry.
+        """
         ...
 
     def update_entry_state(
         self, entry_id: UUID, state: EntryState, *, error: str = ""
     ) -> QueueEntry:
-        """Change state/error atomically, leaving delivery attempts unchanged."""
+        """Change the entry's state and error together without changing its delivery attempts."""
         ...
 
     def create_delivery_attempt(self) -> DeliveryAttempt | None:
-        """Acquire the next pending entry without an active attempt, or return None."""
-        ...
+        """Create an attempt for the next pending entry that has no active attempt.
 
-    def create_entries(self, entries: Sequence[QueueEntry], *, import_id: UUID) -> bool:
-        """Insert a batch and marker together; completed imports return False."""
+        Return None if no entry is available.
+        """
         ...
 
 
 class StorageMaintenance(Protocol):
-    """Persistence lifecycle capabilities for startup and installation."""
+    """Prepare storage at startup and create backups during installation."""
 
     def initialize(self) -> None:
-        """Apply pending schema migrations before application operations."""
+        """Apply pending schema migrations before the application accesses stored data."""
         ...
 
     def create_backup(self, destination: Path) -> None:

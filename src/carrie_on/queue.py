@@ -1,6 +1,6 @@
-"""Queue entries, delivery attempts, and decisions over typed Codex observations."""
+"""Track queued instructions and decide when Codex can receive them."""
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -13,7 +13,7 @@ PENDING_STATES: tuple[EntryState, ...] = ("queued", "failed")
 
 
 class QueueError(Exception):
-    """An expected rejection, identified by a stable code; no write was committed."""
+    """Reject a queue operation before it writes, with a code callers can handle."""
 
     def __init__(self, code: str, detail: str):
         super().__init__(detail)
@@ -22,11 +22,12 @@ class QueueError(Exception):
 
 @dataclass(frozen=True, kw_only=True)
 class QueueEntry:
-    """Captured intent and current state, with timezone-aware UTC timestamps.
+    """Store a queued instruction and the chat state recorded when it was added.
 
-    Original instructions and the requested bucket preserve creation identity
-    across edits and automatic bucket selection. Dispatching is a read snapshot
-    derived from active ownership rather than a persisted entry state.
+    Storage sets dispatching from the entry's unexpired delivery attempts when it
+    reads the entry. The queue does not store a dispatching state. Reset timestamps
+    identify the saved quota windows within this account and bucket. Datetime
+    fields use timezone-aware UTC values.
     """
 
     id: UUID
@@ -41,9 +42,7 @@ class QueueEntry:
     enrolled_while_busy: bool
     queued_at: datetime
     updated_at: datetime
-    original_instructions: str = field(repr=False)
     anchor_turn_id: str | None = None
-    requested_limit_id: str | None = field(default=None, repr=False)
     state: EntryState = "queued"
     error: str = ""
     revision: int = 1
@@ -58,19 +57,10 @@ class QueueEntry:
         chat: Chat,
         usage: Usage,
         now: datetime,
-        *,
-        limit_id: str | None = None,
     ) -> "QueueEntry":
-        """Capture the current turn and exhausted or soonest future reset windows."""
+        """Record the current turn and each quota window's reset timestamp."""
         if not (chat.message_id or chat.turn_id):
             raise QueueError("invalid_chat", "Chat has no identifiable conversation anchor")
-        exhausted = [window for window in usage.windows if window.used >= 100]
-        future = [window for window in usage.windows if window.reset_at > now.timestamp()]
-        if not exhausted and not future:
-            raise QueueError(
-                "stale_usage", "Usage timestamps are stale; refresh Codex and try again"
-            )
-        selected = exhausted or [min(future, key=lambda window: window.reset_at)]
         return cls(
             id=entry_id,
             chat_id=UUID(chat.thread_id),
@@ -81,29 +71,14 @@ class QueueEntry:
             anchor_turn_id=chat.turn_id,
             model=chat.model,
             instructions=instructions,
-            original_instructions=instructions,
-            requested_limit_id=limit_id,
-            reset_windows={window.name: window.reset_at for window in selected},
+            reset_windows={window.name: window.reset_at for window in usage.windows},
             enrolled_while_busy=chat.busy,
             queued_at=now,
             updated_at=now,
         )
 
-    def require_creation_input(
-        self, chat_id: UUID, instructions: str, limit_id: str | None
-    ) -> None:
-        """Reject reuse of this entry's UUID for different original caller input."""
-        if (chat_id, instructions, limit_id) != (
-            self.chat_id,
-            self.original_instructions,
-            self.requested_limit_id,
-        ):
-            raise QueueError(
-                "id_reused", "This UUID was already used with different creation input"
-            )
-
     def update_instructions(self, instructions: str, now: datetime) -> "QueueEntry":
-        """Replace the current instructions while retaining the original creation input."""
+        """Replace instructions on a pending entry that has no active delivery."""
         if self.dispatching:
             raise QueueError(
                 "delivery_active", "A delivery is active; wait for its lease to expire"
@@ -113,7 +88,11 @@ class QueueEntry:
         return replace(self, instructions=instructions, updated_at=now)
 
     def update_state(self, state: EntryState, now: datetime, *, error: str = "") -> "QueueEntry":
-        """Apply a lifecycle transition; failed work retries, terminal work stays terminal."""
+        """Change a pending entry's state and set its error and completion time.
+
+        Failed entries require an error and remain eligible for retry. Finished
+        entries cannot return to the queue. A stale entry can still be cancelled.
+        """
         if state == "failed" and not error.strip():
             raise QueueError("missing_error", "A failed entry requires an error")
         error = error if state in ("failed", "cancelled") else ""
@@ -136,26 +115,26 @@ class QueueEntry:
             dispatching=self.dispatching and state in PENDING_STATES,
         )
 
-    def reset_ready(self, usage: Usage, now: datetime) -> bool:
-        """Require the captured account/bucket, fresh reset windows, and headroom."""
+    def reset_ready(self, usage: Usage) -> bool:
+        """Check for a changed reset timestamp and available quota in the saved account and bucket."""
         if usage.account_id != self.account_id or usage.limit_id != self.limit_id:
             raise QueueError("quota_changed", "Codex account or quota bucket changed")
         if not usage.allowed or any(window.used >= 100 for window in usage.windows):
             return False
-        windows = {window.name: window.reset_at for window in usage.windows}
-        return all(
-            name in windows and windows[name] > max(baseline, now.timestamp())
-            for name, baseline in self.reset_windows.items()
+        return any(
+            window.reset_at != self.reset_windows[window.name]
+            for window in usage.windows
+            if window.name in self.reset_windows
         )
 
     def matches_anchor(self, chat: Chat) -> bool:
-        """Compare every conversation identity captured at enrollment."""
+        """Check that the chat still has the saved turn and opening message IDs."""
         return (self.anchor_turn_id is None or chat.turn_id == self.anchor_turn_id) and (
             self.anchor_message_id is None or chat.message_id == self.anchor_message_id
         )
 
-    def assess(self, usage: Usage, chat: Chat | None, now: datetime) -> "Eligibility":
-        """Decide readiness from fresh observations, reconciling accepted sends first."""
+    def assess(self, usage: Usage, chat: Chat | None) -> "Eligibility":
+        """Check whether Codex accepted the message or the entry is ready to send."""
         if chat is None:
             return Eligibility(
                 "failed", "Chat is archived, renamed, or absent from the local catalog"
@@ -168,20 +147,18 @@ class QueueEntry:
             return Eligibility("stale", "Conversation continued after enrollment")
         if chat.model != self.model:
             return Eligibility("failed", "Chat model changed after enrollment")
-        if not self.reset_ready(usage, now):
-            return Eligibility("failed", "Waiting for fresh reset confirmation and available quota")
+        if not self.reset_ready(usage):
+            return Eligibility("failed", "Waiting for a different quota window and available quota")
         if chat.busy or chat.blocked:
             return Eligibility("failed", "Chat is active or requires attention")
         if self.enrolled_while_busy and chat.status == "completed":
             return Eligibility("stale", "Work finished before the usage reset")
-        if self.enrolled_while_busy and not chat.quota_failed:
-            return Eligibility("failed", "Chat stopped for a reason other than quota exhaustion")
-        return Eligibility("ready", "Ready to send after a fresh reset")
+        return Eligibility("ready", "Quota window changed and quota is available")
 
 
 @dataclass(frozen=True, kw_only=True)
 class DeliveryAttempt:
-    """Immutable ownership until expiry, returned only to the worker that acquires it."""
+    """Give the creating worker exclusive access to an entry until the attempt expires."""
 
     id: UUID
     entry: QueueEntry
@@ -191,7 +168,7 @@ class DeliveryAttempt:
 
 @dataclass(frozen=True)
 class Eligibility:
-    """Readiness decision without storage or transport effects."""
+    """Describe whether an entry can be sent and why."""
 
     outcome: Literal["ready", "sent", "stale", "failed"]
     reason: str
@@ -199,7 +176,7 @@ class Eligibility:
 
 @dataclass(frozen=True, kw_only=True)
 class QueueSummary:
-    """State counts and current dispatch activity from the same storage snapshot."""
+    """Count entries by state and active deliveries from the same storage read."""
 
     counts: dict[EntryState, int]
     dispatching: int

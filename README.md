@@ -20,7 +20,7 @@ Carrie On Dev checks for newer commits in your local checkout and rebuilds the a
 
 ## How it works
 
-Each queue item authorizes an instruction after a recorded reset. Carrie On waits for available quota and checks that the chat still matches the enrolled work. Active chats and work awaiting quota, approval, input, or goal changes remain retryable failures. If the conversation has continued, its entry becomes stale and does not retry. Expiring delivery leases recover interrupted workers; fresh conversation checks suppress duplicate sends after uncertain replies. Remove queued work using its trash control, or quit the app to stop processing while preserving the queue.
+Each queue item authorizes an instruction when a quota window changes and quota is available. Carrie On identifies windows by their reset timestamps and checks that the chat still matches the enrolled work. It does not need to observe exhaustion. Active chats and work awaiting quota, approval, input, or goal changes remain retryable failures. If the conversation has continued, its entry becomes stale and does not retry. Expiring delivery leases recover interrupted workers; fresh conversation checks suppress duplicate sends after uncertain replies. Remove queued work using its trash control, or quit the app to stop processing while preserving the queue.
 
 Queue data, instructions, and logs stay on your Mac. The native card uses a local API listening only on `127.0.0.1`. Carrie On does not purchase credits, change models, or run a competing agent process. Remote chats and ChatGPT conversations are unsupported.
 

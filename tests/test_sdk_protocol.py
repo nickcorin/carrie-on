@@ -1,4 +1,4 @@
-"""Bounded SDK reads verified through a real local app-server subprocess."""
+"""Test SDK reads through a local process that simulates the Codex app-server."""
 
 import json
 import os
@@ -142,13 +142,13 @@ for line in sys.stdin:
                     self.assertEqual(chat.busy, status == "inProgress" or not completed_at)
                     self.assertEqual((chat.message_id, chat.model), ("original", "model-a"))
 
-    def test_compact_reads_capture_quota_failure_without_loading_history(self):
+    def test_compact_reads_capture_ended_work_without_loading_history(self):
         self.fixture("quota")
         with AppServer(str(self.executable)) as server:
             chat = server.snapshot("thread-a", Settings())
         self.assertEqual(
-            (chat.title, chat.busy, chat.blocked, chat.quota_failed),
-            ("Finish feature", False, False, True),
+            (chat.title, chat.busy, chat.blocked, chat.status),
+            ("Finish feature", False, False, "failed"),
         )
         reads = [json.loads(line) for line in self.request_log.read_text().splitlines()]
         self.assertEqual(
