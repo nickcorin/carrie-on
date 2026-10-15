@@ -22,6 +22,7 @@ from pathlib import Path
 from carrie_on.macos.compatibility import audit
 from carrie_on.macos.runtime import PROFILES
 from tools.branding import check_bundle
+from tools.export_reference import check_links
 
 
 def app_contents(app):
@@ -100,8 +101,11 @@ def verify(archive, profile=None):
             "LICENSE",
             "features/index.md",
             "assets/README.md",
+            "reference/python/index.html",
+            "reference/native/index.html",
         ):
             assert (documentation / name).is_file(), f"Missing bundled documentation: {name}"
+        check_links(documentation / "reference")
         for document in documentation.rglob("*.md"):
             for target in re.findall(r"\]\(([^)]+)\)", document.read_text()):
                 if "://" in target or target.startswith(("mailto:", "#")):

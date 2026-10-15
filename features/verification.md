@@ -14,16 +14,16 @@ The automated checks cover the product behaviors below through the current stora
 | Desktop settings and permissions retained; helper cannot start turns | Protocol and adapter tests |
 | Fresh enrollment usage, resets before enrollment, failed reads, out-of-order observations | API tests |
 | Slow enrollment does not block unrelated queue actions | Concurrent API test with held Codex reads |
-| Queue read, instruction edit, cancellation, history, and repeat cancellation | API/CLI/storage tests |
+| Queue read, instruction edit, cancellation, history, and repeat cancellation | API/CLI/storage tests; native URLSession and CLI against the same HTTP service and SQLite database |
 | Conflicting edits and stale item identities | Concurrent HTTP edits with the same body revision permit only one write; API and native checks verify revision conflicts and active delivery protection; cancel/re-enroll between actual HTTP pages retains distinct queue identities |
 | Read-only diagnostics and dry-run readiness | API/CLI tests assert no deliveries or sends |
 | Delivery failures remain visible and temporary failures retry | Dispatch and native state mapping |
 | Lost send reply, already-observed message, and changed conversation | Dispatch tests plus real HTTP, lifespan worker, app-server subprocess, desktop socket, and persisted entry/restart acceptance |
 | Process death, lease expiry, competing attempt acquisition | SQLite tests, including a child process exiting after claim |
 | Queue ordering, equal timestamps, unrelated work during active ownership | SQLite ordering tests |
-| Idempotent creation after lost HTTP reply, edits, cancellation, and restart | Actual CLI-to-HTTP timeout and SIGINT tests; native immutable request persistence and per-item recovery; HTTP replay and storage uniqueness tests |
+| Idempotent creation after lost HTTP reply, edits, cancellation, and restart | Actual CLI-to-HTTP timeout and SIGINT tests; native persistence through a 404 lookup, rejected 422 replay, and restart; native recovery of a committed creation after HTTP 503; HTTP replay and storage uniqueness tests |
 | SQLite durability, private files, reader concurrency, transaction rollback | Storage tests |
-| JSON and older-installation import, history, damaged records, retry, no resurrection | Current-entry assertions for history and uncertain work; opaque history/attempt details in immutable source snapshots; NUL text, import retry, message/turn anchors, and declarative schema upgrade |
+| v0.5.7 JSON import, history, damaged records, retry, no resurrection | Raw v0.5.7 fixture through import and composed dispatch; turn-only anchors, changed turns with unchanged message IDs, already accepted messages, malformed history timestamps and IDs, NUL text, and interrupted per-entry import |
 | Compact tray count/reset/usage, missing/invalid data, partial failures | Native self-tests and API summary tests |
 | Usage selection, multiple buckets, countdown labels, activity times | Native self-tests |
 | Offline/missing/closed/unresponsive Codex; reconnect and draft retention | Native connection checks and HTTP tests |
@@ -38,19 +38,19 @@ The automated checks cover the product behaviors below through the current stora
 | Stable reopening, app replacement, port/socket/Codex-home preservation | Distribution tests |
 | GitHub release selection, download integrity, offline failure, rollback, retry | Python/native updater tests with temporary apps |
 | Source rebuild output, failure isolation, successful replacement, local commit discovery | Native/Python source-build tests |
-| Release/Dev independent settings, state, ports, preferences, service targets | Build-profile, migration, and CLI service tests |
+| Release/Dev independent settings, state, ports, preferences, service targets | Build-profile and CLI service tests |
 | Branding, release metadata, signed app, ZIP/DMG, relocation, no system Python | Build/release tests and packaged acceptance pipeline |
 | Loopback/Host/Origin/header restrictions, body bounds, validation, error schema | HTTP contract tests including required OpenAPI headers, health failure media, bounded cursors, positive integer revisions, and 405 Allow preservation |
-| CLI help/version, structured stdout, stderr/errors, exit codes, explicit server | CLI subprocess tests and installed frozen Dev CLI reads against its own HTTP service |
-| Python module ownership and callable contracts | Dependency-boundary tests, Ruff formatting/import checks, mypy on shared contracts, and generated Python/native reference inspection |
+| CLI help/version, structured stdout, stderr/errors, exit codes, explicit server | CLI subprocess tests, long Unicode add/edit round trips, HTTP 413 input rejection, and packaged CLI reads against an isolated HTTP service |
+| Python module ownership and callable contracts | Dependency-boundary tests, Ruff formatting/import checks, mypy on shared contracts, generated Python/native HTML, and bundled page/fragment link checks |
 
 ## Acceptance boundaries
 
 `python -m tools.verify_large_chat` exercises fresh enrollment and retired JSON import against a synthetic 33 MiB desktop history. It checks that dispatch reads compact SDK responses, never subscribes to desktop history, sends the exact instruction once, and preserves the sent entry across server restart.
 
-`tests/test_architecture.py` rejects database libraries outside `storage/` and concrete storage imports from the application/domain. `tests/test_storage.py` verifies concurrent acquisition, process death, expiry, revisions, pagination, private backups, schema upgrade, interrupted per-entry import, and terminal states.
+`tests/test_architecture.py` rejects database libraries outside `storage/` and concrete storage imports from the application/domain. `tests/test_storage.py` verifies concurrent acquisition, process death, expiry, revisions, pagination, private backups, repeated schema initialization with existing work, interrupted per-entry import, and terminal states.
 
-`just test` runs the Python and native automated tests. `just test-minimum` repeats them on Python 3.10. `just dev` additionally builds the complete Dev bundle, audits native dependencies, signs it, verifies it in an isolated home, and checks the ZIP and mounted DMG. `just lint` checks formatting, imports, the generated OpenAPI contract, and shared Python types. `just reference` generates Python API pages and native symbol graphs.
+`just test` runs the Python and native automated tests. `just test-minimum` repeats them on Python 3.10. `just dev` additionally builds the complete Dev bundle, regenerates and checks its references, audits native dependencies, signs it, verifies it in an isolated home, and checks the ZIP and mounted DMG. `just lint` checks formatting, imports, the generated OpenAPI contract, and shared Python types. `just reference` generates Python API pages, native HTML, and Swift symbol graphs.
 
 `python tests/render_queue_cards.py OUTPUT.png [--dark]` renders real AppKit/SwiftUI cards with synthetic data. `.venv/bin/python tests/build_chat_scroll_preview.py /tmp/carrie-scroll --verify --snapshots /tmp/carrie-scroll/renders` runs the complete picker with 150 synthetic chats and 75 queued items. Repeated runs verify viewport pagination, search reset, beginning/end navigation, and independent overflowing lists; light/dark renders verify card spacing, alignment, and section heights. This fixture starts no services and rejects queue mutations.
 

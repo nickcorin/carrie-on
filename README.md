@@ -14,7 +14,7 @@ See the [installation guide](INSTALL.md) for first launch, updates, troubleshoot
 
 Carrie On checks for updates on startup. Open **Settings** and choose **Update to &lt;version&gt;** to install an available release, or **Check for Updates** to check again. Updates preserve your queue and settings.
 
-If you use 0.5.4 or earlier, quit the old app and replace it with the downloaded app. Version 0.5.6 imports your data and removes the old service registrations automatically. See the [update instructions](INSTALL.md#updates).
+Upgrades from v0.5.7 preserve the JSON queue in SQLite and retain the source file for recovery. See the [update instructions](INSTALL.md#updates).
 
 Carrie On Dev checks for newer commits in your local checkout and rebuilds the app when you choose **Update to &lt;short hash&gt;**. See [development builds](RELEASING.md#local-development-app).
 
@@ -34,6 +34,7 @@ Dispatch uses the desktop's private, version-sensitive IPC protocol. Missing com
 - [Installation](INSTALL.md): install, update, recover, and uninstall.
 - [Contributing](CONTRIBUTING.md): development setup, component map, and tests.
 - [Architecture and API](ARCHITECTURE.md): package boundaries, SQLite, delivery, and HTTP contracts.
+- [Interface references](CONTRIBUTING.md#interface-references): generated Python and native declarations, also bundled with the app.
 - [Releasing](RELEASING.md): build locally and prepare GitHub releases.
 - [Feature contracts](features/index.md), [changelog](CHANGELOG.md), and [security](SECURITY.md).
 

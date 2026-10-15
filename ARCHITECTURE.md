@@ -9,14 +9,14 @@ Carrie On is a local client/server application. The native Swift app and Typer C
 | `src/carrie_on/queue.py` | QueueEntry, DeliveryAttempt, lifecycle transitions, and reset eligibility |
 | `src/carrie_on/ports.py` | Application-owned storage and maintenance protocols |
 | `src/carrie_on/storage/` | Declarative SQL migrations, private connections, row mappings, and atomic queries |
-| `src/carrie_on/legacy.py` | Retired JSON decoding, merge precedence, and import orchestration through the storage protocol |
+| `src/carrie_on/legacy.py` | v0.5.7 JSON decoding and resumable import through the storage protocol |
 | `src/carrie_on/application.py` | Enrollment and read operations using Codex observations |
 | `src/carrie_on/dispatch.py` | Delivery orchestration and supervised worker lifetime |
 | `src/carrie_on/api.py` | HTTP contract, input validation, response serialization, and error mapping |
 | `src/carrie_on/server.py` | Configuration, collaborator construction, persistence startup, and process entrypoint |
 | `src/carrie_on/cli.py` | Typer command tree and HTTP client |
 | `src/carrie_on/codex/` | Validated observations and private desktop/read-only app-server adapters |
-| `src/carrie_on/macos/` | Installation, lifecycle, update, compatibility, and older-installation migration |
+| `src/carrie_on/macos/` | Installation, lifecycle, updates, and compatibility |
 | `menubar/` | Native presentation, HTTP client, and macOS app lifecycle |
 | `tools/` | Build, icon, release, OpenAPI, and package-verification tooling |
 | `tests/` | Domain, storage, HTTP, CLI, protocol, packaging, and native behavior checks |
@@ -59,7 +59,7 @@ Enrollment reads fresh usage and captures each named window's `resetsAt` timesta
 
 SQLite uses WAL, foreign keys, full synchronization, a five-second busy timeout, and short write transactions. Acquisition selects the next `queued` or `failed` entry without a live attempt, ordered by `(queued_at, id)`, and inserts its attempt in the same transaction. There are no deferrals or per-entry check timestamps. Other entries remain available while an attempt is active.
 
-The worker's `send()` owns observation and delivery. An attempt lasts 120 seconds; external operations have a budget of at most 100 seconds, bounded by remaining ownership. The worker reads fresh quota and conversation state before sending. Busy chats, unavailable quota, model changes, and transport failures become `failed` with an error and may retry after expiry. A newer conversation anchor becomes terminal `stale`. Recorded acceptance becomes `sent`. `cancelled` never retries; its optional error distinguishes a terminal failure from user removal. State changes do not mutate attempts or release ownership early.
+The worker's `send()` creates an attempt, reads fresh quota and conversation state, and sends at most once. Creating the attempt claims the entry. Attempts last 120 seconds; the worker does not renew them or recheck expiry during delivery. External calls have individual timeouts. Busy chats, unavailable quota, model changes, and transport failures become `failed` with an error and may retry after expiry. A newer conversation anchor becomes terminal `stale`. Recorded acceptance becomes `sent`. `cancelled` never retries; its optional error distinguishes a terminal failure from user removal. State changes do not mutate attempts or release ownership early.
 
 The entry UUID is the outgoing client message ID. Accepted-message reconciliation takes precedence over stale detection. After an uncertain reply or process crash, another attempt checks Codex again before sending. A database transaction cannot be atomic with the desktop send, so this is recoverable delivery with duplicate suppression. Entry updates do not carry an attempt token; they do not fence a worker that has outlived its lease.
 
@@ -107,7 +107,7 @@ Content-Type: application/json
 {"instruction":"Finish the remaining tests.","revision":7}
 ```
 
-After a 409 response with `stale_revision`, read the item again before deciding whether to apply the edit. The API does not emit ETags or accept `If-Match` as an edit precondition. Clients must send the revision in the body with `Content-Type: application/json`. After an uncertain creation, get the original UUID or repeat the exact original POST payload. A failed read does not establish that creation failed. Health returns a health representation with 503 when its worker fails; database unavailability returns a 503 Problem. Both representations are declared in OpenAPI.
+After a 409 response with `stale_revision`, read the item again before deciding whether to apply the edit. The API does not emit ETags or accept `If-Match` as an edit precondition. Clients must send the revision in the body with `Content-Type: application/json`. After an uncertain creation, get the original UUID or repeat the exact original POST payload. A failed read or rejected replay does not establish that the original request failed: it may still commit. The native client retains unresolved creation input across those failures and restarts. Health returns a health representation with 503 when its worker fails; database unavailability returns a 503 Problem. Both representations are declared in OpenAPI.
 
 Lists use opaque query-scoped cursors and bounded page sizes. Cursors are not snapshots: concurrent changes can move items, so clients deduplicate UUIDs. The default queue view includes pending and stale entries; `state=all` retains every outcome. Stale warnings can be dismissed without deleting history. Attempts have no public read or mutation endpoints. Clients store their own refresh/check time.
 
@@ -115,8 +115,8 @@ Lists use opaque query-scoped cursors and bounded page sizes. Cursors are not sn
 
 The backend and menu have separate launchd registrations. The backend replaces both the old scheduled worker and HTTP process; setup retires the old writer before importing its queue. Release and Dev use independent databases, settings, services, logs, and ports.
 
-Before serving requests, the composition root initializes the schema and invokes `LegacyImporter` for an adjacent `resume-queue.json`. The importer decodes JSON into current `QueueEntry` values, reconciles them against current work, and inserts entries individually. It preserves UUIDs, exact instructions, both supported conversation identities, and complete entry history. Recorded acceptance imports as sent; uncertain work is checked again before sending. Pause settings are ignored.
+Before serving requests, the composition root initializes the schema and invokes `LegacyImporter` for an adjacent `resume-queue.json`. The importer decodes JSON into current `QueueEntry` values, reconciles them against current work, and inserts entries individually. It preserves UUIDs, exact instructions, both supported conversation identities, and readable entry history. Recorded acceptance imports as sent; uncertain work is checked again before sending. Pause settings are ignored.
 
-The original JSON remains unchanged and retains partial history and historical attempt details that are no longer part of current storage. Immutable installation snapshots and the recovery journal protect retries. Existing UUIDs are skipped, preserving edits and terminal outcomes across interrupted imports. A failure may leave some entries imported; retry continues with the missing entries. Malformed active records are rejected during decoding, before insertion.
+The original JSON remains unchanged and retains partial history and historical attempt details that are no longer part of current storage. Existing UUIDs are skipped, preserving edits and terminal outcomes across interrupted imports. Each insertion commits separately: a failure may leave some entries imported, and retry continues with the missing entries. Malformed active records are rejected during decoding, before insertion. Unreadable historical records remain in the source file without blocking valid pending work; their UUIDs still suppress matching pending records.
 
-Older-installation migration uses the same importer and storage backup service. Current work wins over conflicting older enrollment; older records remain cancelled history. Schema migrations only transform database representation. They contain no Codex calls, JSON-file import, installation decisions, or runtime compatibility branches. Downgrades do not export SQLite state back to JSON. See [installation modes](INSTALL.md) for data locations.
+The supported upgrade starts at v0.5.7. Registered source installations first copy the stopped checkout's JSON into the profile's data directory. Existing SQLite work takes precedence over conflicting JSON enrollment; conflicting records import as cancelled history. Earlier app identities and installation merges are unsupported. Schema migrations only transform database representation. They contain no Codex calls, JSON-file import, installation decisions, or runtime compatibility branches. Downgrades do not export SQLite state back to JSON. See [installation modes](INSTALL.md) for data locations.

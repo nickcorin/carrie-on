@@ -5,7 +5,11 @@ import json
 import platform
 import subprocess
 import tempfile
+from html import escape
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+from tools.export_reference import check_links
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -13,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def export_reference(output: Path) -> list[Path]:
     """Compile the menu app for macOS 13 and export internal interfaces with their documentation.
 
-    The output contains official Swift symbol graphs, suitable for DocC or other
-    documentation readers. Compilation uses a temporary module and cache;
+    The output contains Swift symbol graphs and an HTML index of app declarations.
+    Compilation uses a temporary module and cache;
     it does not launch the app, install a bundle, or contact the local service.
     """
     output = output.resolve()
@@ -46,6 +50,40 @@ def export_reference(output: Path) -> list[Path]:
     graphs = sorted(output.glob("CarrieOnMenu*.symbols.json"))
     if not graphs:
         raise RuntimeError("Swift did not produce a native symbol reference")
+    symbols = {}
+    for path in graphs:
+        for symbol in json.loads(path.read_text())["symbols"]:
+            source = Path(unquote(urlsplit(symbol.get("location", {}).get("uri", "")).path))
+            if source.parent == ROOT / "menubar":
+                symbols[symbol["identifier"]["precise"]] = symbol
+    links, sections = [], []
+    for index, symbol in enumerate(
+        sorted(symbols.values(), key=lambda item: item["pathComponents"])
+    ):
+        name = escape(".".join(symbol["pathComponents"]))
+        declaration = escape("".join(part["spelling"] for part in symbol["declarationFragments"]))
+        documentation = escape(
+            "\n".join(line["text"] for line in symbol.get("docComment", {}).get("lines", []))
+        )
+        links.append(f'<li><a href="#symbol-{index}">{name}</a></li>')
+        sections.append(
+            f'<section id="symbol-{index}"><h2>{name}</h2><pre>{declaration}</pre><p>{documentation}</p></section>'
+        )
+    (output / "index.html").write_text(
+        '<!doctype html><html lang="en"><meta charset="utf-8"><title>Carrie On native reference</title>'
+        "<style>body{font:16px/1.5 system-ui;max-width:75rem;margin:2rem auto;padding:0 2rem}"
+        "pre{white-space:pre-wrap;background:#eee;padding:1rem}p{white-space:pre-wrap}"
+        "section{border-top:1px solid #aaa;margin-top:2rem}a{color:#1659a3}</style>"
+        "<h1>Carrie On native reference</h1><p>App declarations compiled for macOS 13. "
+        "Inherited framework members are omitted.</p><ul>"
+        + "".join(f'<li><a href="{path.name}">{path.name}</a></li>' for path in graphs)
+        + f"</ul><details><summary>Browse {len(symbols)} declarations</summary><nav><ul>"
+        + "".join(links)
+        + "</ul></nav></details>"
+        + "".join(sections)
+        + "</html>"
+    )
+    check_links(output)
     return graphs
 
 

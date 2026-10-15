@@ -21,6 +21,8 @@ from carrie_on.macos.compatibility import audit
 from carrie_on.macos.runtime import MINIMUM_MACOS, PROFILES
 from tools.branding import check_bundle, check_source
 from tools.disk_image import build_disk_image
+from tools.export_native_reference import export_reference as export_native_reference
+from tools.export_reference import export as export_python_reference
 from tools.install_menubar import build_menu
 from tools.release import Release, source_commit
 from tools.verify_bundle import verify
@@ -161,6 +163,8 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
         shutil.copytree(ROOT / "features", docs / "features")
         (docs / "assets").mkdir()
         shutil.copy2(ROOT / "assets/README.md", docs / "assets/README.md")
+        export_python_reference(docs / "reference/python")
+        export_native_reference(docs / "reference/native")
         licenses = resources / "Licenses"
         licenses.mkdir()
         shutil.copy2(ROOT / "LICENSE", licenses / "Carrie-On.txt")

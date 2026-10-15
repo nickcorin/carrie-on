@@ -51,7 +51,7 @@ lint-python:
 typecheck:
     uvx --from mypy==1.19.1 mypy --python-executable {{ python }}
 
-# Generate Python API pages and native symbol graphs from source declarations.
+# Generate Python and native HTML references, including Swift symbol graphs.
 reference:
     {{ python }} -m tools.export_reference
     {{ python }} -m tools.export_native_reference
