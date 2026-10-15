@@ -1,4 +1,4 @@
-"""Entry point for the bundled CLI, local API, and per-user installer."""
+"""Route commands for the macOS bundle's CLI, server, installer, and updater."""
 
 import sys
 

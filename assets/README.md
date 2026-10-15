@@ -11,6 +11,6 @@ The artwork files have these roles:
 - `tray-18.png` and `tray-36.png`: menu-bar previews at standard and Retina resolution.
 - `../menubar/Brand.swift`: generated AppKit geometry, used directly by the native tray and popover.
 
-Run `python3 build_icons.py` on macOS with Apple's command-line tools to regenerate every output. Edit the canonical `mark.svg` rather than generated paths. The build uses AppKit for rasterization and `sips` and `iconutil` for packaging. It needs no image-generation service.
+Run `just icons` after `just setup` on macOS with Apple's command-line tools to regenerate every output. Edit the canonical `mark.svg` rather than generated paths. The build uses AppKit for rasterization and `sips` and `iconutil` for packaging. It needs no image-generation service.
 
 The build compares `mark-rendered.png` with the reference silhouette and writes `trace-verification.json`. It requires at least 99% silhouette overlap and rejects edge displacement beyond one pixel at the original reference resolution. This tolerance accounts for raster antialiasing and curve fitting. It does not allow reshaping the mark. App and tray outputs use identical vector geometry.

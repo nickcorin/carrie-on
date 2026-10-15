@@ -19,8 +19,8 @@ from pathlib import Path
 
 from carrie_on.macos.compatibility import audit
 from carrie_on.macos.runtime import MINIMUM_MACOS, PROFILES
+from tools.build_menu import build_menu
 from tools.disk_image import build_disk_image
-from tools.install_menubar import build_menu
 from tools.release import Release, source_commit
 from tools.verify_bundle import verify
 
@@ -102,7 +102,7 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
                 "yoyo-migrations",
                 "--copy-metadata",
                 "openai-codex",
-                str(ROOT / "tools/bundle_entry.py"),
+                str(ROOT / "src/carrie_on/macos/bundle_entry.py"),
             ],
             check=True,
             cwd=ROOT,

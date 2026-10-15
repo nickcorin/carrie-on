@@ -33,6 +33,8 @@ Keep all database concepts inside `storage/`; application consumers depend only 
 
 `just setup` installs the `src` package in editable mode. Run tools as modules, such as `python -m tools.build_bundle`, and tests with `python -m unittest discover -v`. FastAPI serves the current OpenAPI schema at `/openapi.json`; see the [HTTP contract](ARCHITECTURE.md#http-contract) for access requirements. The [verification matrix](features/verification.md) links retained behavior to its automated and manual checks.
 
+Both the source installer and bundle builder compile the menu through `tools/build_menu.py`. The bundled executable starts at `src/carrie_on/macos/bundle_entry.py`, which routes CLI, server, installation, and update commands.
+
 For example, `service.doctor(chat_id)` reads a chat without opening it. `service.enqueue(entry_id, chat_id, instructions)` permits opening and supplies a catalog validator before opening a dormant chat. A direct caller of `AppServer.get_chat` with an opening-enabled desktop must likewise validate catalog membership beforehand or supply `before_open`; opening can change Codex's visible chat.
 
 `just lint-python` checks Ruff formatting and imports as well as correctness rules. `just typecheck` checks the shared Python contracts with mypy. Dependency tests prevent inner components from importing frameworks or platform configuration.

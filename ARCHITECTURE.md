@@ -16,7 +16,7 @@ Carrie On is a local client/server application. The native Swift app and Typer C
 | `src/carrie_on/server.py` | Configuration, collaborator construction, persistence startup, and process entrypoint |
 | `src/carrie_on/cli.py` | Typer command tree and HTTP client |
 | `src/carrie_on/codex/` | Validated observations and private desktop/read-only app-server adapters |
-| `src/carrie_on/macos/` | Installation, lifecycle, updates, and compatibility |
+| `src/carrie_on/macos/` | Bundled entrypoint, installation, lifecycle, updates, and compatibility |
 | `menubar/` | Native presentation, HTTP client, and macOS app lifecycle |
 | `tools/` | Builds, source installation, releases, artwork, and package/Codex acceptance checks |
 | `tests/` | Domain, storage, HTTP, CLI, protocol, packaging, and native behavior checks |
