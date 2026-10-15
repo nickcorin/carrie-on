@@ -39,7 +39,7 @@ Updates preserve your settings, queue, history, and launch-at-login preference. 
 
 ### Replace 0.5.4 or earlier
 
-The older updater rejects the changed app identity. To upgrade, follow the [installation steps](#install) to quit the old app and replace it with 0.5.6.
+The older updater rejects the changed app identity. To upgrade, follow the [installation steps](#install) to quit the old app and replace it with the latest release.
 
 First launch imports your settings, queued work, history, and launch-at-login preference automatically. You do not need to move files, run Terminal commands, or resolve duplicate records. After the new services are healthy, setup removes the old service registrations and moves the old files into a recovery directory. See [migration behavior](features/distribution.md#legacy-migration) for merge rules and recovery files.
 
