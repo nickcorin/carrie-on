@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.7
+
+Fix the "Invalid or oversized Codex desktop frame" error when queued chats have large histories. Carrie On now reads quota, chat metadata, and turn headers through the official Codex Python SDK instead of downloading the full conversation.
+
+Existing queue entries convert automatically when checked. Conversion reads the opening message of the enrolled turn to confirm its identity. Continuations still run in the same Codex desktop chat with its model, tools, and approval settings.
+
+A request failure for a chat no longer prevents later queue entries from being checked. Connection failures preserve pending entries for a later check. Chats without confirmed completion remain waiting, and uncertain sends are never retried automatically.
+
+### Upgrade
+
+If you use **0.5.5 or 0.5.6**, choose **Check for Updates** in Settings, then **Install and Restart** when 0.5.7 is available. Your settings, queue, and history are preserved.
+
+If you use **0.5.4 or earlier**, quit Carrie On, install the 0.5.7 DMG, and replace the app in Applications. Open the installed app to import your data and replace the old services automatically. The older updater cannot install releases with the current app identity.
+
+See the [installation guide](https://github.com/nickcorin/carrie-on/blob/v0.5.7/INSTALL.md#updates) for recovery instructions.
+
+### Verification
+
+Tested on Apple Silicon with macOS 27.0.1, Codex desktop 26.1007.71326, build 20398, and Codex CLI 0.162.0-alpha.17.2. All 150 tests passed on Python 3.10 and 3.13.
+
+A 34.6 MB synthetic conversation reproduced the error in 0.5.6. The updated worker migrated the saved entry and continued without fetching the full history. A live desktop test confirmed delivery in the same chat exactly once, with no resend after two worker restarts.
+
+Quota-reset timing was simulated. Runtime testing on macOS 13 and another Mac remains outstanding. Desktop dispatch uses a private Codex protocol, so compatibility with other Codex builds is not guaranteed.
+
 ## 0.5.6
 
 Carrie On now imports settings, queued work, history, and the launch-at-login preference from older bundled installations when you first open the new app.
