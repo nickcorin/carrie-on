@@ -23,6 +23,7 @@ The checks below cover product behavior through the current storage protocols an
 | Queue ordering, equal timestamps, unrelated work during active ownership | SQLite ordering tests |
 | Idempotent creation after lost HTTP reply, edits, cancellation, and restart | Actual CLI-to-HTTP timeout and SIGINT tests; native persistence through a 404 lookup, rejected 422 replay, and restart; native recovery of a committed creation after HTTP 503; HTTP replay and storage uniqueness tests |
 | SQLite durability, private files, reader concurrency, transaction rollback | Storage tests |
+| Migration lock failure and [manual recovery](../INSTALL.md#recover-a-migration-lock) | Storage test kills a process holding Yoyo's lock, checks the startup error and retained lock, runs the printed recovery command, and verifies queued work survives restart |
 | v0.5.7 JSON import, history, damaged records, retry, no resurrection | Raw v0.5.7 fixture through import and composed dispatch; turn-only anchors, changed turns with unchanged message IDs, already accepted messages, malformed history timestamps and IDs, NUL text, and interrupted per-entry import |
 | Compact tray count/reset/usage, missing/invalid data, partial failures | Native self-tests and API summary tests |
 | Usage selection, multiple buckets, countdown labels, activity times | Native self-tests |

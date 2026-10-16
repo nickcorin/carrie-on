@@ -2,6 +2,7 @@
 
 import base64
 import json
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from yoyo import get_backend, read_migrations
+from yoyo.exceptions import LockTimeout
 
 from carrie_on.legacy import LegacyEntry, LegacyImporter
 from carrie_on.ports import StorageUnavailable
@@ -270,6 +272,51 @@ os._exit(17)
         self.assertIsNone(self.store.create_delivery_attempt())
         self.now = attempt.expires_at.timestamp()
         self.assertEqual(self.store.create_delivery_attempt().entry.id, self.entry.id)
+
+    def test_migration_lock_failure_provides_working_manual_recovery(self):
+        path = self.path.with_name("queue #1?100%.sqlite3")
+        maintenance = SqliteStorageMaintenance(path)
+        maintenance.initialize()
+        storage = SqliteQueueStorage(path)
+        storage.create_entry(self.entry)
+        database_url = "sqlite:///" + str(path.parent) + "/queue%20%231%3F100%25.sqlite3"
+        script = """import os, sys
+from yoyo import get_backend
+with get_backend(sys.argv[1]) as backend:
+    with backend.lock():
+        os._exit(17)
+"""
+        with subprocess.Popen([sys.executable, "-c", script, database_url]) as child:
+            self.assertEqual(child.wait(timeout=10), 17)
+
+        with self.assertRaises(StorageUnavailable) as error:
+            maintenance.initialize()
+        self.assertIsInstance(error.exception.__cause__, LockTimeout)
+        message = str(error.exception)
+        self.assertIn(f"Migration lock is held for {path}", message)
+        self.assertIn("Stop the server and any installer using this database", message)
+        self.assertIn("Restart Carrie On after the command succeeds", message)
+        with closing(sqlite3.connect(path)) as connection:
+            self.assertEqual(
+                connection.execute("SELECT pid FROM yoyo_lock").fetchall(), [(child.pid,)]
+            )
+
+        command = shlex.split(
+            next(line for line in message.splitlines() if line.startswith("yoyo "))
+        )
+        self.assertEqual(
+            command, ["yoyo", "break-lock", "--no-config-file", "--database", database_url]
+        )
+        subprocess.run(
+            [sys.executable, "-m", *command],
+            cwd=path.parent,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        maintenance.initialize()
+        self.assertEqual(storage.get_entry(self.entry.id), self.entry)
 
     def test_external_import_preserves_current_work_and_is_idempotent(self):
         legacy = self.legacy_entry()

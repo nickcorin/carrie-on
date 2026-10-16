@@ -91,6 +91,18 @@ To uninstall, remove the login services before deleting the app:
 
 Then quit Carrie On and move it to Trash. Your settings, queue, history, and logs remain in Application Support. Delete that directory only if you also want to discard personal data. The CLI's `service uninstall` removes only the backend registration.
 
+### Recover a migration lock
+
+If startup reports `Migration lock is held for ...`, another process may be migrating that database, or a killed process may have left its lock behind. Carrie On does not clear migration locks automatically.
+
+To recover after the migration process has stopped, follow these steps:
+
+1. Quit the affected app. Stop its backend with `.venv/bin/carrie-on service stop` for a source installation or `service stop` through the bundled backend executable shown above. For a Dev source installation, use `.venv/bin/carrie-on --profile dev service stop`. Stop any directly launched server and installer using the database named in the error. Keep them stopped until recovery completes.
+2. Run the `yoyo break-lock` command printed in the error. A source checkout provides `.venv/bin/yoyo` after `just setup`. The bundled app does not provide a standalone `yoyo` command. If you use the bundled app, install [uv](https://docs.astral.sh/uv/getting-started/installation/) and replace the initial `yoyo` in the printed command with `uvx --from yoyo-migrations==9.0.0 yoyo`.
+3. After the command exits successfully, reopen the affected app or restart the source server. Startup applies any pending migrations. If startup fails again, inspect the new error before retrying.
+
+The command clears Yoyo's migration lock. It does not apply or roll back migrations, or remove queue entries. Use the database URL printed in the error, which includes encoding for spaces and other special characters. Release and Dev installations use separate databases.
+
 ## Build and release
 
 See [Releasing](RELEASING.md) for the pinned build environment, local builds, checksums, GitHub CI, and draft releases.
