@@ -14,6 +14,8 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
+from yoyo import get_backend, read_migrations
+
 from carrie_on.legacy import LegacyEntry, LegacyImporter
 from carrie_on.ports import StorageUnavailable
 from carrie_on.queue import QueueError
@@ -233,7 +235,7 @@ os._exit(17)
         self.assertEqual(storage.get_entry(self.entry.id), self.entry)
         self.assertFalse(self.path.with_name("queue ").exists())
 
-    def test_private_database_wal_backup_and_future_schema_rejection(self):
+    def test_private_database_wal_and_backup(self):
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
         backup = self.path.with_name("backup.sqlite3")
         self.maintenance.create_backup(backup)
@@ -241,9 +243,18 @@ os._exit(17)
         self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
         with closing(sqlite3.connect(self.path)) as connection:
             self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
-            connection.execute("PRAGMA user_version=999")
-        with self.assertRaisesRegex(StorageUnavailable, "newer"):
+
+    def test_initialization_rejects_migrations_unknown_to_this_release(self):
+        directory = self.path.with_name("migrations")
+        directory.mkdir()
+        (directory / "0002_future.sql").write_text("CREATE TABLE future_settings (id TEXT);")
+        with get_backend("sqlite:///" + str(self.path)) as backend:
+            with backend.lock():
+                backend.apply_migrations(backend.to_apply(read_migrations(str(directory))))
+
+        with self.assertRaisesRegex(StorageUnavailable, "migrations unknown to this release"):
             self.maintenance.initialize()
+        self.assertEqual(self.store.get_entry(self.entry.id), self.entry)
 
     def test_reinitialization_preserves_entries_history_and_active_attempts(self):
         self.store.update_instructions(self.entry.id, "Edited\x00", revision=1)

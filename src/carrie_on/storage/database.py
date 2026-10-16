@@ -45,8 +45,10 @@ class SqliteStorageMaintenance:
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             path.touch(mode=0o600, exist_ok=True)
             path.chmod(0o600)
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
             migrate(path)
-        except OSError as error:
+        except (OSError, sqlite3.Error) as error:
             raise StorageUnavailable("Could not prepare the queue database") from error
 
     def create_backup(self, destination: Path) -> None:

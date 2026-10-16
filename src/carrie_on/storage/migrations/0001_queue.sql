@@ -41,5 +41,3 @@ WHEN EXISTS (
 BEGIN
     SELECT RAISE(ABORT, 'delivery_active');
 END;
-
-PRAGMA user_version = 1;
