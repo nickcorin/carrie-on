@@ -1,14 +1,26 @@
 """Build and verify the drag-to-Applications disk image alongside the updater ZIP."""
 
+import hashlib
 import os
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 
-from tools.verify_bundle import app_contents
-
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _app_contents(app: Path) -> dict[str, str]:
+    """Map relative file paths to content hashes and symlinks to their targets."""
+    return {
+        str(path.relative_to(app)): (
+            os.readlink(path)
+            if path.is_symlink()
+            else hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+        for path in app.rglob("*")
+        if path.is_symlink() or path.is_file()
+    }
 
 
 def build_disk_image(app, image, version):
@@ -96,7 +108,7 @@ def verify_disk_image(image, original):
                 raise ValueError("The disk image Applications shortcut has an invalid target")
             copied = root / "Copied" / original.name
             subprocess.run(["/usr/bin/ditto", str(mount / original.name), str(copied)], check=True)
-            if app_contents(copied) != app_contents(original):
+            if _app_contents(copied) != _app_contents(original):
                 raise ValueError("The disk image app differs from the updater app")
             subprocess.run(
                 ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(copied)],

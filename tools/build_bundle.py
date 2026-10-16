@@ -22,7 +22,6 @@ from carrie_on.macos.runtime import MINIMUM_MACOS, PROFILES
 from tools.build_menu import build_menu
 from tools.disk_image import build_disk_image
 from tools.release import Release, source_commit
-from tools.verify_bundle import verify
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -206,7 +205,6 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
         )
         digest = hashlib.sha256(staged.read_bytes()).hexdigest()
         staged.with_suffix(".zip.sha256").write_text(f"{digest}  {archive.name}\n")
-        verify(staged, profile)
         if prepare_app is not None:
             prepare_app.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(app, prepare_app, symlinks=True)
@@ -228,7 +226,7 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
         output.mkdir(parents=True, exist_ok=True)
         for suffix in suffixes:
             shutil.move(str(work / f"{name}{suffix}"), output / f"{name}{suffix}")
-        print(f"Built and verified {archive}\nRequires macOS {MINIMUM_MACOS}+ ({architecture}).")
+        print(f"Built {archive}\nRequires macOS {MINIMUM_MACOS}+ ({architecture}).")
         return archive
 
 
@@ -249,7 +247,7 @@ def main():
     parser.add_argument(
         "--prepare-app",
         type=Path,
-        help="Stage a verified dev app without installing or restarting",
+        help="Stage a signed dev app without installing or restarting",
     )
     parser.add_argument(
         "--sign-app",

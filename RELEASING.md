@@ -24,19 +24,17 @@ just test-minimum
 just ci
 ```
 
-`just ci` checks Python errors, workflow syntax, release metadata, and Python 3.10 compatibility. It then builds and verifies the app with the pinned build interpreter. The builder runs the full test suite, native checks, Mach-O compatibility checks, ad-hoc signing, and isolated ZIP verification. Tests use synthetic chats and temporary state, without installing login services or dispatching work.
+`just ci` checks Python errors, workflow syntax, release metadata, and Python 3.10 compatibility. It then builds the app with the pinned build interpreter. The builder runs the full test suite, native self-tests, Mach-O compatibility checks, ad-hoc signing, signature checks, and DMG integrity checks. Tests use synthetic chats and temporary state, without installing login services or dispatching work. Complete [package acceptance](features/distribution.md#package-acceptance) before publishing.
 
-Use `just package` or its alias `just build` to compile, sign, and package the verified app. To replace an existing local package, pass `--replace`. CI replaces local packages so checks can run repeatedly.
+Use `just package` or its alias `just build` to compile, sign, and package the app. To replace an existing local package, pass `--replace`. CI replaces local packages so checks can run repeatedly.
 
 ```sh
 just package
 just package --replace
 just package --output '/tmp/Carrie On release'
-just verify
-just verify '/tmp/Carrie On release/Carrie-On-0.5.6-macos-arm64.zip'
 ```
 
-The builder writes a versioned DMG, ZIP, a `.sha256` checksum for each, and a JSON manifest to `dist/`. The DMG provides the drag-to-Applications installation window. Built-in updates use the ZIP. Both packages contain the same signed app. The builder mounts the DMG read-only, checks the Applications shortcut, and verifies a copied app against the ZIP and its code signature.
+The builder writes a versioned DMG, ZIP, a `.sha256` checksum for each, and a JSON manifest to `dist/`. The DMG provides the drag-to-Applications installation window. Built-in updates use the ZIP. Both packages contain the same signed app. The builder mounts the DMG read-only, checks the Applications shortcut, and compares the copied app with the original signed bundle used to create both packages.
 
 The manifest records the version, source commit, build identity, architecture, Python version, compatibility results, ZIP size, and ZIP checksum. The source commit is `null` for dirty or exported source. The `disk_image` object records the DMG filename, size, and checksum. Build identities and signing timestamps prevent byte-for-byte reproducible builds. Git ignores generated files.
 
@@ -71,7 +69,7 @@ action and its saved checkout and interpreter paths. Reinstall from a new locati
 if the checkout or build interpreter moves. No GitHub release or push is needed.
 
 Both profiles use the same optimized native executable, bundled backend, setup
-flow, polling interval, dispatch rules, and acceptance checks. The signed build
+flow, polling interval, dispatch rules, and build checks. The signed build
 profile changes installation resources, not feature behavior:
 
 | Resource | Release | Development |

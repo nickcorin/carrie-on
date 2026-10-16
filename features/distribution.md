@@ -7,8 +7,8 @@
 - Detect app replacements and update service registrations while preserving connection settings, queue, and history.
 - Import the v0.5.7 JSON queue into SQLite on first launch and retire its standalone worker.
 - Check for a newer stable GitHub release on startup and show **Update to &lt;version&gt;** when available. Download and install it after confirmation.
-- Rebuild the entire Carrie On Dev app from its saved checkout with live output, replacing and restarting only after tests, signing, and bundle verification succeed. Source menu installations reuse their native menu builder.
-- Build versioned releases with automated acceptance checks, checksums, and release manifests.
+- Rebuild the entire Carrie On Dev app from its saved checkout with live output, replacing and restarting only after tests, compatibility checks, and signing succeed. Source menu installations reuse their native menu builder.
+- Build versioned releases with tests, package integrity checks, checksums, and release manifests.
 - Offer a DMG with an illustrated drag-to-Applications window and the same signed app as the updater ZIP.
 - Remove login services while preserving personal data.
 - Build Carrie On Dev with isolated settings, queue, login services, logs, and port using the same runtime behavior as release.
@@ -39,15 +39,15 @@ Installation exchanges complete bundles atomically and keeps the previous app in
 
 Dev compares its built commit with the local checkout's `HEAD` on startup. It offers **Update to &lt;short hash&gt;** only when the built commit is an ancestor of `HEAD`. Otherwise it shows **Check for Updates**. `python -m unittest tests.test_source_build tests.test_app_update -v` tests both labels and checkouts with newer, equal, older, unrelated, or missing commits.
 
-`just dev` builds and verifies the development profile with the same acceptance
-pipeline as release. `python -m unittest tests.test_build_profiles -v` exercises both
+`just dev` builds the development profile with the same build checks as release.
+`python -m unittest tests.test_build_profiles -v` exercises both
 profiles in the same isolated home, including independent queue state, worker
 definitions, ports, and startup preferences. See the
 [development build instructions](../RELEASING.md#local-development-app).
 
 For source builds, see [menu usage](../USAGE.md#menu-bar). `python -m unittest tests.test_source_build -v` checks streamed build diagnostics, failed builds, staging with saved build paths and a custom port, signing, and replacement after success. The checks use temporary apps without stopping or installing live services.
 
-`python -m tools.build_bundle` runs unit tests, native self-tests, linkage audits, code-signature checks, and `tools.verify_bundle` before writing packages to `dist/`. The verifier exercises the native setup helper in an isolated home without loading login services. Tests cover interrupted setup, updates, stable reopening, settings and queue preservation, legacy connection migration, and invalid install locations. See the [release verification guide](../INSTALL.md#release-verification) for tests on another Mac.
+`python -m tools.build_bundle` runs unit tests, native self-tests, linkage audits, code-signature checks, and DMG integrity checks before writing packages to `dist/`. Tests cover interrupted setup, updates, stable reopening, settings and queue preservation, legacy connection migration, and invalid install locations. Installing and running the packaged app requires the acceptance steps below.
 
 `python -m unittest tests.test_app_update -v` tests startup checks, offline failures, release selection, and download verification. It also replaces temporary apps to test native installation, rollback after a failed launch, and retry. It never replaces the installed app. See [updates](../INSTALL.md#updates) for recovery and download verification details.
 
@@ -55,9 +55,30 @@ For source builds, see [menu usage](../USAGE.md#menu-bar). `python -m unittest t
 
 `python -m unittest tests.test_storage tests.test_composed_service -v` checks JSON import, incomplete history, interrupted imports, and dispatch from raw v0.5.7 entries through the real adapters with controlled peers. The scenarios include unchanged and changed turn anchors, accepted-message reconciliation, and restart persistence.
 
+## Package acceptance
+
+Use Carrie On Dev for local acceptance and a separate Mac or fresh macOS account for release installation checks. Record the package version, macOS version, and Codex version with the results.
+
+1. Build with `just dev` and install the new DMG using the [development app instructions](../RELEASING.md#local-development-app). Check the app icon and Applications shortcut. First launch must complete setup and open the menu. Open an existing installation again and confirm that its settings and queue remain intact.
+2. Run the CLI inside the installed bundle with system tools on PATH. Its version must match `VERSION`. Status must report a healthy worker, diagnostics must reach the selected Codex installation, and the queue must agree with the menu. With the default Dev install location and port:
+
+   ```sh
+   app_cli="$HOME/Applications/Carrie On Dev.app/Contents/MacOS/carrie_on"
+   PATH=/usr/bin:/bin:/usr/sbin:/sbin "$app_cli" --version
+   "$app_cli" --json status
+   "$app_cli" --json doctor
+   "$app_cli" --json queue list --history
+   curl --fail -H 'X-Carrie-On: 1' http://127.0.0.1:8767/openapi.json
+   ```
+
+   Adjust the app path or port for a custom installation. The OpenAPI response must contain the queue routes and current app version.
+3. Inspect the installed bundle's `Contents/Resources/Documentation` and `Licenses` directories. Guides and their local links must open. Settings, logs, and SQLite files belong in `~/Library/Application Support/Carrie On Dev`, outside the app. Dev's service definitions must use its installed executable and data paths. After setup, `just verify-signature "$HOME/Applications/Carrie On Dev.app"` must still succeed.
+4. Follow the [menu checks](menu-bar.md), [queue checks](queue.md#live-dispatch-acceptance), and [startup and quit checks](app-lifecycle.md). Confirm that reopening preserves work and that a successful source rebuild retains the configured port and queue. Check the release installation separately to confirm Dev has not changed its data or services.
+5. On the release test Mac or account, install the release DMG and repeat the CLI and lifecycle checks. Test the updater ZIP through the normal update flow, including preserved settings and recovery after failure. Check Gatekeeper approval, login startup, and removal using the [installation guide](../INSTALL.md). Include macOS 13 before claiming runtime compatibility with that version.
+
 ## Distribution limits
 
-The builder mounts the DMG read-only, checks the Applications shortcut, and copies its app into an isolated directory. It verifies that the copied app's contents and code signature match the ZIP's app. The release manifest records the DMG's filename, size, and SHA-256 hash. Release checks require both package formats and their checksum files. Built-in updates use the ZIP.
+The builder mounts the DMG read-only, checks the Applications shortcut, and copies its app into an isolated directory. It compares the copied app's contents with the signed bundle used to create both packages and verifies its code signature. The release manifest records the DMG's filename, size, and SHA-256 hash. Release checks require both package formats and their checksum files. Built-in updates use the ZIP.
 
 Ad-hoc signing does not provide notarization or remove Gatekeeper approval. Binary deployment targets cannot substitute for runtime tests on the oldest OS.
 

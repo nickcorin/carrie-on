@@ -1,6 +1,6 @@
 # Feature verification
 
-The automated checks cover the product behaviors below through the current storage protocols and clients. Queue pause, public attempt history, and deferral counters are absent. Tests use temporary homes/databases, synthetic Codex adapters, local HTTP/Unix sockets, and native test executables. They never send a real instruction or change an installed app.
+The checks below cover product behavior through the current storage protocols and clients. Queue pause, public attempt history, and deferral counters are absent. Automated tests use temporary homes/databases, synthetic Codex adapters, local HTTP/Unix sockets, and native test executables. They never send a real instruction or change an installed app. Manual acceptance steps live in the relevant feature maps.
 
 | Feature | Verification |
 | --- | --- |
@@ -33,29 +33,29 @@ The automated checks cover the product behaviors below through the current stora
 | Separate sections, search/count/order, disclosure state, keyboard editing | Native model/self-tests; packaged Dev interaction verifies section disclosure, search, card flips, editor focus, Shift-Enter, Escape, and draft retention across search |
 | Neutral/amber/blue/red cards, title/instruction/project/activity, spinner and errors | Native state tests, actual API dispatching/error decoding, and AppKit card rendering in light/dark fixtures |
 | Hover controls, flips, scrollbars, animations, accessibility preferences | Light/dark card and full-picker renders; packaged Dev card/editor interaction and native accessibility page-up/page-down actions; broader assistive-technology and preference checks remain release acceptance |
-| First launch, valid install locations, settings, CLI discovery, interrupted setup | Distribution tests and isolated bundle verifier |
+| First launch, valid install locations, settings, CLI discovery, interrupted setup | Distribution tests and manual [package acceptance](distribution.md#package-acceptance) |
 | Launch-at-login persistence, manual launch, quit, shutdown wait, reopen | Python registration tests and native lifecycle checks with a simulated launchd runner |
 | Stable reopening, app replacement, port/socket/Codex-home preservation | Distribution tests |
 | GitHub release selection, download integrity, offline failure, rollback, retry | Python/native updater tests with temporary apps |
 | Source rebuild output, failure isolation, successful replacement, local commit discovery | Native/Python source-build tests |
 | Release/Dev independent settings, state, ports, preferences, service targets | Build-profile and CLI service tests |
-| App identity, release metadata, signed app, ZIP/DMG, relocation, no system Python | Build/release tests and packaged acceptance pipeline |
+| App identity, release metadata, signed app, ZIP/DMG, relocation, no system Python | Build/release tests, packaging integrity checks, and manual [package acceptance](distribution.md#package-acceptance) |
 | Loopback/Host/Origin/header restrictions, body bounds, validation, error schema | HTTP contract tests including required OpenAPI headers, health failure media, bounded cursors, positive integer revisions, and 405 Allow preservation |
-| CLI help/version, structured stdout, stderr/errors, exit codes, explicit server | CLI subprocess tests, long Unicode add/edit round trips, HTTP 413 input rejection, and packaged CLI reads against an isolated HTTP service |
+| CLI help/version, structured stdout, stderr/errors, exit codes, explicit server | CLI subprocess tests, long Unicode add/edit round trips, HTTP 413 input rejection, and manual packaged CLI checks |
 | Python module ownership and callable contracts | Dependency-boundary tests, Ruff formatting/import checks, and mypy on shared contracts |
 
 ## Acceptance boundaries
 
 `tests/test_composed_service.py` exercises fresh enrollment and interrupted v0.5.7 JSON import with a desktop peer that would send a 33 MiB history if requested. It checks that dispatch reads compact SDK responses, never subscribes to desktop history, sends the exact instruction once, and preserves the sent entry across server restart. These checks run in the normal test suite.
 
-`python -m tools.verify_codex_integration --help` describes the opt-in checks against a selected real Codex chat. The `wait` mode reads an active chat without sending. The `continue` and `migrate` modes send a test instruction and independently check desktop history for its receipt; use them only with permission to send to a disposable chat. All modes use temporary storage and simulated reset timestamps, so they do not verify a real quota reset.
+Use the actual menu or CLI for [live dispatch acceptance](queue.md#live-dispatch-acceptance). The procedure requires an authorized disposable chat and a changed quota window with available usage.
 
 `tests/test_architecture.py` rejects database libraries outside `storage/` and concrete storage imports from the application/domain. `tests/test_storage.py` verifies concurrent acquisition, process death, expiry, revisions, pagination, private backups, repeated schema initialization with existing work, interrupted per-entry import, and terminal states.
 
-`just test` runs the Python and native automated tests. `just test-minimum` repeats them on Python 3.10. `just dev` additionally builds the complete Dev bundle, audits native dependencies, signs it, verifies it in an isolated home, and checks the ZIP and mounted DMG. HTTP tests check FastAPI's live OpenAPI schema; package verification also requests it from the bundled server. `just lint` checks formatting, imports, workflow syntax, release metadata, and shared Python types.
+`just test` runs the Python and native automated tests. `just test-minimum` repeats them on Python 3.10. `just dev` additionally builds the complete Dev bundle, audits native dependencies, signs it, and checks the signature and mounted DMG. HTTP tests check FastAPI's live OpenAPI schema. Installing and exercising the packaged app follows [package acceptance](distribution.md#package-acceptance). `just lint` checks formatting, imports, workflow syntax, release metadata, and shared Python types.
 
 `python tests/render_queue_cards.py OUTPUT.png [--dark]` renders real AppKit/SwiftUI cards with synthetic data. `.venv/bin/python tests/build_chat_scroll_preview.py /tmp/carrie-scroll --verify --snapshots /tmp/carrie-scroll/renders` runs the complete picker with 150 synthetic chats and 75 queued items. Repeated runs verify viewport pagination, search reset, beginning/end navigation, and independent overflowing lists; light/dark renders verify card spacing, alignment, and section heights. This fixture starts no services and rejects queue mutations.
 
-Packaged Dev acceptance uses the app installed from the newly built DMG, independently of the release installation. Read-only interaction verifies the live connection and usage display, chat search, pagination past 50 chats, section disclosure, native accessibility page-up/page-down actions, card flipping without row selection, editor focus, multiline input, Escape, and draft retention across search. Search and draft text are cleared afterward. The installed CLI reports a healthy worker and connection; a read-only SQLite audit confirms zero entries and attempts. These checks do not send instructions.
+For packaged Dev acceptance, use the app installed from the newly built DMG, independently of the release installation. Check the live connection and usage display, chat search, pagination past 50 chats, section disclosure, native accessibility page-up/page-down actions, card flipping without row selection, editor focus, multiline input, Escape, and draft retention across search. Clear search and draft text afterward. Confirm worker health, connection, and queue state through the installed CLI. This pass requires no enrollment or dispatch.
 
 Automated lifecycle fixtures do not establish actual logout/login behavior. Synthetic Codex tests do not establish a future quota reset or a real send against the currently installed private protocol. Before release, complete the broader native gesture/accessibility preference checks, an authorized disposable-chat dispatch, actual login startup, Gatekeeper approval, and tests on another Mac including macOS 13. See [release acceptance](../INSTALL.md#release-verification). These are explicit manual gates, not claims made by the unit suite.

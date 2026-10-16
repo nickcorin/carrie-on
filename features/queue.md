@@ -23,3 +23,15 @@ States are queued, failed, stale, cancelled, and sent. Failed entries retain an 
 Queued cards are amber; active dispatch shows a blue spinner. Failed entries and stale conversations show red warnings with retry or terminal guidance. Active ownership blocks editing/removal only for that entry, including a failed entry awaiting expiry. Idle failed entries remain editable. Dismissing a stale warning retains history. Uncertain client writes are reconciled before another action is enabled.
 
 See the [architecture and API](../ARCHITECTURE.md), [usage guide](../USAGE.md), and [verification matrix](verification.md). Automated tests cover real SQLite transactions, process death, concurrent claims, expiry, replay, quota semantics, protocol boundaries, HTTP, CLI, and native interaction races. Real dispatch requires an explicitly authorized disposable chat.
+
+## Live dispatch acceptance
+
+Use Carrie On Dev and a disposable Codex chat that you have permission to send to. Keep Codex open and the Mac awake. Do not enroll the same chat through the release app during this check.
+
+1. Queue a distinctive instruction through the menu or CLI. Record its item UUID and confirm that the stored instruction matches exactly.
+2. Before a captured quota window changes, confirm that no instruction arrives. A failed entry with a quota error remains eligible for retry.
+3. Wait for a captured window's reset timestamp to change while quota is available. Leave the chat idle with the same message and model. Allow the current delivery lease to expire and the worker to run again. Confirm that Codex receives the exact instruction in that chat and the entry becomes `sent`.
+4. Quit and reopen Dev. Confirm that the entry remains sent in history and that subsequent worker checks do not send it again.
+5. With a separate pending entry, continue its chat manually before the reset. Confirm that Carrie On marks the entry `stale` and does not send its queued instruction.
+
+If no quota window changes during the check, record reset delivery as unverified. Automated tests cover simulated resets and transport failures; they do not establish a live send against the installed Codex version.

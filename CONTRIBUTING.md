@@ -11,7 +11,7 @@ just ci
 
 `just ci` runs all release checks locally, including tests on the minimum Python version and a signed, verified app build. Pushes and pull requests do not run GitHub Actions. Start the optional hosted workflow manually if needed. Use `just lint` or `just test` to check changes during development, and `just --list` to discover other commands.
 
-Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix sockets. They do not enroll or dispatch real chats. Allow local sockets in a sandbox. Native pagination tests compile a temporary Swift executable. Package verification uses an isolated home.
+Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix sockets. They do not enroll or dispatch real chats. Allow local sockets in a sandbox. Native pagination tests compile a temporary Swift executable. Follow the [distribution feature map](features/distribution.md#package-acceptance) to check a packaged app.
 
 ## Component map
 
@@ -26,7 +26,7 @@ Tests use temporary queues, fake Codex responses, loopback HTTP, and Unix socket
 | `src/carrie_on/legacy.py` | v0.5.7 queue decoding and resumable imports |
 | `menubar/` | Native AppKit menu, chat picker, setup, and lifecycle |
 | `src/carrie_on/macos/` | Platform installation, migration, lifecycle, updates, and compatibility |
-| `tools/` | Builds, source installation, releases, artwork, and package/Codex acceptance checks |
+| `tools/` | Builds, packaging, source installation, releases, and artwork generation |
 | `tests/` | Python and Swift behavior tests plus isolated visual fixtures |
 
 Keep all database concepts inside `storage/`; application consumers depend only on `ports.py`. `SqliteQueueStorage` owns both entry and attempt tables and encapsulates their atomic queries. Domain rules belong on `QueueEntry`; external calls occur outside storage operations. Each dispatch creates an attempt, checks fresh Codex observations, and sends at most once. Preserve original creation input for idempotent retries; edits require current revisions. Clients use HTTP exclusively. Add ordered SQL files under `storage/migrations/` for schema changes; never edit a migration after release. Yoyo applies pending files at startup. Runtime queries target only the current schema. JSON imports and installation reconciliation belong outside storage. Read the [architecture](ARCHITECTURE.md) and [feature contracts](features/index.md) before changing these boundaries.

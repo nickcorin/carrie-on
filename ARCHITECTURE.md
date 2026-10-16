@@ -18,7 +18,7 @@ Carrie On is a local client/server application. The native Swift app and Typer C
 | `src/carrie_on/codex/` | Validated observations and private desktop/read-only app-server adapters |
 | `src/carrie_on/macos/` | Bundled entrypoint, installation, lifecycle, updates, and compatibility |
 | `menubar/` | Native presentation, HTTP client, and macOS app lifecycle |
-| `tools/` | Builds, source installation, releases, artwork, and package/Codex acceptance checks |
+| `tools/` | Builds, packaging, source installation, releases, and artwork generation |
 | `tests/` | Domain, storage, HTTP, CLI, protocol, packaging, and native behavior checks |
 
 The domain and application layers do not depend on FastAPI or Typer. The service owns decisions; adapters translate inputs and results. Network operations occur outside database transactions. Every SQLite operation uses its own connection, so a slow Codex call does not prevent another client from reading or changing unrelated work. `pyproject.toml` installs the `src` package and exposes `carrie-on` and `carrie-on-server`.

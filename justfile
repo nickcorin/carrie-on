@@ -54,7 +54,7 @@ test: setup
 test-minimum:
     UV_PROJECT_ENVIRONMENT=.build-venv/minimum uv run --locked --python 3.10 --with httpx==0.28.1 python -m unittest discover -v
 
-# Build, test, ad-hoc sign, package, and verify the app. Accepts builder flags.
+# Build, test, ad-hoc sign, and package the app. Accepts builder flags.
 package *args: setup
     {{ python }} -m tools.build_bundle "$@"
 
@@ -69,10 +69,6 @@ sign app: setup
 # Check an existing app's nested code signatures.
 verify-signature app:
     /usr/bin/codesign --verify --deep --strict {{ quote(app) }}
-
-# Run the complete isolated acceptance check on an existing ZIP.
-verify path=archive: setup
-    {{ python }} -m tools.verify_bundle {{ quote(path) }}
 
 # Check the release version and changelog without changing files.
 release-check: setup
