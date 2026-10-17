@@ -1,42 +1,43 @@
 # Carrie On
 
-Resume selected local Codex chats after their usage quota resets, from your Mac's menu bar.
+Resume your local Codex chats after your usage quota resets, from your Mac's menu bar.
 
-Carrie On keeps a queue of chats and continuation instructions. It checks quota metadata without model inference and asks the running Codex desktop app to continue each eligible chat once. The resumed work uses the chat's existing model, tools, and permissions.
+Choose the chats you want to continue and add instructions for each. Carrie On resumes the work when quota is available after a reset. Manage your queue from the menu bar or CLI.
 
 ## Install
 
-Download the DMG from [Releases](https://github.com/nickcorin/carrie-on/releases), open it, and drag **Carrie On** onto **Applications**. Eject the disk image and open the installed app, then use the menu bar to find a chat and add it to the queue. A ZIP and checksums are also available.
+You need an Apple Silicon Mac, the Codex desktop app, and a signed-in Codex CLI.
 
-The bundle includes Python. You need an Apple Silicon Mac, the Codex desktop app, and a signed-in Codex CLI. Keep Codex open and your Mac awake and connected. The build targets macOS 13 or later, but runtime testing on macOS 13 remains outstanding. Releases are ad-hoc signed and are not notarized. macOS may require approval through **Privacy & Security**.
+1. Download the DMG from [GitHub Releases](https://github.com/nickcorin/carrie-on/releases).
+2. Open it and drag **Carrie On** onto **Applications**. You can also install directly in `~/Applications`.
+3. Eject the disk image and open the installed app.
+4. If prompted, choose your Codex executable. Run `command -v codex` in Terminal to find it.
+5. Open Carrie On from the menu bar, choose a chat, and add it to your queue.
 
-See the [installation guide](INSTALL.md) for first launch, updates, troubleshooting, and removal.
+The app is not notarized. If macOS blocks it, open **System Settings**, select **Privacy & Security**, and choose **Open Anyway** for Carrie On. Runtime compatibility with macOS 13 has not been verified.
 
-Carrie On checks for updates on startup. Open **Settings** and choose **Update to &lt;version&gt;** to install an available release, or **Check for Updates** to check again. Updates preserve your queue and settings.
+Keep Codex open and your Mac awake and connected while waiting for work to resume. If setup fails, follow the error dialog and choose **Retry**.
 
-If you use 0.5.4 or earlier, quit the old app and replace it with the downloaded app. Version 0.5.6 imports your data and removes the old service registrations automatically. See the [update instructions](INSTALL.md#updates).
+## Uninstall
 
-Carrie On Dev checks for newer commits in your local checkout and rebuilds the app when you choose **Update to &lt;short hash&gt;**. See [development builds](RELEASING.md#local-development-app).
+Remove the background services before deleting the app:
 
-## How it works
+```sh
+"/Applications/Carrie On.app/Contents/MacOS/carrie_on" remove-installation --yes
+```
 
-Each enrollment authorizes a single continuation after a recorded reset. Carrie On waits for available quota and checks that the chat still matches the enrolled work. It waits while chats are active or need approval or input. Changed work, paused goals, and uncertain delivery require attention rather than automatic retries. You can pause the queue or remove an enrollment at any time.
-
-Queue data, instructions, and logs stay on your Mac. The native card uses a local API listening only on `127.0.0.1`. Carrie On does not purchase credits, change models, or run a competing agent process. Remote chats and ChatGPT conversations are unsupported.
-
-New enrollments use the official Python SDK to read quota, chat metadata, and the latest turn header. Legacy queue migration and delivery recovery also read opening prompts, as described in the [continuation contract](features/continuation-queue.md).
-
-Dispatch uses the desktop's private, version-sensitive IPC protocol. Missing completion evidence keeps a chat waiting. Incompatible responses prevent dispatch for the affected chat. After a Codex update, check connectivity before relying on unattended continuation. This is an independent project, not an official OpenAI product.
+Adjust the path if you installed in `~/Applications`. Quit Carrie On and move it to Trash. Saved data remains in `~/Library/Application Support/Carrie On`. To back it up, quit the app and copy that folder. Delete the folder only if you also want to discard your data.
 
 ## Documentation
 
-- [Usage guide](USAGE.md): native card, terminal commands, and queue behavior.
-- [Installation](INSTALL.md): install, update, recover, and uninstall.
-- [Contributing](CONTRIBUTING.md): development setup, component map, and tests.
-- [Releasing](RELEASING.md): build locally and prepare GitHub releases.
-- [Feature contracts](features/index.md), [changelog](CHANGELOG.md), and [security](SECURITY.md).
+- [Changelog](CHANGELOG.md)
+- [Security and vulnerability reporting](SECURITY.md)
 
-Report reproducible bugs through [GitHub Issues](https://github.com/nickcorin/carrie-on/issues). Include the app, macOS, and Codex versions. Redact chat contents, account identifiers, and local paths from diagnostics.
+Report bugs through [GitHub Issues](https://github.com/nickcorin/carrie-on/issues). Carrie On is an independent project, not an official OpenAI product.
+
+## Releasing
+
+Releasing requires GitHub CLI and configured Git signing. Set `VERSION`, add a matching changelog entry, and commit the changes. Run `just release` from a clean checkout to run checks, push a signed version tag, and create a draft GitHub release. Complete [package acceptance](docs/features/distribution.md#package-acceptance), then run `just publish` to publish the draft. Use a new version for each release.
 
 ## License
 

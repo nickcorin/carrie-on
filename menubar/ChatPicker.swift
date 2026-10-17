@@ -40,6 +40,7 @@ enum ChatCardState: Equatable {
 struct PickerChatPage: Decodable {
     let chats: [PickerChat]
     let next_cursor: String?
+    enum CodingKeys: String, CodingKey { case chats = "items", next_cursor }
 }
 
 struct PickerQueue: Decodable {
@@ -48,43 +49,58 @@ struct PickerQueue: Decodable {
         let thread_id: String
         let title: String
         let prompt: String
-        var state = "waiting"
-        var note: String? = nil
-        var reactivation_error: String? = nil
-        var attempted_at: Double? = nil
-        var processing_until: Double? = nil
-        var id: String { thread_id }
+        var state = "queued"
+        var revision = 1
+        var error = ""
+        var dispatching = false
+        var id: String { enrollmentID }
+        var hasActiveDelivery: Bool { dispatching }
         var cardState: ChatCardState {
-            if reactivation_error != nil || state == "needs_attention" { return .failed }
-            if state == "sending", let expiry = processing_until,
-               expiry > Date().timeIntervalSince1970 { return .processing }
-            return state == "sending" ? .failed : .queued
+            if state == "stale" || state == "failed" { return .failed }
+            if dispatching { return .processing }
+            return .queued
         }
-        var failureTitle: String {
-            if attempted_at != nil { return "Resume unconfirmed" }
-            return state == "needs_attention" ? "Needs attention" : "Couldn’t resume"
-        }
+        var failureTitle: String { state == "stale" ? "Conversation continued" : "Couldn’t resume" }
         var failureDetail: String {
-            let reason = reactivation_error ?? (state == "sending" ? "Delivery has not been confirmed." : note)
-                ?? "The chat could not be resumed."
+            if state == "stale" { return "The conversation continued after enrollment. This instruction will not be sent." }
+            let reason = error.isEmpty ? "The chat could not be resumed" : error
             let sentence = reason.hasSuffix(".") ? reason : reason + "."
-            return sentence + (state == "waiting" ? " Will retry automatically." : " Inspect the chat before re-queueing.")
+            return sentence + " Will retry automatically."
         }
         var statusDescription: String {
             switch cardState {
             case .failed: return "\(failureTitle). \(failureDetail)"
-            case .processing: return "Sending continuation…"
+            case .processing: return "Sending instruction…"
             case .queued, .base: return "Scheduled for the next usage reset."
             }
         }
         var cardHeight: CGFloat { 84 }
         enum CodingKeys: String, CodingKey {
             case enrollmentID = "id"
-            case thread_id, title, prompt, state, note, reactivation_error, attempted_at, processing_until
+            case thread_id = "chat_id", prompt = "instruction"
+            case title, state, revision, error, dispatching
+        }
+        init(enrollmentID: String, thread_id: String, title: String, prompt: String) {
+            self.enrollmentID = enrollmentID
+            self.thread_id = thread_id
+            self.title = title
+            self.prompt = prompt
+        }
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            enrollmentID = try values.decode(String.self, forKey: .enrollmentID)
+            thread_id = try values.decode(String.self, forKey: .thread_id)
+            title = try values.decode(String.self, forKey: .title)
+            prompt = try values.decode(String.self, forKey: .prompt)
+            state = try values.decode(String.self, forKey: .state)
+            revision = try values.decode(Int.self, forKey: .revision)
+            error = try values.decode(String.self, forKey: .error)
+            dispatching = try values.decode(Bool.self, forKey: .dispatching)
         }
     }
     let entries: [Entry]
-    let paused: Bool
+    var next_cursor: String? = nil
+    enum CodingKeys: String, CodingKey { case entries = "items", next_cursor }
 }
 
 enum CardActivity: Equatable {
@@ -109,6 +125,65 @@ enum CardActivity: Equatable {
 enum QueuedChange {
     case instruction(String, expected: String)
     case remove
+}
+
+/// The original creation input is retained until the server confirms its outcome.
+/// Retries use these values even if the editor or selected usage bucket changes.
+private struct QueueCreation: Codable, Equatable {
+    let id: String
+    let chatID: String
+    let instruction: String
+    let limitID: String?
+
+    var body: [String: String] {
+        var fields = ["id": id, "chat_id": chatID, "instruction": instruction]
+        if let limitID { fields["limit_id"] = limitID }
+        return fields
+    }
+}
+
+private struct InstructionEdit: Encodable {
+    let instruction: String
+    let revision: Int
+}
+
+private struct ServiceProblem: Decodable, LocalizedError {
+    let code: String
+    let detail: String
+    var status = 503
+    var errorDescription: String? { detail }
+    enum CodingKeys: String, CodingKey { case code, detail }
+}
+
+private struct CreationJournal: Codable {
+    static let key = "pendingQueueCreations.v1"
+    static let maximumCount = 100
+    let version: Int
+    let requests: [QueueCreation]
+}
+
+private struct PendingCreation {
+    enum Outcome {
+        case submitting
+        case uncertain(String)
+        case retryable(String)
+    }
+    let request: QueueCreation
+    var outcome: Outcome
+
+    var activity: CardActivity {
+        switch outcome {
+        case .submitting: return .working("Queueing…")
+        case .uncertain(let detail): return .uncertain(detail)
+        case .retryable(let detail): return .failed(detail)
+        }
+    }
+}
+
+private enum CreationResolution {
+    case confirmed(PickerQueue.Entry)
+    case missing
+    case unavailable(String)
 }
 
 enum RefreshTimestamp {
@@ -178,12 +253,12 @@ final class ChatPickerModel: ObservableObject {
     @Published private(set) var nextCursor: String?
     @Published var checkingQueue = false
     @Published var loadError: String?
-    @Published var paused = false
     @Published var ready = false
     @Published var connection: CodexConnection = .checking
     @Published private(set) var lastUpdatedAt: Date?
     @Published private(set) var openingCodex = false
     @Published private(set) var launchError: String?
+    @Published private(set) var queueRecoveryError: String?
     @Published var refreshingSummary = false
     @Published var summary: MenuSnapshot? {
         didSet {
@@ -197,16 +272,37 @@ final class ChatPickerModel: ObservableObject {
     private var searchRevision = 0
     private var catalogQuery: String?
     private var queueRevision = 0
-    private var queueReadRevision = 0
     private var snapshotRefresh: Task<Void, Never>?
+    @Published private var pendingCreations: [String: PendingCreation] = [:]
+    private let recoveryDefaults: UserDefaults?
     private let baseURL: URL
     private let session: URLSession
     private let didQueue: () -> Void
 
-    init(baseURL: URL, session: URLSession = .shared, didQueue: @escaping () -> Void) {
+    /// Owns requests in the app's profile-specific preferences domain until their outcomes are known.
+    /// Pass nil preferences only for isolated previews or tests that do not need restart recovery.
+    /// An unreadable journal blocks new creation while existing queue actions remain available.
+    init(baseURL: URL, session: URLSession = .shared, recoveryDefaults: UserDefaults? = .standard,
+         didQueue: @escaping () -> Void) {
         self.baseURL = baseURL
         self.session = session
+        self.recoveryDefaults = recoveryDefaults
         self.didQueue = didQueue
+        guard let data = recoveryDefaults?.data(forKey: CreationJournal.key) else { return }
+        guard data.count <= 16_000_000,
+              let saved = try? JSONDecoder().decode(CreationJournal.self, from: data),
+              saved.version == 1, saved.requests.count <= CreationJournal.maximumCount,
+              Set(saved.requests.map(\.chatID)).count == saved.requests.count,
+              saved.requests.allSatisfy({ UUID(uuidString: $0.id) != nil && UUID(uuidString: $0.chatID) != nil
+                  && !$0.instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                  && $0.instruction.count <= 32000 && ($0.limitID?.count ?? 0) <= 200 }) else {
+            queueRecoveryError = "Saved queue requests could not be read. Existing items remain available; new requests are blocked to prevent duplicate sends."
+            return
+        }
+        for request in saved.requests {
+            pendingCreations[request.chatID] = PendingCreation(request: request,
+                outcome: .uncertain("Checking the previous queue request…"))
+        }
     }
 
     var queued: Set<String> { Set(queuedEntries.map(\.thread_id)) }
@@ -218,24 +314,28 @@ final class ChatPickerModel: ObservableObject {
             .sorted { PickerChat.mostRecentFirst(queuedChat($0), queuedChat($1)) }
     }
     var working: Bool {
-        activities.values.contains { if case .working = $0 { return true }; return false }
+        (Array(activities.values) + pendingCreations.values.map(\.activity))
+            .contains { if case .working = $0 { return true }; return false }
     }
     var refreshingCodex: Bool {
         connection == .connected && (refreshingSummary || searching || checkingMetadata)
     }
     func queuedChat(_ entry: PickerQueue.Entry) -> PickerChat {
-        knownChats[entry.id] ?? PickerChat(id: entry.id, title: entry.title, cwd: nil)
+        knownChats[entry.thread_id] ?? PickerChat(id: entry.thread_id, title: entry.title, cwd: nil)
     }
     func prompt(for id: String) -> String {
         let text = (instructions[id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? Self.defaultInstruction : text
     }
-    func canAct(on id: String) -> Bool { activities[id]?.blocksAction != true }
+    func activity(for id: String) -> CardActivity? { pendingCreations[id]?.activity ?? activities[id] }
+    func canAct(on id: String) -> Bool { activity(for: id)?.blocksAction != true }
     func canQueue(_ id: String) -> Bool {
-        connection == .connected && canAct(on: id) && !queued.contains(id) && (buckets.count <= 1 || !bucket.isEmpty)
+        connection == .connected && queueRecoveryError == nil && canAct(on: id) && !queued.contains(id)
+            && (pendingCreations[id] != nil || buckets.count <= 1 || !bucket.isEmpty)
     }
 
-    private func request(_ path: String, query: String? = nil, cursor: String? = nil, body: [String: String]? = nil, timeout: Double = 120) async throws -> Data {
+    private func request(_ path: String, query: String? = nil, cursor: String? = nil, body: (any Encodable)? = nil,
+                         method: String = "POST", timeout: Double = 120) async throws -> Data {
         var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         if let query { components.queryItems = [URLQueryItem(name: "search", value: query)] }
         if let cursor { components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "cursor", value: cursor)] }
@@ -244,15 +344,17 @@ final class ChatPickerModel: ObservableObject {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = timeout
         if let body {
-            request.httpMethod = "POST"
+            request.httpMethod = method
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(body)
         }
         let (data, response) = try await session.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            struct Failure: Decodable { let error: String }
-            let reason = (try? JSONDecoder().decode(Failure.self, from: data).error) ?? "Local service unavailable. Try again shortly."
-            throw NSError(domain: "Carrie On", code: 1, userInfo: [NSLocalizedDescriptionKey: reason])
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 503
+        guard (200..<300).contains(status) else {
+            var problem = (try? JSONDecoder().decode(ServiceProblem.self, from: data))
+                ?? ServiceProblem(code: "invalid_response", detail: "Local service unavailable. Try again shortly.")
+            problem.status = status
+            throw problem
         }
         return data
     }
@@ -310,7 +412,7 @@ final class ChatPickerModel: ObservableObject {
         let installed = running || codexApplicationURL != nil
         if !running { connection = CodexConnection.resolve(installed: installed, running: false, handshake: false) }
         do {
-            let data = try await request("api/menu", timeout: 45)
+            let data = try await request("api/v1/status", timeout: 45)
             let snapshot = try MenuSnapshot.decode(data)
             guard let handshake = snapshot.connected else { throw MenuError.invalidData }
             summary = snapshot
@@ -332,11 +434,15 @@ final class ChatPickerModel: ObservableObject {
         checkingMetadata = true
         defer { checkingMetadata = false }
         do {
-            let data = try await request("api/queued-chats")
-            let results = try JSONDecoder().decode([PickerChat].self, from: data)
-            for chat in results {
-                if chat.activityDate != nil || knownChats[chat.id] == nil { knownChats[chat.id] = chat }
-            }
+            var cursor: String? = nil
+            repeat {
+                let data = try await request("api/v1/queue/metadata", cursor: cursor)
+                let page = try JSONDecoder().decode(PickerChatPage.self, from: data)
+                for chat in page.chats {
+                    if chat.activityDate != nil || knownChats[chat.id] == nil { knownChats[chat.id] = chat }
+                }
+                cursor = page.next_cursor
+            } while cursor != nil
         } catch { /* Missing metadata is shown as unknown; cached metadata remains available. */ }
     }
 
@@ -361,7 +467,7 @@ final class ChatPickerModel: ObservableObject {
         loadError = nil
         defer { if revision == searchRevision { searching = false } }
         do {
-            let data = try await request("api/chat-page", query: query, cursor: cursor)
+            let data = try await request("api/v1/chats", query: query, cursor: cursor)
             let page = try JSONDecoder().decode(PickerChatPage.self, from: data)
             guard revision == searchRevision, !Task.isCancelled else { return }
             var ids = Set<String>()
@@ -379,32 +485,76 @@ final class ChatPickerModel: ObservableObject {
         }
     }
 
-    func reconcile(_ queue: PickerQueue) {
-        queuedEntries = queue.entries
-        paused = queue.paused
-    }
-
     func updateQueue(refreshMetadata: Bool = true) async {
-        guard !checkingQueue else { return }
+        guard !checkingQueue, !working else { return }
         if !ready && !searching { Task { await searchChats() } }
-        queueReadRevision += 1
-        let readRevision = queueReadRevision
         let mutationRevision = queueRevision
         checkingQueue = true
-        defer { if readRevision == queueReadRevision { checkingQueue = false } }
+        defer { checkingQueue = false }
         do {
-            let data = try await request("api/status")
-            let queue = try JSONDecoder().decode(PickerQueue.self, from: data)
+            var cursor: String? = nil
+            var entries: [PickerQueue.Entry] = []
+            var seen = Set<String>()
+            repeat {
+                let data = try await request("api/v1/queue", cursor: cursor)
+                let page = try JSONDecoder().decode(PickerQueue.self, from: data)
+                entries += page.entries.filter { seen.insert($0.enrollmentID).inserted }
+                cursor = page.next_cursor
+            } while cursor != nil
+            var resolutions: [String: CreationResolution] = [:]
+            for (chatID, pending) in pendingCreations {
+                if case .submitting = pending.outcome { continue }
+                let itemID = pending.request.id
+                if let item = entries.first(where: { $0.enrollmentID == itemID && $0.thread_id == chatID }) {
+                    resolutions[chatID] = .confirmed(item)
+                    continue
+                }
+                do {
+                    let data = try await request("api/v1/queue/\(itemID)")
+                    let item = try JSONDecoder().decode(PickerQueue.Entry.self, from: data)
+                    guard item.enrollmentID == itemID, item.thread_id == chatID else {
+                        resolutions[chatID] = .unavailable("The saved request conflicts with another queue item. Its outcome is still unknown.")
+                        continue
+                    }
+                    resolutions[chatID] = .confirmed(item)
+                } catch let problem as ServiceProblem where problem.status == 404 && problem.code == "not_found" {
+                    resolutions[chatID] = .missing
+                } catch {
+                    resolutions[chatID] = .unavailable(error.localizedDescription)
+                }
+            }
             // A read started before a mutation must not undo the mutation's result.
-            guard readRevision == queueReadRevision, mutationRevision == queueRevision, !working else { return }
-            reconcile(queue)
+            guard mutationRevision == queueRevision, !working else { return }
+            let previousPendingCount = pendingCreations.count
+            for (chatID, resolution) in resolutions {
+                switch resolution {
+                case .confirmed(let item):
+                    pendingCreations.removeValue(forKey: chatID)
+                    activities[chatID] = .complete(item.state == "queued" ? "Queued" : "Previous request: \(item.state).")
+                    if ["queued", "stale", "failed"].contains(item.state), seen.insert(item.enrollmentID).inserted {
+                        entries.append(item)
+                    }
+                case .missing:
+                    pendingCreations[chatID]?.outcome = .retryable("The request was not found. Retry will use its saved instruction and usage bucket.")
+                case .unavailable(let reason):
+                    pendingCreations[chatID]?.outcome = .uncertain(reason + " Checking the previous request before allowing another send.")
+                }
+            }
+            if pendingCreations.count != previousPendingCount { try savePendingCreations() }
+            queuedEntries = entries
             if refreshMetadata { Task { await loadQueuedMetadata() } }
-            for (id, activity) in activities {
+            for (id, activity) in activities where pendingCreations[id] == nil {
                 if case .uncertain(let reason) = activity {
                     activities[id] = .failed(reason + " Queue status has been refreshed.")
                 }
             }
         } catch { /* Existing cards stay usable; unknown writes remain blocked on their own card. */ }
+    }
+
+    private func savePendingCreations() throws {
+        guard let recoveryDefaults else { return }
+        let saved = CreationJournal(version: 1, requests: pendingCreations.values.map(\.request))
+        recoveryDefaults.set(try JSONEncoder().encode(saved), forKey: CreationJournal.key)
     }
 
     private func begin(_ id: String, detail: String) {
@@ -422,53 +572,72 @@ final class ChatPickerModel: ObservableObject {
     func queueChat(_ chat: PickerChat) async -> Bool {
         guard canQueue(chat.id) else { return false }
         let prompt = prompt(for: chat.id)
-        guard prompt.count <= 32000 else {
+        guard pendingCreations[chat.id] != nil || prompt.count <= 32000 else {
             activities[chat.id] = .failed("Keep the instruction under 32,000 characters.")
             return false
         }
-        var body = ["chat": chat.id, "prompt": prompt]
-        if !bucket.isEmpty { body["limit_id"] = bucket }
-        begin(chat.id, detail: "Queueing…")
+        guard pendingCreations[chat.id] != nil || pendingCreations.count < CreationJournal.maximumCount else {
+            activities[chat.id] = .failed("Resolve previous queue requests before creating more.")
+            return false
+        }
+        let previous = pendingCreations[chat.id]
+        let creation = previous?.request ?? QueueCreation(id: UUID().uuidString.lowercased(),
+            chatID: chat.id, instruction: prompt, limitID: bucket.isEmpty ? nil : bucket)
+        queueRevision += 1
+        pendingCreations[chat.id] = PendingCreation(request: creation, outcome: .submitting)
         do {
-            struct Enrollment: Decodable { let entry: PickerQueue.Entry }
-            let data = try await request("api/queue", body: body)
-            let entry = try JSONDecoder().decode(Enrollment.self, from: data).entry
+            try savePendingCreations()
+            let data = try await request("api/v1/queue", body: creation.body)
+            let entry = try JSONDecoder().decode(PickerQueue.Entry.self, from: data)
+            guard entry.enrollmentID == creation.id, entry.thread_id == creation.chatID else { throw MenuError.invalidData }
+            pendingCreations.removeValue(forKey: chat.id)
+            try savePendingCreations()
             queuedEntries.removeAll { $0.enrollmentID == entry.enrollmentID }
-            queuedEntries.append(entry)
-            finish(chat.id, result: .complete("Queued"))
+            if ["queued", "stale", "failed"].contains(entry.state) { queuedEntries.append(entry) }
+            finish(chat.id, result: .complete(entry.state == "queued" ? "Queued" : "Previous request: \(entry.state)."))
             return true
         } catch {
-            finish(chat.id, result: .uncertain(error.localizedDescription))
+            if previous == nil, let problem = error as? ServiceProblem, (400..<500).contains(problem.status),
+               problem.code != "id_reused", problem.code != "invalid_response", problem.status != 408 {
+                pendingCreations.removeValue(forKey: chat.id)
+                try? savePendingCreations()
+                finish(chat.id, result: .failed(problem.detail))
+            } else {
+                pendingCreations[chat.id]?.outcome = .uncertain(error.localizedDescription)
+                queueRevision += 1
+                didQueue()
+                Task { await updateQueue() }
+            }
             return false
         }
     }
 
     func changeQueued(_ entry: PickerQueue.Entry, change: QueuedChange) async -> Bool {
-        guard canAct(on: entry.id) else { return false }
-        begin(entry.id, detail: "Updating…")
+        guard canAct(on: entry.thread_id), !entry.hasActiveDelivery else { return false }
+        begin(entry.thread_id, detail: "Updating…")
         do {
             switch change {
             case .instruction(let text, let expected):
+                guard entry.prompt == expected else { throw MenuError.invalidData }
                 let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let data = try await request("api/instruction", body: [
-                    "chat": entry.enrollmentID,
-                    "prompt": prompt.isEmpty ? Self.defaultInstruction : prompt,
-                    "expected_prompt": expected
-                ])
-                struct Enrollment: Decodable { let entry: PickerQueue.Entry }
-                let saved = try JSONDecoder().decode(Enrollment.self, from: data).entry
+                let body = InstructionEdit(
+                    instruction: prompt.isEmpty ? Self.defaultInstruction : prompt,
+                    revision: entry.revision
+                )
+                let data = try await request("api/v1/queue/\(entry.enrollmentID)", body: body, method: "PATCH")
+                let saved = try JSONDecoder().decode(PickerQueue.Entry.self, from: data)
                 if let index = queuedEntries.firstIndex(where: { $0.enrollmentID == entry.enrollmentID }) {
                     queuedEntries[index] = saved
                 }
             case .remove:
-                _ = try await request("api/remove", body: ["chat": entry.enrollmentID])
-                instructions[entry.id] = entry.prompt
+                _ = try await request("api/v1/queue/\(entry.enrollmentID)/cancel", body: [String: String]())
+                instructions[entry.thread_id] = entry.prompt
                 queuedEntries.removeAll { $0.enrollmentID == entry.enrollmentID }
             }
-            finish(entry.id, result: .complete("Updated"))
+            finish(entry.thread_id, result: .complete("Updated"))
             return true
         } catch {
-            finish(entry.id, result: .uncertain(error.localizedDescription))
+            finish(entry.thread_id, result: .uncertain(error.localizedDescription))
             return false
         }
     }
@@ -583,10 +752,10 @@ struct ChatPickerView: View {
                         ? "No queued chats" : "No matching chats")
                         .padding(.top, 8)
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 6) {
+                    List {
+                        Group {
                             ForEach(model.matchingQueuedEntries) { entry in
-                                ChatCard(chat: model.queuedChat(entry), activity: model.activities[entry.id],
+                                ChatCard(chat: model.queuedChat(entry), activity: model.activity(for: entry.thread_id),
                                     content: .queued(entry,
                                         save: { text, expected in
                                             await model.changeQueued(entry, change: .instruction(text, expected: expected))
@@ -595,12 +764,17 @@ struct ChatPickerView: View {
                                         if flipped { expandedQueued.insert(entry.enrollmentID) }
                                         else { expandedQueued.remove(entry.enrollmentID) }
                                     })
-                                    .id("queued-" + entry.enrollmentID)
                                     .transition(cardTransition)
+                                    .padding(.bottom, 6)
+                                    .listRowInsets(EdgeInsets())
                             }
-                        }.padding(.bottom, 6)
-                            .background(ChatListScrollbar(hovered: hoveringQueued))
+                        }.listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .background(ChatListAppearance(hovered: hoveringQueued))
                     }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
                     .frame(height: queuedHeight)
                     .onHover { hoveringQueued = $0 }
                     .padding(.top, 6)
@@ -613,6 +787,10 @@ struct ChatPickerView: View {
 
             DisclosureGroup(isExpanded: $showChats) {
                 VStack(spacing: 8) {
+                    if let error = model.queueRecoveryError {
+                        Text(error).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if model.buckets.count > 1 {
                         Picker("Usage bucket", selection: $model.bucket) {
                             Text("Select a bucket").tag("")
@@ -620,17 +798,18 @@ struct ChatPickerView: View {
                         }
                     }
 
-                    ScrollView {
-                        LazyVStack(spacing: 6) {
+                    List {
+                        Group {
                             ForEach(model.availableChats) { chat in
-                                ChatCard(chat: chat, activity: model.activities[chat.id], content: .draft(
+                                ChatCard(chat: chat, activity: model.activity(for: chat.id), content: .draft(
                                     instruction: Binding(
                                         get: { model.instructions[chat.id] ?? "" },
                                         set: { model.instructions[chat.id] = $0 }),
                                     canQueue: model.canQueue(chat.id),
                                     queue: { await model.queueChat(chat) }), onFlip: { _ in })
-                                    .id("draft-" + chat.id)
                                     .transition(cardTransition)
+                                    .padding(.bottom, 6)
+                                    .listRowInsets(EdgeInsets())
                             }
                             if let cursor = model.nextCursor {
                                 VStack(spacing: 6) {
@@ -656,9 +835,13 @@ struct ChatPickerView: View {
                                 sectionMessage(model.connection != .connected ? "Chats will appear when connected" :
                                     (model.searching ? "Finding chats…" : (model.ready ? "No matching chats" : "Loading chats…")))
                             }
-                        }.padding(.bottom, 12)
-                            .background(ChatListScrollbar(hovered: hoveringChats))
-                    }.onHover { hoveringChats = $0 }
+                        }.listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .background(ChatListAppearance(hovered: hoveringChats))
+                    }.listStyle(.plain)
+                        .scrollContentBackground(.hidden)
+                        .onHover { hoveringChats = $0 }
                         .accessibilityLabel("Available chats")
                 }.padding(.top, 8)
             } label: {
@@ -799,9 +982,6 @@ struct ChatPickerView: View {
                 .accessibilityValue("\(remaining) percent remaining")
             } else {
                 Text("Usage unavailable").font(.caption).foregroundStyle(.secondary)
-            }
-            if model.paused {
-                Label("Queue paused", systemImage: "pause.circle").font(.caption).foregroundStyle(.orange)
             }
         }
         .help(model.summary?.usage?.windows.map {
@@ -946,8 +1126,8 @@ struct CardActionStyle: ButtonStyle {
     }
 }
 
-/// Keep native scrolling controls unobtrusive without replacing their interactions.
-struct ChatListScrollbar: NSViewRepresentable {
+/// Align native list cells with the cards and keep scrolling controls unobtrusive.
+struct ChatListAppearance: NSViewRepresentable {
     let hovered: Bool
 
     final class Scroller: NSScroller {
@@ -994,6 +1174,9 @@ struct ChatListScrollbar: NSViewRepresentable {
 
         func configureScrollView() {
             guard let scroll = enclosingScrollView else { return }
+            if let table = scroll.documentView as? NSTableView, table.intercellSpacing.width != 0 {
+                table.intercellSpacing.width = 0
+            }
             if !(scroll.verticalScroller is Scroller) {
                 scroll.verticalScroller = Scroller()
             }
@@ -1088,7 +1271,10 @@ struct ChatCard: View {
         if case .queued = content { return true }
         return false
     }
-    private var blocked: Bool { activity?.blocksAction == true || content.state == .processing }
+    private var blocked: Bool {
+        if case .queued(let entry, _, _) = content, entry.hasActiveDelivery { return true }
+        return activity?.blocksAction == true || content.state == .processing
+    }
     private var revealsRemove: Bool { isQueued && hovered && !flipped }
     private var tint: Color {
         switch content.state {
@@ -1270,8 +1456,8 @@ struct ChatCard: View {
                     }
                 case .queued(let entry, let save, _):
                     instructionField($editedInstruction, action: "Save instruction", symbol: "arrow.up",
-                                     canSubmit: !blocked && entry.state == "waiting" && editedInstruction != savedInstruction,
-                                     editable: entry.state == "waiting") {
+                                     canSubmit: !blocked && ["queued", "failed"].contains(entry.state) && editedInstruction != savedInstruction,
+                                     editable: ["queued", "failed"].contains(entry.state)) {
                         Task { if await save(editedInstruction, savedInstruction) { flipped = false } }
                     }
                 }

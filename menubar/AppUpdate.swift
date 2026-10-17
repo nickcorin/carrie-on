@@ -77,10 +77,10 @@ struct SourceBuild {
         process.currentDirectoryURL = root
         switch kind {
         case .menu:
-            process.arguments = ["-u", root.appendingPathComponent("install_menubar.py").path,
+            process.arguments = ["-u", "-m", "tools.install_menubar",
                                  "--port", String(port), "--prepare-app", app.path]
         case .bundledDev:
-            process.arguments = ["-u", root.appendingPathComponent("build_bundle.py").path,
+            process.arguments = ["-u", "-m", "tools.build_bundle",
                                  "--profile", "dev", "--output", app.deletingLastPathComponent().path,
                                  "--prepare-app", app.path]
         }
