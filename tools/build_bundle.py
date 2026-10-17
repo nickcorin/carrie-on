@@ -143,20 +143,13 @@ def build(output, replace=False, profile=PROFILES["release"], prepare_app=None):
         docs = resources / "Documentation"
         docs.mkdir()
         for filename in (
-            "INSTALL.md",
             "README.md",
-            "USAGE.md",
             "CHANGELOG.md",
-            "CONTRIBUTING.md",
-            "RELEASING.md",
             "SECURITY.md",
             "LICENSE",
-            "ARCHITECTURE.md",
         ):
             shutil.copy2(ROOT / filename, docs / filename)
-        shutil.copytree(ROOT / "features", docs / "features")
-        (docs / "assets").mkdir()
-        shutil.copy2(ROOT / "assets/README.md", docs / "assets/README.md")
+        shutil.copytree(ROOT / "docs", docs / "docs")
         licenses = resources / "Licenses"
         licenses.mkdir()
         shutil.copy2(ROOT / "LICENSE", licenses / "Carrie-On.txt")

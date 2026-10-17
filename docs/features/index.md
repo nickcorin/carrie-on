@@ -1,6 +1,6 @@
 # Features
 
-Carrie On queues instructions for local Codex chats. Start with the [usage guide](../USAGE.md).
+Carrie On queues instructions for local Codex chats. Start with [installation](../../README.md#install).
 
 - [Instruction queue](queue.md): enrollment, reset checks, dispatch, and recovery.
 - [Distribution](distribution.md): build, transfer, install, upgrade, and remove a self-contained Mac bundle.

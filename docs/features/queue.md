@@ -22,7 +22,7 @@ States are queued, failed, stale, cancelled, and sent. Failed entries retain an 
 
 Queued cards are amber; active dispatch shows a blue spinner. Failed entries and stale conversations show red warnings with retry or terminal guidance. Active ownership blocks editing/removal only for that entry, including a failed entry awaiting expiry. Idle failed entries remain editable. Dismissing a stale warning retains history. Uncertain client writes are reconciled before another action is enabled.
 
-See the [architecture and API](../ARCHITECTURE.md), [usage guide](../USAGE.md), and [verification matrix](verification.md). Automated tests cover real SQLite transactions, process death, concurrent claims, expiry, replay, quota semantics, protocol boundaries, HTTP, CLI, and native interaction races. Real dispatch requires an explicitly authorized disposable chat.
+See the [architecture and API](../architecture.md) and [verification matrix](verification.md). Automated tests cover real SQLite transactions, process death, concurrent claims, expiry, replay, quota semantics, protocol boundaries, HTTP, CLI, and native interaction races. Real dispatch requires an explicitly authorized disposable chat.
 
 ## Live dispatch acceptance
 

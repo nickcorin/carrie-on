@@ -1,6 +1,6 @@
 # Feature verification
 
-The checks below cover product behavior through the current storage protocols and clients. Queue pause, public attempt history, and deferral counters are absent. Automated tests use temporary homes/databases, synthetic Codex adapters, local HTTP/Unix sockets, and native test executables. They never send a real instruction or change an installed app. Manual acceptance steps live in the relevant feature maps.
+The checks below cover product behavior through the storage protocols and clients. Automated tests use temporary homes and databases, synthetic Codex adapters, local HTTP and Unix sockets, and native test executables. They never send a real instruction or change an installed app. Manual acceptance steps live in the relevant feature maps.
 
 | Feature | Verification |
 | --- | --- |
@@ -23,7 +23,7 @@ The checks below cover product behavior through the current storage protocols an
 | Queue ordering, equal timestamps, unrelated work during active ownership | SQLite ordering tests |
 | Idempotent creation after lost HTTP reply, edits, cancellation, and restart | Actual CLI-to-HTTP timeout and SIGINT tests; native persistence through a 404 lookup, rejected 422 replay, and restart; native recovery of a committed creation after HTTP 503; HTTP replay and storage uniqueness tests |
 | SQLite durability, private files, reader concurrency, transaction rollback | Storage tests |
-| Migration lock failure and [manual recovery](../INSTALL.md#recover-a-migration-lock) | Storage test kills a process holding Yoyo's lock, checks the startup error and retained lock, runs the printed recovery command, and verifies queued work survives restart |
+| Migration lock failure and manual recovery | Storage test kills a process holding Yoyo's lock, checks the startup error and retained lock, runs the printed recovery command, and verifies queued work survives restart |
 | v0.5.7 JSON import, history, damaged records, retry, no resurrection | Raw v0.5.7 fixture through import and composed dispatch; turn-only anchors, changed turns with unchanged message IDs, already accepted messages, malformed history timestamps and IDs, NUL text, and interrupted per-entry import |
 | Compact tray count/reset/usage, missing/invalid data, partial failures | Native self-tests and API summary tests |
 | Usage selection, multiple buckets, countdown labels, activity times | Native self-tests |
@@ -59,4 +59,4 @@ Use the actual menu or CLI for [live dispatch acceptance](queue.md#live-dispatch
 
 For packaged Dev acceptance, use the app installed from the newly built DMG, independently of the release installation. Check the live connection and usage display, chat search, pagination past 50 chats, section disclosure, native accessibility page-up/page-down actions, card flipping without row selection, editor focus, multiline input, Escape, and draft retention across search. Clear search and draft text afterward. Confirm worker health, connection, and queue state through the installed CLI. This pass requires no enrollment or dispatch.
 
-Automated lifecycle fixtures do not establish actual logout/login behavior. Synthetic Codex tests do not establish a future quota reset or a real send against the currently installed private protocol. Before release, complete the broader native gesture/accessibility preference checks, an authorized disposable-chat dispatch, actual login startup, Gatekeeper approval, and tests on another Mac including macOS 13. See [release acceptance](../INSTALL.md#release-verification). These are explicit manual gates, not claims made by the unit suite.
+Automated lifecycle fixtures do not establish behavior at logout or login. Synthetic Codex tests do not establish a future quota reset or a real send against the installed private protocol. Before release, check native gestures and accessibility preferences, dispatch to an authorized disposable chat, and test login startup and Gatekeeper approval. Test on another Mac, including macOS 13 before claiming support. See [package acceptance](distribution.md#package-acceptance). These checks require the installed app and cannot be replaced by unit tests.

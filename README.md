@@ -1,43 +1,43 @@
 # Carrie On
 
-Resume selected local Codex chats after their usage quota resets, from your Mac's menu bar.
+Resume your local Codex chats after your usage quota resets, from your Mac's menu bar.
 
-Carrie On keeps queued instructions in SQLite. Its FastAPI service serves the native menu and Typer CLI, checks quota metadata without inference, and asks the running Codex desktop app to continue eligible work. Resumed work uses the chat's existing model, tools, and permissions.
+Choose the chats you want to continue and add instructions for each. Carrie On resumes the work when quota is available after a reset. Manage your queue from the menu bar or CLI.
 
 ## Install
 
-Download the DMG from [Releases](https://github.com/nickcorin/carrie-on/releases), open it, and drag **Carrie On** onto **Applications**. Eject the disk image and open the installed app, then use the menu bar to find a chat and add it to the queue. A ZIP and checksums are also available.
+You need an Apple Silicon Mac, the Codex desktop app, and a signed-in Codex CLI.
 
-The bundle includes Python. You need an Apple Silicon Mac, the Codex desktop app, and a signed-in Codex CLI. Keep Codex open and your Mac awake and connected. The build targets macOS 13 or later, but runtime testing on macOS 13 remains outstanding. Releases are ad-hoc signed and are not notarized. macOS may require approval through **Privacy & Security**.
+1. Download the DMG from [GitHub Releases](https://github.com/nickcorin/carrie-on/releases).
+2. Open it and drag **Carrie On** onto **Applications**. You can also install directly in `~/Applications`.
+3. Eject the disk image and open the installed app.
+4. If prompted, choose your Codex executable. Run `command -v codex` in Terminal to find it.
+5. Open Carrie On from the menu bar, choose a chat, and add it to your queue.
 
-See the [installation guide](INSTALL.md) for first launch, updates, troubleshooting, and removal.
+The app is not notarized. If macOS blocks it, open **System Settings**, select **Privacy & Security**, and choose **Open Anyway** for Carrie On. Runtime compatibility with macOS 13 has not been verified.
 
-Carrie On checks for updates on startup. Open **Settings** and choose **Update to &lt;version&gt;** to install an available release, or **Check for Updates** to check again. Updates preserve your queue and settings.
+Keep Codex open and your Mac awake and connected while waiting for work to resume. If setup fails, follow the error dialog and choose **Retry**.
 
-Upgrades from v0.5.7 preserve the JSON queue in SQLite and retain the source file for recovery. See the [update instructions](INSTALL.md#updates).
+## Uninstall
 
-Carrie On Dev checks for newer commits in your local checkout and rebuilds the app when you choose **Update to &lt;short hash&gt;**. See [development builds](RELEASING.md#local-development-app).
+Remove the background services before deleting the app:
 
-## How it works
+```sh
+"/Applications/Carrie On.app/Contents/MacOS/carrie_on" remove-installation --yes
+```
 
-Each queue item authorizes an instruction when a quota window changes and quota is available. Carrie On identifies windows by their reset timestamps and checks that the chat still matches the enrolled work. It does not need to observe exhaustion. Active chats and work awaiting quota, approval, input, or goal changes remain retryable failures. If the conversation has continued, its entry becomes stale and does not retry. Expiring delivery leases recover interrupted workers; fresh conversation checks suppress duplicate sends after uncertain replies. Remove queued work using its trash control, or quit the app to stop processing while preserving the queue.
-
-Queue data, instructions, and logs stay on your Mac. The native card uses a local API listening only on `127.0.0.1`. Carrie On does not purchase credits, change models, or run a competing agent process. Remote chats and ChatGPT conversations are unsupported.
-
-The official Python SDK reads quota, chat metadata, the latest turn header, and its opening message identity through bounded requests. Recovery checks older turn headers when needed, as described in the [queue contract](features/queue.md).
-
-Dispatch uses the desktop's private, version-sensitive IPC protocol. Missing completion evidence keeps a chat waiting. Incompatible responses prevent dispatch for the affected chat. After a Codex update, check connectivity before relying on unattended continuation. This is an independent project, not an official OpenAI product.
+Adjust the path if you installed in `~/Applications`. Quit Carrie On and move it to Trash. Saved data remains in `~/Library/Application Support/Carrie On`. To back it up, quit the app and copy that folder. Delete the folder only if you also want to discard your data.
 
 ## Documentation
 
-- [Usage guide](USAGE.md): native card, terminal commands, and queue behavior.
-- [Installation](INSTALL.md): install, update, recover, and uninstall.
-- [Contributing](CONTRIBUTING.md): development setup, component map, and tests.
-- [Architecture and API](ARCHITECTURE.md): package boundaries, SQLite, delivery, and HTTP contracts.
-- [Releasing](RELEASING.md): build locally and prepare GitHub releases.
-- [Feature contracts](features/index.md), [changelog](CHANGELOG.md), and [security](SECURITY.md).
+- [Changelog](CHANGELOG.md)
+- [Security and vulnerability reporting](SECURITY.md)
 
-Report reproducible bugs through [GitHub Issues](https://github.com/nickcorin/carrie-on/issues). Include the app, macOS, and Codex versions. Redact chat contents, account identifiers, and local paths from diagnostics.
+Report bugs through [GitHub Issues](https://github.com/nickcorin/carrie-on/issues). Carrie On is an independent project, not an official OpenAI product.
+
+## Releasing
+
+Releasing requires GitHub CLI and configured Git signing. Set `VERSION`, add a matching changelog entry, and commit the changes. Run `just release` from a clean checkout to run checks, push a signed version tag, and create a draft GitHub release. Complete [package acceptance](docs/features/distribution.md#package-acceptance), then run `just publish` to publish the draft. Use a new version for each release.
 
 ## License
 

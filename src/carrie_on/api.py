@@ -286,8 +286,7 @@ def create_app(
         description="Manage queued instructions through the local HTTP service. "
         "Set X-Carrie-On to 1 on every request. Supply a UUID when creating an entry. "
         "Repeating that UUID for the same chat returns the current entry without changing it. "
-        "When editing, include the entry's current revision in the JSON body. "
-        "See ARCHITECTURE.md for examples.",
+        "When editing, include the entry's current revision in the JSON body.",
     )
     app.state.worker = worker
     origin = f"http://127.0.0.1:{port}"

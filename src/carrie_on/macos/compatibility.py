@@ -61,7 +61,7 @@ def audit(payload, minimum_macos):
             if version_tuple(version) > version_tuple(minimum_macos):
                 raise ValueError(
                     f"{path.relative_to(payload)} requires macOS {version}, above the "
-                    f"{minimum_macos} target. Build with a compatible Python distribution; see INSTALL.md."
+                    f"{minimum_macos} target. Build with a compatible Python distribution."
                 )
             if version_tuple(version) > version_tuple(highest):
                 highest = version

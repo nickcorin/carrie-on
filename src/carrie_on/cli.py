@@ -23,7 +23,7 @@ app = typer.Typer(
     help="Queue Codex instructions after usage resets.",
     context_settings={"help_option_names": ["-h", "--help"]},
     epilog="Examples: carrie-on queue add 'Chat title'; carrie-on --json queue list. "
-    "Guide: https://github.com/nickcorin/carrie-on/blob/master/USAGE.md",
+    "Guide: https://github.com/nickcorin/carrie-on#readme",
 )
 queue = typer.Typer(no_args_is_help=True, help="Manage queued instructions and delivery history.")
 chats = typer.Typer(no_args_is_help=True, help="Find local Codex chats.")
