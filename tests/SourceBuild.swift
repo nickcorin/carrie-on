@@ -13,14 +13,17 @@ struct SourceBuildChecks {
         let installed = root.appendingPathComponent("Menu.app")
         let contents = installed.appendingPathComponent("Contents")
         try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        let interpreter = root.appendingPathComponent("python")
+        try Data("#!/bin/sh\ntest \"$1\" = -u && test \"$2\" = -m || exit 8\nmodule=\"$3\"\nshift 3\nexec /bin/sh \"$module\" \"$@\"\n".utf8).write(to: interpreter)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: interpreter.path)
         let metadata: [String: Any] = ["CFBundleIdentifier": "test.source-build", "CFBundlePackageType": "APPL",
-                                      "CarrieOnSourceRoot": root.path, "CarrieOnBuildPython": "/bin/sh", "CarrieOnPort": "8877"]
+                                      "CarrieOnSourceRoot": root.path, "CarrieOnBuildPython": interpreter.path, "CarrieOnPort": "8877"]
         try PropertyListSerialization.data(fromPropertyList: metadata, format: .xml, options: 0)
             .write(to: contents.appendingPathComponent("Info.plist"))
         try Data("old".utf8).write(to: installed.appendingPathComponent("version"))
         let bundle = Bundle(url: installed)!
         let build = try SourceBuild(bundle: bundle)
-        let script = root.appendingPathComponent("install_menubar.py")
+        let script = root.appendingPathComponent("tools.install_menubar")
         let candidate = root.appendingPathComponent("staging/Menu.app")
         // More than a pipe buffer of output must be drained before waiting for exit.
         let diagnostic = String(repeating: "compiler diagnostic é\n", count: 5000)
@@ -60,7 +63,7 @@ struct SourceBuildChecks {
         try PropertyListSerialization.data(fromPropertyList: devMetadata, format: .xml, options: 0)
             .write(to: dev.appendingPathComponent("Info.plist"))
         let devBuild = try SourceBuild(bundle: Bundle(url: dev.deletingLastPathComponent())!)
-        let devScript = root.appendingPathComponent("build_bundle.py")
+        let devScript = root.appendingPathComponent("tools.build_bundle")
         let devCandidate = root.appendingPathComponent("dev-staging/Dev.app")
         try Data("echo 'backend build failed' >&2\nexit 42\n".utf8).write(to: devScript)
         let devFailure = BuildOutput()

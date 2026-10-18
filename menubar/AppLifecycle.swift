@@ -5,7 +5,7 @@ import Foundation
 
 struct LifecycleFiles {
     static let labels = Bundle.main.object(forInfoDictionaryKey: "CarrieOnServiceLabels") as? [String]
-        ?? ["com.nickcorin.carrieon", "com.nickcorin.carrieon.ui", "com.nickcorin.carrieon.menu"]
+        ?? ["com.nickcorin.carrieon.ui", "com.nickcorin.carrieon.menu"]
     static let dataDirectory = Bundle.main.object(forInfoDictionaryKey: "CarrieOnDataDirectory") as? String ?? "Carrie On"
     let home: URL
     var data: URL { home.appendingPathComponent("Library/Application Support/\(Self.dataDirectory)") }
@@ -21,7 +21,7 @@ struct LifecycleFiles {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    /// Reconcile all three login registrations without changing running services.
+    /// Reconcile login registrations without changing running services.
     /// Nil preserves the saved preference. Repeating repairs partial changes.
     func reconcile(launchAtLogin requested: Bool? = nil) throws -> Bool {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -76,31 +76,55 @@ enum LifecycleServices {
         return (process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 
-    /// Start or stop only Carrie On's worker and interface. The app exits itself.
-    static func setRunning(_ running: Bool, files: LifecycleFiles,
-                           run: ([String]) throws -> (Int32, String) = launchctl,
-                           attempts: Int = 100,
-                           pause: () -> Void = { Thread.sleep(forTimeInterval: 0.1) }) throws {
+    static func start(files: LifecycleFiles,
+                      run: ([String]) throws -> (Int32, String) = launchctl) throws {
         let domain = "gui/\(getuid())"
-        for label in LifecycleFiles.labels.prefix(2) {
+        for label in LifecycleFiles.labels.dropLast() {
             let target = "\(domain)/\(label)"
             let loaded = try run(["print", target]).0 == 0
-            if loaded == running { continue }
-            let arguments = running ? ["bootstrap", domain, files.savedAgent(label).path] : ["bootout", target]
+            let arguments = loaded ? ["kickstart", target] : ["bootstrap", domain, files.savedAgent(label).path]
             let result = try run(arguments)
-            var nowLoaded = try run(["print", target]).0 == 0
-            // launchd acknowledges bootout before the exiting service disappears.
-            for _ in 1..<max(1, attempts) {
-                if nowLoaded == running { break }
-                pause()
-                nowLoaded = try run(["print", target]).0 == 0
-            }
-            guard nowLoaded == running else {
-                throw NSError(domain: "Carrie On", code: result.0 == 0 ? Int(ETIMEDOUT) : Int(result.0), userInfo: [NSLocalizedDescriptionKey:
-                    "Timed out waiting to \(running ? "start" : "stop") \(label). \(result.1)"])
+            guard result.0 == 0 else {
+                throw NSError(domain: "Carrie On", code: Int(result.0),
+                              userInfo: [NSLocalizedDescriptionKey: "Could not start \(label). \(result.1)"])
             }
         }
     }
+
+    static func stop(files: LifecycleFiles, session: URLSession = .shared,
+                     run: ([String]) throws -> (Int32, String) = launchctl) async throws {
+        let settingsURL = files.data.appendingPathComponent("settings.json")
+        let settings = FileManager.default.fileExists(atPath: settingsURL.path)
+            ? try JSONSerialization.jsonObject(with: Data(contentsOf: settingsURL)) as? [String: Any] : nil
+        let fallback = Int(Bundle.main.object(forInfoDictionaryKey: "CarrieOnPort") as? String ?? "") ?? 8766
+        let port = settings?["port"] as? Int ?? fallback
+        guard (1024...65535).contains(port) else {
+            throw NSError(domain: "Carrie On", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid service port."])
+        }
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/v1/service/shutdown")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data("{}".utf8)
+        request.setValue("1", forHTTPHeaderField: "X-Carrie-On")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 5
+        do {
+            let (_, response) = try await session.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 202 else {
+                throw NSError(domain: "Carrie On", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "The service rejected shutdown."])
+            }
+        } catch let error as URLError where error.code == .cannotConnectToHost {
+            // A previous shutdown may have stopped HTTP before the process exits.
+        }
+        for _ in 0..<100 {
+            let status = try run(["print", "gui/\(getuid())/\(LifecycleFiles.labels[0])"])
+            if status.0 != 0 || !status.1.contains("state = running") { return }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw NSError(domain: "Carrie On", code: Int(ETIMEDOUT),
+                      userInfo: [NSLocalizedDescriptionKey: "The service has not stopped yet. Retry after its active request finishes."])
+    }
+
 }
 
 func lifecycleSelfTest() throws {
@@ -129,44 +153,13 @@ func lifecycleSelfTest() throws {
             loaded.insert(URL(fileURLWithPath: args[2]).deletingPathExtension().lastPathComponent)
             launches += 1
             return (0, "")
-        case "bootout":
-            loaded.remove(args[1].components(separatedBy: "/").last!)
-            return (0, "")
+        case "kickstart": return (0, "")
         default: fatalError("Unexpected lifecycle command")
         }
     }
-    try LifecycleServices.setRunning(true, files: files, run: run)
-    try LifecycleServices.setRunning(true, files: files, run: run)
-    guard loaded == Set(LifecycleFiles.labels.prefix(2)), launches == 2 else { fatalError("Manual launch duplicated services") }
-    try LifecycleServices.setRunning(false, files: files, run: run)
-    try LifecycleServices.setRunning(false, files: files, run: run)
-    guard loaded.isEmpty else { fatalError("Quit left background services running") }
-    var remainingChecks = 0
-    var delayedLoaded = true
-    var stops = 0
-    let delayedStop: ([String]) throws -> (Int32, String) = { args in
-        switch args[0] {
-        case "bootout":
-            stops += 1
-            remainingChecks = 3
-            return (0, "")
-        case "print":
-            if remainingChecks > 0 {
-                remainingChecks -= 1
-                if remainingChecks == 0 { delayedLoaded = false }
-            }
-            return (delayedLoaded ? 0 : 113, "")
-        default: fatalError("Unexpected shutdown command")
-        }
-    }
-    try LifecycleServices.setRunning(false, files: files, run: delayedStop, attempts: 5, pause: {})
-    guard !delayedLoaded, stops == 1 else { fatalError("Asynchronous shutdown was not awaited") }
-    do {
-        try LifecycleServices.setRunning(false, files: files, run: { _ in (0, "") }, attempts: 3, pause: {})
-        fatalError("A service that never stopped was accepted")
-    } catch let error as NSError {
-        guard error.code == Int(ETIMEDOUT) else { throw error }
-    }
+    try LifecycleServices.start(files: files, run: run)
+    try LifecycleServices.start(files: files, run: run)
+    guard loaded == Set(LifecycleFiles.labels.dropLast()), launches == 1 else { fatalError("Manual launch duplicated services") }
     guard try files.reconcile(launchAtLogin: true) else { fatalError("Startup could not be enabled") }
     for label in LifecycleFiles.labels {
         guard FileManager.default.fileExists(atPath: files.loginAgent(label).path)
@@ -208,7 +201,7 @@ final class AppLifecycle: ObservableObject {
             launchAtLogin = try await Task.detached {
                 let files = LifecycleFiles(home: FileManager.default.homeDirectoryForCurrentUser)
                 let enabled = try files.reconcile()
-                try LifecycleServices.setRunning(true, files: files)
+                try LifecycleServices.start(files: files)
                 return enabled
             }.value
             ready = true
@@ -235,7 +228,7 @@ final class AppLifecycle: ObservableObject {
             defer { busy = false }
             do {
                 try await Task.detached {
-                    try LifecycleServices.setRunning(false, files: LifecycleFiles(home: FileManager.default.homeDirectoryForCurrentUser))
+                    try await LifecycleServices.stop(files: LifecycleFiles(home: FileManager.default.homeDirectoryForCurrentUser))
                 }.value
                 NSApp.terminate(nil)
             } catch { show(error) }
@@ -329,12 +322,12 @@ extension AppLifecycle {
                             throw UpdateFailure(message: "The installed app changed during the download. Reopen it and check for updates again.")
                         }
                         do {
-                            try LifecycleServices.setRunning(false, files: files)
+                            try await LifecycleServices.stop(files: files)
                             try AppUpdate.install(candidate: candidate, installed: Bundle.main.bundleURL,
                                                   launch: AppUpdate.launchReplacement)
                         } catch {
                             // Reopening also repairs services if recovery itself fails.
-                            try? LifecycleServices.setRunning(true, files: files)
+                            try? LifecycleServices.start(files: files)
                             throw error
                         }
                     }.value
@@ -407,10 +400,10 @@ extension AppLifecycle {
                 try await Task.detached {
                     let files = LifecycleFiles(home: FileManager.default.homeDirectoryForCurrentUser)
                     do {
-                        try LifecycleServices.setRunning(false, files: files)
+                        try await LifecycleServices.stop(files: files)
                         try AppUpdate.install(candidate: candidate, installed: installed, launch: AppUpdate.launchReplacement)
                     } catch {
-                        try? LifecycleServices.setRunning(true, files: files)
+                        try? LifecycleServices.start(files: files)
                         throw UpdateFailure(message: "\(error.localizedDescription)\n\nStaged or recovery app: \(candidate.path)")
                     }
                 }.value
