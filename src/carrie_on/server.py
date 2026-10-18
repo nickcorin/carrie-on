@@ -14,46 +14,47 @@ import uvicorn
 from fastapi import FastAPI
 
 from carrie_on.api import create_app
-from carrie_on.application import QueueService
+from carrie_on.codex.adapter import CodexAdapter
 from carrie_on.codex.client import CodexConnections
+from carrie_on.configuration import Settings, SettingsOverrides
 from carrie_on.dispatch import DispatchWorker
-from carrie_on.legacy import LegacyImporter
-from carrie_on.ports import QueueStorage, StorageMaintenance, StorageUnavailable
+from carrie_on.ports import Codex, QueueStorage, StorageMaintenance, StorageUnavailable
 from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 
 
 def create_application(
     store: QueueStorage,
-    connections: CodexConnections,
+    codex: Codex,
     *,
     maintenance: StorageMaintenance,
-    legacy_path: Path | None = None,
     port: int = 8766,
     version: str | None = None,
     build_id: str | None = None,
     interval: float = 60,
     run_worker: bool = True,
-    on_worker_failure: Callable[[], None] = lambda: None,
+    on_shutdown: Callable[[], None] = lambda: None,
 ) -> FastAPI:
-    """Create the HTTP application with the supplied storage and Codex connections.
+    """Own storage startup and the dispatch worker for the HTTP service.
 
-    Before accepting requests, the lifespan handler initializes storage and imports
-    any saved JSON queue. A failure in either step prevents startup. Unless
-    run_worker is False, it starts the worker and requests its shutdown on exit.
-    Shutdown waits up to three seconds for the worker to finish.
+    The host's on_shutdown callback stops HTTP serving. Both explicit shutdown
+    and a fatal worker error use it. Storage failure prevents startup.
     """
-    worker = DispatchWorker(store, connections, interval, on_worker_failure) if run_worker else None
+    worker = DispatchWorker(store, codex, interval) if run_worker else None
+
+    def shutdown() -> None:
+        if worker:
+            worker.stopping.set()
+            worker.wakeup.set()
+        on_shutdown()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         maintenance.initialize()
-        if legacy_path is not None:
-            LegacyImporter(store).import_file(legacy_path)
         if worker:
             loop = asyncio.get_running_loop()
 
             def request_restart() -> None:
-                loop.call_soon_threadsafe(on_worker_failure)
+                loop.call_soon_threadsafe(shutdown)
 
             worker.on_failure = request_restart
             worker.thread.start()
@@ -63,22 +64,21 @@ def create_application(
             if worker:
                 await asyncio.to_thread(worker.stop)
 
-    service = QueueService(store, connections)
     app = create_app(
-        service,
+        store,
+        codex,
         port=port,
         version=version or package_version("carrie-on"),
         build_id=build_id,
         worker=worker,
+        shutdown=shutdown,
         lifespan=lifespan,
     )
-    app.state.service = service
     return app
 
 
 def main() -> int:
     """Read command-line settings and start the local server."""
-    from carrie_on.macos.installation import Settings, SettingsOverrides
     from carrie_on.macos.runtime import Runtime
 
     runtime = Runtime.current()
@@ -93,10 +93,11 @@ def main() -> int:
     try:
         runtime = replace(runtime, data=args.state.absolute().parent)
         settings = Settings.load(
-            runtime,
+            runtime.data,
             SettingsOverrides(
                 codex=args.codex, port=args.port, interval=args.interval, socket=args.socket
             ),
+            default_port=runtime.profile.port,
         )
         connections = CodexConnections(
             settings.codex, Path(settings.socket) if settings.socket else None, settings.codex_home
@@ -108,14 +109,13 @@ def main() -> int:
             ]
         app = create_application(
             SqliteQueueStorage(args.state),
-            connections,
+            CodexAdapter(connections),
             maintenance=SqliteStorageMaintenance(args.state),
-            legacy_path=args.state.with_name("resume-queue.json"),
             port=settings.port,
             version=runtime.version,
             build_id=build_id,
             interval=settings.interval,
-            on_worker_failure=lambda: setattr(server, "should_exit", True),
+            on_shutdown=lambda: setattr(server, "should_exit", True),
         )
         server = uvicorn.Server(
             uvicorn.Config(

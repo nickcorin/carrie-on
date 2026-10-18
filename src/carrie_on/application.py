@@ -1,23 +1,15 @@
-"""Add chats to the queue and read their current Codex and queue state."""
+"""Queue operations that depend on storage and Codex protocols."""
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from uuid import UUID
 
-from carrie_on.codex.client import AppServer, CodexConnections, Desktop
-from carrie_on.codex.models import (
-    Chat,
-    ChatPage,
-    ChatSummary,
-    CodexProtocolError,
-    CodexUnavailable,
-    UsageSelectionError,
-    UsageSnapshot,
-)
+from carrie_on.conversation import Chat, ChatPage, ChatSummary
 from carrie_on.pagination import decode_cursor, encode_cursor
-from carrie_on.ports import QueueStorage, StorageUnavailable
-from carrie_on.queue import Eligibility, QueueEntry, QueueError, QueueSummary
+from carrie_on.ports import Codex, CodexUnavailable, QueueStorage, StorageUnavailable
+from carrie_on.queue import Eligibility, EntryState, QueueEntry, QueueError, QueueSummary
+from carrie_on.usage import UsageSelectionError, UsageSnapshot
 
 
 @dataclass(frozen=True)
@@ -32,7 +24,6 @@ class Status:
 @dataclass(frozen=True)
 class Readiness:
     id: UUID
-    title: str
     eligibility: Eligibility
 
 
@@ -42,167 +33,177 @@ class Diagnostic:
     chat: Chat | None = None
 
 
-def observe_eligibility(entry: QueueEntry, server: AppServer, desktop: Desktop) -> Eligibility:
-    """Check quota and chat state to decide whether an entry can be sent.
-
-    Check the local catalog before reading or opening the chat. If the chat has
-    continued, look for the queued message before treating the entry as stale.
-    """
+def observe_eligibility(
+    entry: QueueEntry, codex: Codex, *, open_if_needed: bool = False
+) -> Eligibility:
+    """Reconcile an accepted send before treating a changed anchor as stale."""
     try:
-        usage = server.usage().select(entry.limit_id)
+        usage = codex.read_usage().select(entry.limit_id)
     except UsageSelectionError as error:
         raise QueueError("quota_changed", str(error)) from error
-    present = any(chat.id == str(entry.chat_id) for chat in server.list_all_chats(entry.title))
-    chat = server.get_chat(str(entry.chat_id), desktop) if present else None
+    chat = codex.get_chat(entry.chat_id, open_if_needed=open_if_needed)
     accepted = False
     if chat is not None:
         accepted = chat.message_id == str(entry.id)
         if not accepted and not entry.matches_anchor(chat):
-            accepted = server.has_message(str(entry.chat_id), str(entry.id))
+            accepted = codex.has_message(entry.chat_id, entry.id)
     return entry.assess(usage, chat, accepted=accepted)
 
 
-class QueueService:
-    """Create queue entries and read queue status using current Codex data.
+def resolve_chat(query: str, *, codex: Codex) -> UUID:
+    """Resolve a UUID, deep link, or unique exact title."""
+    if query.startswith("codex://threads/"):
+        query = urlparse(query).path.strip("/")
+    try:
+        return UUID(query)
+    except ValueError:
+        pass
+    matches: list[ChatSummary] = []
+    cursor = None
+    seen: set[str] = set()
+    while True:
+        page = list_chats(query, cursor=cursor, limit=100, codex=codex)
+        matches.extend(chat for chat in page.items if chat.title == query)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+        if cursor in seen:
+            raise CodexUnavailable("Codex returned a repeated catalog cursor")
+        seen.add(cursor)
+    if len(matches) != 1:
+        raise QueueError(
+            "invalid_chat", f"Found {len(matches)} exact title matches; select a chat UUID"
+        )
+    return UUID(matches[0].id)
 
-    Operations that need Codex data open their own connections. Enrollment reads
-    current quota instead of reusing a status response. Storage rejects duplicate
-    pending entries when saving, including concurrent enrollments for the same chat.
-    """
 
-    def __init__(self, store: QueueStorage, connections: CodexConnections):
-        self.store = store
-        self.connections = connections
+def enqueue(
+    entry_id: UUID,
+    chat_id: UUID,
+    instructions: str,
+    *,
+    limit_id: str | None = None,
+    store: QueueStorage,
+    codex: Codex,
+) -> QueueEntry:
+    """Capture the current anchor and quota windows, then save the queued instruction."""
+    queued, _ = store.list_entries(chat_id=chat_id, limit=1)
+    if queued:
+        raise QueueError("chat_already_queued", "Chat is already queued")
+    chat = codex.get_chat(chat_id, open_if_needed=True, include_goal=False)
+    if chat is None:
+        raise QueueError("chat_absent", "Chat is archived or absent from the local catalog")
+    if chat.thread_id != str(chat_id):
+        raise QueueError("chat_mismatch", "Desktop returned a different chat")
+    try:
+        usage = codex.read_usage().select(limit_id)
+    except UsageSelectionError as error:
+        raise QueueError("invalid_bucket", str(error)) from error
+    entry = QueueEntry.enroll(entry_id, instructions, chat, usage, datetime.now(timezone.utc))
+    return store.create_entry(entry)
 
-    def read_usage(self) -> UsageSnapshot:
-        with self.connections.app_server() as server:
-            return server.usage()
 
-    def resolve_chat(self, query: str) -> str:
-        """Return a chat UUID from a UUID, a deep link, or a unique exact title."""
-        if query.startswith("codex://threads/"):
-            query = urlparse(query).path.strip("/")
-        try:
-            return str(UUID(query))
-        except ValueError:
-            pass
-        with self.connections.app_server() as server:
-            matches = [chat for chat in server.list_all_chats(query) if chat.title == query]
-        if len(matches) != 1:
-            raise QueueError(
-                "invalid_chat", f"Found {len(matches)} exact title matches; select a chat UUID"
+def list_chats(
+    search: str = "", cursor: str | None = None, limit: int = 25, *, codex: Codex
+) -> ChatPage:
+    scope = ["chats", search, limit]
+    upstream = decode_cursor(cursor, scope) if cursor else None
+    if upstream is not None and not isinstance(upstream, str):
+        raise QueueError("invalid_cursor", "Invalid chat cursor")
+    page = codex.list_chats(search, cursor=upstream, limit=limit)
+    if page.next_cursor is not None and page.next_cursor == upstream:
+        raise CodexUnavailable("Codex returned a repeated catalog cursor")
+    next_cursor = encode_cursor(scope, page.next_cursor) if page.next_cursor else None
+    return ChatPage(page.items, next_cursor)
+
+
+def list_queued_chats(
+    cursor: str | None = None, limit: int = 50, *, store: QueueStorage, codex: Codex
+) -> ChatPage:
+    """Return available catalog metadata; missing metadata stays empty."""
+    entries, next_cursor = store.list_entries(limit=limit, cursor=cursor)
+    if not entries:
+        return ChatPage((), next_cursor)
+    try:
+        summaries = codex.list_chat_summaries(tuple(entry.chat_id for entry in entries))
+    except CodexUnavailable:
+        summaries = ()
+    by_id = {chat.id: chat for chat in summaries}
+    return ChatPage(
+        tuple(
+            by_id.get(
+                str(entry.chat_id),
+                ChatSummary(id=str(entry.chat_id), title=None, cwd=None, last_activity=None),
             )
-        return matches[0].id
-
-    def _validate_catalog(self, chat_id: str) -> None:
-        with self.connections.app_server() as server:
-            chat = server.get_chat_summary(chat_id)
-            if not any(value.id == chat_id for value in server.list_all_chats(chat.title)):
-                raise QueueError("chat_absent", "Chat is archived or absent from the local catalog")
-
-    def enqueue(
-        self, entry_id: UUID, chat_id: UUID, instructions: str, *, limit_id: str | None = None
-    ) -> QueueEntry:
-        """Create an entry with the chat's latest turn and current reset timestamps."""
-        queued, _ = self.store.list_entries(chat_id=chat_id, limit=1)
-        if queued:
-            raise QueueError("chat_already_queued", "Chat is already queued")
-        with (
-            self.connections.app_server() as server,
-            self.connections.desktop(open_if_needed=True) as desktop,
-        ):
-            chat = server.get_chat(
-                str(chat_id),
-                desktop,
-                include_goal=False,
-                before_open=lambda: self._validate_catalog(str(chat_id)),
-            )
-        if chat.thread_id != str(chat_id):
-            raise QueueError("chat_mismatch", "Desktop returned a different chat")
-        try:
-            usage = self.read_usage().select(limit_id)
-        except UsageSelectionError as error:
-            raise QueueError("invalid_bucket", str(error)) from error
-        entry = QueueEntry.enroll(entry_id, instructions, chat, usage, datetime.now(timezone.utc))
-        return self.store.create_entry(entry)
-
-    def list_chats(self, search: str = "", cursor: str | None = None, limit: int = 25) -> ChatPage:
-        scope = ["chats", search, limit]
-        upstream = decode_cursor(cursor, scope) if cursor else None
-        if upstream is not None and not isinstance(upstream, str):
-            raise QueueError("invalid_cursor", "Invalid chat cursor")
-        with self.connections.app_server() as server:
-            page = server.list_chats(search, cursor=upstream, limit=limit)
-        next_cursor = encode_cursor(scope, page.next_cursor) if page.next_cursor else None
-        return ChatPage(page.items, next_cursor)
-
-    def list_queued_chats(self, cursor: str | None = None, limit: int = 50) -> ChatPage:
-        """Read queued chat details from Codex, using saved titles if Codex is unavailable."""
-        entries, next_cursor = self.store.list_entries(limit=limit, cursor=cursor)
-        result = [
-            ChatSummary(id=str(entry.chat_id), title=entry.title, cwd=None, last_activity=None)
             for entry in entries
-        ]
-        if not entries:
-            return ChatPage((), next_cursor)
+        ),
+        next_cursor,
+    )
+
+
+def status(*, store: QueueStorage, codex: Codex) -> Status:
+    queue = usage = None
+    queue_error = usage_error = None
+    try:
+        queue = store.get_queue_summary()
+    except StorageUnavailable as error:
+        queue_error = str(error)
+    try:
+        usage = codex.read_usage()
+    except CodexUnavailable as error:
+        usage_error = str(error)
+    return Status(codex.connected(), usage, queue, usage_error, queue_error)
+
+
+def doctor(chat_id: UUID | None = None, *, codex: Codex) -> Diagnostic:
+    """Check Codex without opening chats or starting a turn."""
+    usage = codex.read_usage()
+    if not codex.connected():
+        raise CodexUnavailable("Codex desktop is unavailable")
+    chat = codex.get_chat(chat_id) if chat_id else None
+    if chat_id and chat is None:
+        raise QueueError("chat_absent", "Chat is archived or absent from the local catalog")
+    return Diagnostic(usage.account_id, chat)
+
+
+def inspect(
+    limit: int = 50, cursor: str | None = None, *, store: QueueStorage, codex: Codex
+) -> tuple[list[Readiness], str | None]:
+    """Keep entry-specific failures in the page without mutating queue state."""
+    entries, next_cursor = store.list_entries(limit=limit, cursor=cursor)
+    results = []
+    for entry in entries:
         try:
-            with self.connections.app_server() as server:
-                for index, entry in enumerate(entries):
-                    try:
-                        chat = server.get_chat_summary(str(entry.chat_id))
-                        result[index] = replace(chat, title=chat.title or entry.title)
-                    except (CodexUnavailable, CodexProtocolError):
-                        pass
-        except (CodexUnavailable, CodexProtocolError):
-            pass
-        return ChatPage(tuple(result), next_cursor)
+            decision = observe_eligibility(entry, codex)
+        except QueueError as error:
+            decision = Eligibility("failed", str(error))
+        results.append(Readiness(entry.id, decision))
+    return results, next_cursor
 
-    def connected(self) -> bool:
-        try:
-            with self.connections.desktop(timeout=3):
-                return True
-        except (CodexUnavailable, CodexProtocolError):
-            return False
 
-    def status(self) -> Status:
-        """Return available status data with separate storage and Codex error messages.
+def get_entry(entry_id: UUID, *, store: QueueStorage) -> QueueEntry:
+    entry = store.get_entry(entry_id)
+    if entry is None:
+        raise QueueError("not_found", "Queue entry not found")
+    return entry
 
-        Unexpected exceptions propagate instead of producing partial status.
-        """
-        queue = usage = None
-        queue_error = usage_error = None
-        try:
-            queue = self.store.get_queue_summary()
-        except StorageUnavailable as error:
-            queue_error = str(error)
-        try:
-            usage = self.read_usage()
-        except (CodexUnavailable, CodexProtocolError) as error:
-            usage_error = str(error)
-        return Status(self.connected(), usage, queue, usage_error, queue_error)
 
-    def doctor(self, chat_id: str | None = None) -> Diagnostic:
-        """Check the connection and optional chat without opening it or starting a turn."""
-        with self.connections.app_server() as server, self.connections.desktop() as desktop:
-            usage = server.usage()
-            return Diagnostic(
-                usage.account_id, server.get_chat(chat_id, desktop) if chat_id else None
-            )
+def list_entries(
+    *,
+    store: QueueStorage,
+    states: tuple[EntryState, ...] | None,
+    chat_id: UUID | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
+) -> tuple[list[QueueEntry], str | None]:
+    return store.list_entries(states=states, chat_id=chat_id, limit=limit, cursor=cursor)
 
-    def inspect(
-        self, limit: int = 50, cursor: str | None = None
-    ) -> tuple[list[Readiness], str | None]:
-        """Check which entries can be sent without opening chats or changing the queue."""
-        entries, next_cursor = self.store.list_entries(limit=limit, cursor=cursor)
-        if not entries:
-            return [], next_cursor
-        with self.connections.app_server() as server, self.connections.desktop() as desktop:
-            results = [
-                Readiness(
-                    entry.id,
-                    entry.title,
-                    observe_eligibility(entry, server, desktop),
-                )
-                for entry in entries
-            ]
-        return results, next_cursor
+
+def update_instructions(
+    entry_id: UUID, instructions: str, *, revision: int, store: QueueStorage
+) -> QueueEntry:
+    return store.update_instructions(entry_id, instructions, revision=revision)
+
+
+def remove_entry(entry_id: UUID, *, store: QueueStorage) -> QueueEntry:
+    return store.update_entry_state(entry_id, "cancelled")

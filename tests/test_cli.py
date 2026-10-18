@@ -17,10 +17,12 @@ from uuid import UUID, uuid4
 
 import uvicorn
 
+from carrie_on import application as operations
+from carrie_on.codex.adapter import CodexAdapter
 from carrie_on.codex.client import CodexConnections
-from carrie_on.codex.models import CodexUnavailable
 from carrie_on.macos.lifecycle import control_service
 from carrie_on.macos.runtime import PROFILES
+from carrie_on.ports import CodexUnavailable
 from carrie_on.server import create_application
 from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 from tests.fixtures import CHAT_ID, LocalCodex
@@ -43,12 +45,12 @@ class CliContract(unittest.TestCase):
         self.url = f"http://127.0.0.1:{port}"
         application = create_application(
             self.store,
-            CodexConnections("fixture"),
+            CodexAdapter(CodexConnections("fixture")),
             maintenance=SqliteStorageMaintenance(self.home / "queue.sqlite3"),
             port=port,
             run_worker=False,
         )
-        self.service = application.state.service
+        self.codex = application.state.codex
         self.server = uvicorn.Server(uvicorn.Config(application, log_level="critical"))
         thread = threading.Thread(
             target=self.server.run, kwargs={"sockets": [listener]}, daemon=True
@@ -210,14 +212,14 @@ class CliContract(unittest.TestCase):
 
     def test_lost_create_reply_can_retry_same_id_without_duplication(self):
         item_id = str(uuid4())
-        enqueue = self.service.enqueue
+        enqueue = operations.enqueue
 
         def slow(*args, **kwargs):
             result = enqueue(*args, **kwargs)
             time.sleep(0.4)
             return result
 
-        with patch.object(self.service, "enqueue", side_effect=slow):
+        with patch.object(operations, "enqueue", side_effect=slow):
             result = self.cli("--timeout", "0.1", "queue", "add", CHAT_ID, "--id", item_id, code=5)
         self.assertIn("outcome is unknown", result.stderr)
         self.assertIn(item_id, result.stderr)
@@ -227,7 +229,7 @@ class CliContract(unittest.TestCase):
 
     def test_interrupted_creation_discloses_id_and_replays_original_request(self):
         committed, release = threading.Event(), threading.Event()
-        enqueue = self.service.enqueue
+        enqueue = operations.enqueue
 
         def delayed_reply(*args, **kwargs):
             result = enqueue(*args, **kwargs)
@@ -235,7 +237,7 @@ class CliContract(unittest.TestCase):
             release.wait(5)
             return result
 
-        with patch.object(self.service, "enqueue", side_effect=delayed_reply):
+        with patch.object(operations, "enqueue", side_effect=delayed_reply):
             process = subprocess.Popen(
                 [
                     sys.executable,
@@ -298,13 +300,13 @@ class CliContract(unittest.TestCase):
     @unittest.skipUnless(platform.system() == "Darwin", "The native client requires macOS")
     def test_native_and_cli_share_persisted_queue_operations(self):
         executable = build_native_test(self.home, ROOT / "tests/NativeQueue.swift")
-        enqueue = self.service.enqueue
+        enqueue = operations.enqueue
 
         def committed_without_reply(*args, **kwargs):
             enqueue(*args, **kwargs)
             raise CodexUnavailable("Creation response unavailable")
 
-        with patch.object(self.service, "enqueue", side_effect=committed_without_reply):
+        with patch.object(operations, "enqueue", side_effect=committed_without_reply):
             result = subprocess.run(
                 [str(executable), self.url, sys.executable],
                 env=dict(os.environ, HOME=str(self.home)),
@@ -322,14 +324,14 @@ class CliContract(unittest.TestCase):
 
     def test_interrupt_exits_130_without_a_traceback(self):
         reading, release = threading.Event(), threading.Event()
-        read_usage = self.service.read_usage
+        read_usage = self.codex.read_usage
 
         def slow_read():
             reading.set()
             release.wait(5)
             return read_usage()
 
-        with patch.object(self.service, "read_usage", side_effect=slow_read):
+        with patch.object(CodexAdapter, "read_usage", side_effect=slow_read):
             process = subprocess.Popen(
                 [sys.executable, "-m", "carrie_on", "--server", self.url, "usage"],
                 stdout=subprocess.PIPE,
@@ -410,7 +412,7 @@ class ServiceProfiles(unittest.TestCase):
             )
 
     def test_dev_service_controls_never_target_release(self):
-        result = subprocess.CompletedProcess([], 0, "running", "")
+        result = subprocess.CompletedProcess([], 0, "state = running", "")
         with patch("carrie_on.macos.lifecycle.subprocess.run", return_value=result) as run:
             self.assertTrue(control_service("status", PROFILES["dev"])["running"])
         self.assertEqual(

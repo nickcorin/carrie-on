@@ -1,4 +1,4 @@
-"""Test SQLite persistence, concurrent writes, schema upgrades, and JSON imports."""
+"""Test SQLite persistence, concurrent writes, schema upgrades."""
 
 import base64
 import json
@@ -10,15 +10,13 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from yoyo import get_backend, read_migrations
 from yoyo.exceptions import LockTimeout
 
-from carrie_on.legacy import LegacyEntry, LegacyImporter
 from carrie_on.ports import StorageUnavailable
 from carrie_on.queue import QueueError
 from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
@@ -41,43 +39,6 @@ class StorageBehavior(unittest.TestCase):
         entry = replace(self.entry, id=uuid4(), chat_id=uuid4(), **changes)
         self.store.create_entry(entry)
         return entry
-
-    def legacy_entry(self, **changes):
-        fields = dict(
-            id=str(uuid4()),
-            thread_id=str(self.entry.chat_id),
-            title=self.entry.title,
-            account_id=self.entry.account_id,
-            limit_id=self.entry.limit_id,
-            anchor_message_id=self.entry.anchor_message_id,
-            model=self.entry.model,
-            prompt="Legacy instruction",
-            reset_windows=dict(self.entry.reset_windows),
-            enrolled_while_busy=False,
-        )
-        fields.update(changes)
-        return LegacyEntry(**fields)
-
-    def write_legacy(self, entries=(), history=()):
-        path = self.path.with_name("resume-queue.json")
-        path.write_text(
-            json.dumps(
-                {
-                    "version": 2,
-                    "paused": True,
-                    "entries": [asdict(entry) for entry in entries],
-                    "history": list(history),
-                }
-            )
-        )
-        return path
-
-    def imported_storage(self, path):
-        database = self.path.with_name("import.sqlite3")
-        SqliteStorageMaintenance(database).initialize()
-        store = SqliteQueueStorage(database)
-        LegacyImporter(store).import_file(path)
-        return store
 
     def test_concurrent_attempt_creation_acquires_each_entry_once(self):
         other = self.add(queued_at=instant(51))
@@ -183,28 +144,6 @@ os._exit(17)
         self.assertIsNone(self.store.create_delivery_attempt())
         self.store.update_entry_state(self.entry.id, "sent")
         self.assertEqual(self.store.get_entry(self.entry.id).error, "")
-
-    def test_interrupted_import_resumes_without_overwriting_or_cancelling_its_entries(self):
-        historical = queue_entry(chat_id=uuid4(), state="sent", finished_at=instant(60))
-        pending = replace(historical, id=uuid4(), state="queued", finished_at=None)
-        insert = self.store.create_entry
-
-        def interrupted(entry):
-            if entry.id == pending.id:
-                raise StorageUnavailable("Interrupted import")
-            return insert(entry)
-
-        importer = LegacyImporter(self.store)
-        with patch.object(self.store, "create_entry", side_effect=interrupted):
-            with self.assertRaisesRegex(StorageUnavailable, "Interrupted import"):
-                importer.import_records([historical, pending])
-        self.assertEqual(self.store.get_entry(historical.id).state, "sent")
-        self.assertIsNone(self.store.get_entry(pending.id))
-        self.assertTrue(importer.import_records([historical, pending]))
-        self.assertEqual(self.store.get_entry(pending.id).state, "queued")
-        self.store.update_instructions(pending.id, "Edited after import", revision=1)
-        self.assertFalse(importer.import_records([historical, pending]))
-        self.assertEqual(self.store.get_entry(pending.id).instructions, "Edited after import")
 
     def test_query_bound_pagination_keeps_all_entries_with_equal_timestamps(self):
         for _ in range(4):
@@ -318,65 +257,49 @@ with get_backend(sys.argv[1]) as backend:
         maintenance.initialize()
         self.assertEqual(storage.get_entry(self.entry.id), self.entry)
 
-    def test_external_import_preserves_current_work_and_is_idempotent(self):
-        legacy = self.legacy_entry()
-        path = self.write_legacy([legacy])
-        importer = LegacyImporter(self.store)
-        self.assertTrue(importer.import_file(path))
-        self.assertFalse(importer.import_file(path))
-        self.assertEqual(self.store.get_entry(UUID(legacy.id)).state, "cancelled")
-        self.assertEqual(self.store.list_entries()[0], [self.entry])
-
-    def test_json_import_preserves_uncertain_work_history_text_and_source(self):
-        active = self.legacy_entry(prompt="\x00Active", state="sending", attempted_at=70)
-        sent = self.legacy_entry(thread_id=str(uuid4()), prompt="\x00Sent")
-        history = [{**asdict(sent), "outcome": "resumed", "finished_at": 90}, "opaque"]
-        path = self.write_legacy([active], history)
-        original = path.read_bytes()
-        store = self.imported_storage(path)
-        self.assertEqual(store.get_entry(UUID(active.id)).state, "queued")
-        self.assertEqual(store.get_entry(UUID(active.id)).instructions, "\x00Active")
-        self.assertEqual(store.get_entry(UUID(sent.id)).state, "sent")
-        store.update_entry_state(UUID(active.id), "cancelled")
-        self.imported_storage(path)
-        self.assertEqual(store.get_entry(UUID(active.id)).state, "cancelled")
-        self.assertEqual(path.read_bytes(), original)
-
-    def test_turn_anchored_json_and_recorded_acceptance_import_without_network(self):
-        active = self.legacy_entry(anchor_message_id=None, anchor_turn_id="turn-a")
-        sent = self.legacy_entry(
-            thread_id=str(uuid4()),
-            anchor_message_id=None,
-            anchor_turn_id="turn-b",
-            accepted_turn_id="accepted",
+    def test_title_removal_migrates_existing_entries_and_attempts(self):
+        path = self.path.with_name("previous-schema.sqlite3")
+        migrations = read_migrations(
+            str(Path(__file__).parents[1] / "src/carrie_on/storage/migrations")
         )
-        store = self.imported_storage(self.write_legacy([active, sent]))
-        self.assertEqual(store.get_entry(UUID(active.id)).anchor_turn_id, "turn-a")
-        self.assertEqual(store.get_entry(UUID(sent.id)).state, "sent")
-
-    def test_unreadable_history_does_not_block_pending_work(self):
-        active = self.legacy_entry()
-        historical = self.legacy_entry(thread_id=str(uuid4()))
-        for record in (
-            {"id": []},
-            {**asdict(historical), "thread_id": []},
-            {**asdict(historical), "finished_at": 10**400},
-            {**asdict(historical), "finished_at": 253402300800},
-        ):
-            with self.subTest(record=record):
-                path = self.write_legacy([active], [record])
-                original = path.read_bytes()
-                store = self.imported_storage(path)
-                self.assertEqual(
-                    store.get_entry(UUID(active.id)).instructions, "Legacy instruction"
+        with get_backend("sqlite:///" + str(path)) as backend:
+            with backend.lock():
+                backend.apply_migrations(
+                    migrations.filter(lambda migration: migration.id == "0001_queue")
                 )
-                self.assertIsNone(store.get_entry(UUID(historical.id)))
-                self.assertEqual(path.read_bytes(), original)
-
-    def test_bad_json_leaves_current_schema_and_original_file_intact(self):
-        path = self.path.with_name("bad.json")
-        path.write_text('{"version":99}')
-        with self.assertRaises(ValueError):
-            LegacyImporter(self.store).import_file(path)
-        self.assertEqual(path.read_text(), '{"version":99}')
-        self.assertEqual(self.store.get_entry(self.entry.id), self.entry)
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute(
+                """INSERT INTO queue_entries
+                (id,chat_id,title,account_id,limit_id,anchor_message_id,model,instructions,
+                 reset_windows,enrolled_while_busy,queued_at,updated_at,state)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    str(self.entry.id),
+                    str(self.entry.chat_id),
+                    "Saved title",
+                    "account-a",
+                    "codex",
+                    "original",
+                    "model-a",
+                    "Keep this instruction",
+                    '{"primary":100}',
+                    0,
+                    50,
+                    50,
+                    "queued",
+                ),
+            )
+            connection.execute(
+                "INSERT INTO delivery_attempts VALUES (?,?,?,?)",
+                (str(uuid4()), str(self.entry.id), 100, 220),
+            )
+        SqliteStorageMaintenance(path).initialize()
+        store = SqliteQueueStorage(path, clock=lambda: instant(110))
+        saved = store.get_entry(self.entry.id)
+        self.assertEqual(saved.instructions, "Keep this instruction")
+        self.assertTrue(saved.dispatching)
+        self.assertIsNone(store.create_delivery_attempt())
+        with closing(sqlite3.connect(path)) as connection:
+            self.assertNotIn(
+                "title", [row[1] for row in connection.execute("PRAGMA table_info(queue_entries)")]
+            )

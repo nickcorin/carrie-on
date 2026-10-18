@@ -5,14 +5,12 @@ The client does not subscribe to desktop history.
 
 import shutil
 import threading
-import time
 from collections.abc import Callable
 from importlib.metadata import version
 from types import TracebackType
-from typing import TYPE_CHECKING, TypeVar
+from typing import TypeVar
 
 from openai_codex.client import CodexClient, CodexConfig
-from openai_codex.errors import CodexError
 from openai_codex.generated.v2_all import (
     GetAccountRateLimitsResponse,
     ThreadGoalGetResponse,
@@ -23,34 +21,25 @@ from openai_codex.generated.v2_all import (
     ThreadTurnsListResponse,
     TurnStatus,
 )
-from pydantic import ValidationError
 
-from carrie_on.codex.models import (
-    Chat,
-    ChatPage,
-    ChatSummary,
-    CodexProtocolError,
-    CodexUnavailable,
-    UsageSnapshot,
-)
-
-if TYPE_CHECKING:
-    from carrie_on.codex.client import Desktop
+from carrie_on.codex.parsing import parse_usage
+from carrie_on.conversation import Chat, ChatPage, ChatSummary
+from carrie_on.ports import CodexProtocolError, CodexUnavailable
+from carrie_on.usage import UsageSnapshot
 
 T = TypeVar("T")
 
 
 class AppServer:
-    """Close the SDK session when a request exceeds its timeout or the supplied deadline."""
+    """Close the SDK session when a request exceeds its timeout."""
 
     def __init__(
         self,
         executable: str = "codex",
         timeout: float = 30,
-        deadline: float | None = None,
         codex_home: str | None = None,
     ) -> None:
-        self.timeout, self.deadline = timeout, deadline
+        self.timeout = timeout
         self._client = CodexClient(
             CodexConfig(
                 codex_bin=shutil.which(executable) or executable,
@@ -79,19 +68,12 @@ class AppServer:
         self._client.close()
 
     def _call(self, operation: Callable[[], T]) -> T:
-        timeout = self.timeout
-        if self.deadline is not None:
-            timeout = min(timeout, self.deadline - time.monotonic())
-        if timeout <= 0:
-            raise CodexUnavailable("Codex operation deadline expired")
-        timer = threading.Timer(timeout, self._client.close)
+        timer = threading.Timer(self.timeout, self._client.close)
         timer.daemon = True
         timer.start()
         try:
             return operation()
-        except ValidationError as error:
-            raise CodexProtocolError("Codex returned an unsupported response") from error
-        except (CodexError, OSError) as error:
+        except Exception as error:
             raise CodexUnavailable(str(error) or type(error).__name__) from error
         finally:
             timer.cancel()
@@ -102,9 +84,7 @@ class AppServer:
                 "account/rateLimits/read", {}, response_model=GetAccountRateLimitsResponse
             )
         )
-        return UsageSnapshot.parse(
-            response.model_dump(mode="json", by_alias=True, exclude_unset=True)
-        )
+        return parse_usage(response.model_dump(mode="json", by_alias=True, exclude_unset=True))
 
     def list_chats(
         self, search: str | None = None, *, cursor: str | None = None, limit: int = 25
@@ -168,24 +148,18 @@ class AppServer:
     def get_chat(
         self,
         chat_id: str,
-        desktop: "Desktop",
+        settings: dict,
         *,
         include_goal: bool = True,
-        before_open: Callable[[], None] | None = None,
     ) -> Chat:
-        """Read the latest turn's metadata, opening message ID, and desktop settings.
+        """Combine the latest turn and opening message ID with supplied desktop settings.
 
         Treat the chat as busy while the turn is in progress or has no positive
         completion timestamp. Turn pages omit items. Read item pages until the
         first item other than context compaction, and use its client ID if it is
         a user message. The turn must have an accepted turn ID.
 
-        An opening-enabled desktop may open a dormant chat and change Codex's
-        visible chat. Validate catalog membership first or supply before_open,
-        as required by Desktop.read_settings. Diagnostics use a non-opening desktop.
         """
-        summary = self.get_chat_summary(chat_id)
-        settings = desktop.read_settings(chat_id, before_open=before_open)
         page = self._turns(chat_id, limit=1)
         if len(page.data) != 1 or not page.data[0].id:
             raise CodexProtocolError("Chat has no identifiable latest turn")
@@ -208,8 +182,7 @@ class AppServer:
             else None
         )
         return Chat(
-            thread_id=summary.id,
-            title=summary.title or summary.id,
+            thread_id=chat_id,
             message_id=message_id,
             turn_id=turn.id,
             model=model,

@@ -9,21 +9,14 @@ import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
-from uuid import UUID, uuid4
 
 from carrie_on.macos.installation import (
-    Settings,
     SettingsOverrides,
-    SetupError,
-    import_source_queue,
     install_service,
 )
 from carrie_on.macos.runtime import PROFILES, Runtime
-from carrie_on.ports import StorageUnavailable
-from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 
 
 @contextmanager
@@ -104,31 +97,6 @@ class ServiceInstallationTests(unittest.TestCase):
     def agent(self):
         return self.home / "Library/LaunchAgents/com.nickcorin.carrieon.ui.plist"
 
-    def test_direct_server_does_not_inherit_registered_legacy_settings(self):
-        self.agent.parent.mkdir(parents=True)
-        self.agent.write_bytes(
-            plistlib.dumps(
-                {
-                    "ProgramArguments": [
-                        "old-server",
-                        "--codex",
-                        "/registered/codex",
-                        "--socket",
-                        "/registered/socket",
-                        "--port",
-                        "9988",
-                    ],
-                    "StartInterval": 120,
-                }
-            )
-        )
-        isolated = Settings.load(self.runtime, SettingsOverrides(codex=str(self.codex)))
-        self.assertEqual((isolated.port, isolated.interval, isolated.socket), (8766, 60, None))
-        adopted = Settings.load(self.runtime, SettingsOverrides(codex=str(self.codex)), legacy=True)
-        self.assertEqual(
-            (adopted.port, adopted.interval, adopted.socket), (9988, 120, "/registered/socket")
-        )
-
     def test_saved_configuration_is_validated_before_publication(self):
         self.agent.parent.mkdir(parents=True)
         self.agent.write_bytes(b"original service")
@@ -203,92 +171,3 @@ class ServiceInstallationTests(unittest.TestCase):
             plistlib.loads(self.agent.read_bytes())["ProgramArguments"][-5:],
             ["--port", "8877", "--interval", "60", "serve"],
         )
-
-    def test_database_failure_reports_recoverable_setup_error_and_retry_repairs(self):
-        source = self.source / "resume-queue.json"
-        source.write_text('{"version": 2, "entries": [], "history": []}')
-        stopped = subprocess.CompletedProcess([], 1)
-        with patch("carrie_on.macos.installation.subprocess.run", return_value=stopped):
-            with patch.object(
-                SqliteStorageMaintenance,
-                "initialize",
-                side_effect=StorageUnavailable("database is locked"),
-            ):
-                with self.assertRaises(SetupError) as caught:
-                    install_service(self.runtime, SettingsOverrides(codex=str(self.codex)))
-            self.assertEqual(caught.exception.code, "storage_unavailable")
-            self.assertIsInstance(caught.exception.__cause__, StorageUnavailable)
-            self.assertIn("retry setup", str(caught.exception))
-            result = install_service(self.runtime, SettingsOverrides(codex=str(self.codex)))
-        self.assertEqual(result["port"], 8766)
-        self.assertEqual(
-            plistlib.loads(self.agent.read_bytes())["WorkingDirectory"], str(self.runtime.data)
-        )
-        self.assertEqual(
-            (self.runtime.data / "Migration/source-checkout/resume-queue.json").read_bytes(),
-            source.read_bytes(),
-        )
-
-    def test_source_json_import_preserves_snapshot_and_does_not_reactivate(self):
-        item_id = "80e3249d-00f4-44d2-99be-f07af239f686"
-        payload = {
-            "version": 2,
-            "paused": True,
-            "entries": [
-                {
-                    "id": item_id,
-                    "thread_id": str(uuid4()),
-                    "title": "Old task",
-                    "account_id": "account",
-                    "limit_id": "codex",
-                    "anchor_message_id": "anchor",
-                    "model": "model",
-                    "prompt": "Keep working",
-                    "reset_windows": {"primary": 123},
-                    "enrolled_while_busy": False,
-                }
-            ],
-            "history": [{"id": "old-history", "outcome": "resumed"}],
-        }
-        current_id = "22f01dc9-cd81-447a-8179-13c2bd6802c4"
-        current = dict(
-            payload["entries"][0],
-            id=current_id,
-            thread_id=str(uuid4()),
-            prompt="Installed task",
-        )
-        (self.runtime.data / "resume-queue.json").write_text(
-            json.dumps(
-                {
-                    "version": 2,
-                    "entries": [current],
-                    "history": [],
-                }
-            )
-        )
-        source = self.source / "resume-queue.json"
-        source.write_text(json.dumps(payload))
-        original = source.read_bytes()
-        import_source_queue(replace(self.runtime, profile=PROFILES["dev"]))
-        self.assertFalse(self.runtime.state.exists())
-        run_process = subprocess.run
-
-        def isolated_process(command, **kwargs):
-            if command[0] == "/bin/launchctl":
-                return subprocess.CompletedProcess(command, 1 if command[1] == "print" else 0)
-            return run_process(command, **kwargs)
-
-        with patch("carrie_on.macos.installation.subprocess.run", side_effect=isolated_process):
-            install_service(self.runtime, SettingsOverrides(codex=str(self.codex)))
-        database = SqliteQueueStorage(self.runtime.state)
-        self.assertEqual(database.get_entry(UUID(item_id)).instructions, "Keep working")
-        self.assertEqual(database.get_entry(UUID(current_id)).instructions, "Installed task")
-        self.assertEqual(database.get_queue_summary().count, 2)
-        database.update_entry_state(UUID(item_id), "cancelled")
-        with patch("carrie_on.macos.installation.subprocess.run", side_effect=isolated_process):
-            install_service(self.runtime)
-        self.assertEqual(database.get_entry(UUID(item_id)).state, "cancelled")
-        self.assertEqual(source.read_bytes(), original)
-        snapshot = self.runtime.data / "Migration/source-checkout/resume-queue.json"
-        self.assertEqual(snapshot.read_bytes(), original)
-        self.assertEqual(len(database.list_entries(states=None)[0]), 2)

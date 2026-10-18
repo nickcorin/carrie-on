@@ -189,6 +189,9 @@ func testUncertainCreationRecovery() async throws {
     model.instructions[chat.id] = "Changed draft"
     model.bucket = "changed-bucket"
     unavailable.reply(#"{"code":"unavailable","detail":"Read failed"}"#, status: 503)
+    for _ in 0..<200 where model.activity(for: chat.id)?.detail.contains("Read failed") != true {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
     try await waitForQueueRead(model)
     guard !model.canQueue(chat.id), model.canQueue(UUID().uuidString),
           model.activity(for: chat.id)?.detail.contains("previous request") == true else {
@@ -199,6 +202,7 @@ func testUncertainCreationRecovery() async throws {
     let missing = try await ChatPageProtocol.next()
     missing.reply(#"{"code":"not_found","detail":"Queue item not found"}"#, status: 404)
     await refresh.value
+    for _ in 0..<200 where !model.canQueue(chat.id) { try await Task.sleep(nanoseconds: 5_000_000) }
     guard model.canQueue(chat.id) else { fatalError("Confirmed absence did not permit an idempotent retry") }
     let retry = Task { await model.queueChat(chat) }
     let retrying = try await ChatPageProtocol.next()
@@ -223,6 +227,7 @@ func testUncertainCreationRecovery() async throws {
     guard missingAfterRestart.request.url!.path == "/api/v1/queue/\(itemID)" else { fatalError("Restart lost original identity") }
     missingAfterRestart.reply(#"{"code":"not_found","detail":"Queue item not found"}"#, status: 404)
     await recover.value
+    for _ in 0..<200 where !restarted.canQueue(chat.id) { try await Task.sleep(nanoseconds: 5_000_000) }
     let retryAfterRestart = Task { await restarted.queueChat(chat) }
     let restored = try await ChatPageProtocol.next()
     guard restored.request.httpMethod == "POST" else { fatalError("Restart retry received \(restored.request)") }
@@ -276,6 +281,9 @@ func testIndependentCreationRecovery() async throws {
     guard unresolved.request.url!.path == "/api/v1/queue/\(unknownID)" else { fatalError("Confirmed item was needlessly looked up again") }
     unresolved.reply(#"{"code":"unavailable","detail":"Read failed"}"#, status: 503)
     await refresh.value
+    for _ in 0..<200 where model.activity(for: confirmedChat) != .complete("Queued") {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
     guard model.activity(for: confirmedChat) == .complete("Queued"), model.canAct(on: confirmedChat),
           !model.canAct(on: unknownChat), model.queuedEntries.map(\.id) == [confirmedID] else {
         fatalError("A partial reconciliation resolved or blocked the wrong card")
@@ -296,6 +304,82 @@ func testIndependentCreationRecovery() async throws {
 }
 
 @MainActor
+func testRecoveryDoesNotDelayOtherCards() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [ChatPageProtocol.self]
+    let session = URLSession(configuration: configuration)
+    let suite = "carrie-on-recovery-tests-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    let pendingID = UUID().uuidString, pendingChat = UUID().uuidString
+    let liveID = UUID().uuidString, liveChat = UUID().uuidString
+    defaults.set(Data("""
+        {"version":1,"requests":[{"id":"\(pendingID)","chatID":"\(pendingChat)","instruction":"Continue"}]}
+        """.utf8), forKey: "pendingQueueCreations.v1")
+    defer { session.invalidateAndCancel(); defaults.removePersistentDomain(forName: suite); ChatPageProtocol.queueJSON = "[]"; ChatPageProtocol.pending = [] }
+    let model = ChatPickerModel(baseURL: URL(string: "http://queue.test")!, session: session, recoveryDefaults: defaults, didQueue: {})
+    model.ready = true
+    model.connection = .connected
+    let current = """
+        {"id":"\(liveID)","chat_id":"\(liveChat)","instruction":"Continue","state":"failed","revision":2,"error":"Retry later","dispatching":false}
+        """
+    let old = current.replacingOccurrences(of: "\"dispatching\":false", with: "\"dispatching\":true")
+    model.queuedEntries = [try JSONDecoder().decode(PickerQueue.Entry.self, from: Data(old.utf8))]
+    ChatPageProtocol.queueJSON = "[\(current)]"
+    await model.updateQueue(refreshMetadata: false)
+    let recovery = try await ChatPageProtocol.next()
+    guard recovery.request.url!.path == "/api/v1/queue/\(pendingID)",
+          !model.checkingQueue, !model.queuedEntries[0].dispatching,
+          model.canAct(on: liveChat) else { fatalError("Creation recovery delayed a completed queue refresh") }
+    await model.updateQueue(refreshMetadata: false)
+    guard ChatPageProtocol.pending.isEmpty else { fatalError("Refresh duplicated an active recovery request") }
+    let removal = Task { await model.changeQueued(model.queuedEntries[0], change: .remove) }
+    let cancel = try await ChatPageProtocol.next()
+    guard cancel.request.url!.path == "/api/v1/queue/\(liveID)/cancel" else { fatalError("Unrelated cancellation was blocked") }
+    cancel.reply(current.replacingOccurrences(of: "\"failed\"", with: "\"cancelled\""))
+    guard await removal.value else { fatalError("Unrelated card could not be removed during recovery") }
+    ChatPageProtocol.queueJSON = "[]"
+    recovery.reply(#"{"code":"not_found","detail":"Not found"}"#, status: 404)
+    for _ in 0..<200 where !model.canQueue(pendingChat) { try await Task.sleep(nanoseconds: 5_000_000) }
+    guard model.canQueue(pendingChat) else { fatalError("Recovery did not resolve independently") }
+    print("Unrelated cards remain actionable during creation recovery")
+}
+
+final class ShutdownProtocol: URLProtocol {
+    @MainActor static var received: URLRequest?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Task { @MainActor in
+            Self.received = request
+            let response = HTTPURLResponse(url: request.url!, statusCode: 202, httpVersion: "HTTP/1.1", headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(#"{"stopping":true}"#.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+    override func stopLoading() {}
+}
+
+@MainActor
+func testServiceShutdownRequest() async throws {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let files = LifecycleFiles(home: home)
+    try FileManager.default.createDirectory(at: files.data, withIntermediateDirectories: true)
+    try Data(#"{"port":9988}"#.utf8).write(to: files.data.appendingPathComponent("settings.json"))
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [ShutdownProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel(); try? FileManager.default.removeItem(at: home) }
+    try await LifecycleServices.stop(files: files, session: session, run: { _ in (0, "state = waiting") })
+    guard let request = ShutdownProtocol.received, request.url!.port == 9988,
+          request.url!.path == "/api/v1/service/shutdown", request.httpMethod == "POST",
+          request.value(forHTTPHeaderField: "X-Carrie-On") == "1" else {
+        fatalError("Native shutdown bypassed the configured HTTP service")
+    }
+    print("Native shutdown uses the service API")
+}
+
+@MainActor
 func testQueueHTTPContract() async throws {
     let fixtureURL = URL(fileURLWithPath: CommandLine.arguments[1])
     let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as! [String: Any]
@@ -311,7 +395,7 @@ func testQueueHTTPContract() async throws {
     model.ready = true
     ChatPageProtocol.queuePages = ["": try json(fixture["delivery_states"]!)]
     await model.updateQueue(refreshMetadata: false)
-    let entries = Dictionary(uniqueKeysWithValues: model.queuedEntries.map { ($0.title, $0) })
+    let entries = Dictionary(uniqueKeysWithValues: model.queuedEntries.map { ($0.prompt, $0) })
     guard let checking = entries["Checking"], let sending = entries["Sending"],
           let expired = entries["Expired"], let waiting = entries["Waiting"],
           checking.hasActiveDelivery, checking.cardState == .processing,
@@ -389,7 +473,7 @@ func testChatPagination() async throws {
         fatalError("Rendering changed the successful snapshot timestamp")
     }
     model.instructions["a"] = "Keep this draft."
-    model.queuedEntries = [.init(enrollmentID: "queued-a", thread_id: "a", title: "Alpha", prompt: "Continue")]
+    model.queuedEntries = [.init(enrollmentID: "queued-a", thread_id: "a", prompt: "Continue")]
 
     let first = Task { await model.searchChats() }
     let firstRequest = try await ChatPageProtocol.next()
@@ -502,6 +586,8 @@ Task { @MainActor in
         try await testQueueActions()
         try await testUncertainCreationRecovery()
         try await testIndependentCreationRecovery()
+        try await testRecoveryDoesNotDelayOtherCards()
+        try await testServiceShutdownRequest()
         if CommandLine.arguments.count > 1 { try await testQueueHTTPContract() }
         exit(0)
     } catch {

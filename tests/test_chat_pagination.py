@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
+from carrie_on.codex.adapter import CodexAdapter
 from carrie_on.codex.client import CodexConnections
 from carrie_on.queue import QueueEntry
 from carrie_on.server import create_application
@@ -66,16 +67,15 @@ def queue_contract_fixtures(directory: Path) -> Path:
 
     def enqueue(
         store: SqliteQueueStorage,
-        title: str,
+        label: str,
         timestamp: float,
         *,
         chat_id: UUID | None = None,
-        instruction: str = "Original instruction",
+        instruction: str | None = None,
     ) -> QueueEntry:
         entry = queue_entry(
             chat_id=chat_id or uuid4(),
-            title=title,
-            instructions=instruction,
+            instructions=instruction or label,
             queued_at=instant(timestamp),
             updated_at=instant(timestamp),
         )
@@ -87,7 +87,7 @@ def queue_contract_fixtures(directory: Path) -> Path:
     store = SqliteQueueStorage(path, clock=lambda: instant(now))
     application = create_application(
         store,
-        CodexConnections("unused"),
+        CodexAdapter(CodexConnections("unused")),
         maintenance=SqliteStorageMaintenance(path),
         version="test",
         run_worker=False,
@@ -112,7 +112,7 @@ def queue_contract_fixtures(directory: Path) -> Path:
     store = SqliteQueueStorage(path)
     application = create_application(
         store,
-        CodexConnections("unused"),
+        CodexAdapter(CodexConnections("unused")),
         maintenance=SqliteStorageMaintenance(path),
         version="test",
         run_worker=False,

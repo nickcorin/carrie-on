@@ -10,20 +10,23 @@ PACKAGE = Path(__file__).resolve().parents[1] / "src/carrie_on"
 class ApplicationBoundaries(unittest.TestCase):
     def test_inner_components_import_protocols_instead_of_storage_implementation(self):
         allowed = {
-            "queue.py": {"codex.models"},
-            "ports.py": {"queue"},
+            "queue.py": {"conversation", "usage"},
+            "conversation.py": set(),
+            "usage.py": set(),
+            "configuration.py": set(),
+            "ports.py": {"queue", "conversation", "usage"},
             "pagination.py": {"queue"},
-            "codex/models.py": set(),
-            "codex/client.py": {"codex.models", "codex.sdk"},
-            "codex/sdk.py": {"codex.models", "codex.client"},
+            "codex/parsing.py": {"ports", "usage"},
+            "codex/client.py": {"codex.parsing", "codex.sdk", "ports"},
+            "codex/sdk.py": {"codex.parsing", "conversation", "ports", "usage"},
+            "codex/adapter.py": {"codex.client", "conversation", "ports", "usage"},
             "storage/__init__.py": {"storage.database", "storage.queue"},
             "storage/database.py": {"ports", "storage.schema"},
             "storage/schema.py": {"ports"},
             "storage/queue.py": {"queue", "pagination", "storage.database"},
-            "legacy.py": {"queue", "ports"},
-            "application.py": {"queue", "ports", "pagination", "codex.client", "codex.models"},
-            "dispatch.py": {"queue", "ports", "application", "codex.client", "codex.models"},
-            "api.py": {"queue", "ports", "application", "dispatch", "codex.models"},
+            "application.py": {"queue", "ports", "pagination", "conversation", "usage"},
+            "dispatch.py": {"queue", "ports", "application"},
+            "api.py": {"queue", "ports", "application", "dispatch", "usage"},
         }
         frameworks = {"fastapi", "typer", "uvicorn", "pydantic"}
         for filename, dependencies in allowed.items():
@@ -46,6 +49,9 @@ class ApplicationBoundaries(unittest.TestCase):
     def imports(path):
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.ImportFrom):
-                yield node.module or ""
+                if node.module == "carrie_on":
+                    yield from ("carrie_on." + alias.name for alias in node.names)
+                else:
+                    yield node.module or ""
             elif isinstance(node, ast.Import):
                 yield from (alias.name for alias in node.names)

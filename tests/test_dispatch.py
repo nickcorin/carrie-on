@@ -8,16 +8,14 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
+from carrie_on.codex.adapter import CodexAdapter
 from carrie_on.codex.client import AppServer, CodexConnections
-from carrie_on.codex.models import (
-    CodexProtocolError,
-    CodexUnavailable,
-    UsageSelectionError,
-    UsageSnapshot,
-)
+from carrie_on.codex.parsing import parse_usage
 from carrie_on.dispatch import DispatchWorker
+from carrie_on.ports import CodexProtocolError, CodexUnavailable
 from carrie_on.queue import QueueEntry
 from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
+from carrie_on.usage import UsageSelectionError
 from tests.fixtures import CHAT_ID, CodexFixture, chat, instant, usage
 
 
@@ -36,12 +34,12 @@ class DispatchBehavior(unittest.TestCase):
             uuid4(),
             "Finish tests",
             chat(),
-            UsageSnapshot.parse(usage()).select(),
+            parse_usage(usage()).select(),
             instant(50),
         )
         self.store.create_entry(self.item)
         self.connections = CodexConnections("fixture")
-        self.worker = DispatchWorker(self.store, self.connections)
+        self.worker = DispatchWorker(self.store, CodexAdapter(self.connections))
 
     def tick(self, now=None):
         self.now = self.now + 2 if now is None else now
@@ -70,6 +68,43 @@ class DispatchBehavior(unittest.TestCase):
         self.assertEqual(self.item_state().state, "sent")
         self.assertEqual(self.store.list_entries()[0], [])
         self.assertEqual(self.store.list_entries(states=("sent",))[0][0].id, self.item.id)
+
+    def test_expired_retry_does_not_starve_later_work_in_the_worker_loop(self):
+        self.replace_item(limit_id="removed-bucket")
+        other = replace(
+            self.item, id=uuid4(), chat_id=uuid4(), limit_id="codex", queued_at=instant(51)
+        )
+        self.store.create_entry(other)
+        self.codex.chat = chat(thread_id=str(other.chat_id))
+        self.worker.interval = 300
+        waits = []
+
+        def advance(seconds):
+            waits.append(seconds)
+            self.now += seconds
+            if len(waits) == 2:
+                self.worker.stopping.set()
+
+        from carrie_on.conversation import ChatSummary
+
+        with (
+            patch.object(CodexConnections, "app_server", return_value=self.codex),
+            patch.object(CodexConnections, "desktop", return_value=self.codex),
+            patch.object(
+                self.codex,
+                "list_all_chats",
+                return_value=(
+                    ChatSummary(id=str(other.chat_id), title=None, cwd=None, last_activity=None),
+                ),
+            ),
+            patch.object(self.worker.wakeup, "wait", side_effect=advance),
+        ):
+            self.worker.run()
+        self.assertIsNone(self.worker.error)
+        self.assertEqual(waits[0], 150)
+        self.assertEqual(self.item_state().state, "failed")
+        self.assertEqual(self.store.get_entry(other.id).state, "sent")
+        self.assertEqual([item["message_id"] for item in self.codex.delivered], [str(other.id)])
 
     def test_reads_and_unrelated_edits_remain_available_during_network_io(self):
         other = replace(self.item, id=uuid4(), chat_id=uuid4())
@@ -135,12 +170,12 @@ class DispatchBehavior(unittest.TestCase):
             uuid4(),
             "Finish tests",
             self.codex.chat,
-            UsageSnapshot.parse(usage(20, 100, {"usedPercent": 40, "resetsAt": 500})).select(),
+            parse_usage(usage(20, 100, {"usedPercent": 40, "resetsAt": 500})).select(),
             instant(50),
         )
         self.store.create_entry(self.item)
         self.store = SqliteQueueStorage(self.path, clock=lambda: instant(self.now))
-        self.worker = DispatchWorker(self.store, self.connections)
+        self.worker = DispatchWorker(self.store, CodexAdapter(self.connections))
         self.codex.limits = usage(20, 100, {"usedPercent": 60, "resetsAt": 600})
         self.tick(now=70)
         self.assertEqual(self.item_state().state, "sent")
@@ -256,7 +291,7 @@ class DispatchBehavior(unittest.TestCase):
                 uuid4(),
                 "Continue",
                 observation,
-                UsageSnapshot.parse(usage()).select(),
+                parse_usage(usage()).select(),
                 instant(50),
             )
             self.assertEqual(item.state, "queued")
@@ -317,7 +352,7 @@ class DispatchBehavior(unittest.TestCase):
         self.assertEqual(self.item_state().state, "failed")
 
     def test_missing_executable_leaves_a_retryable_entry(self):
-        self.worker.connections = CodexConnections(str(self.path.parent / "missing-codex"))
+        self.worker.codex = CodexAdapter(CodexConnections(str(self.path.parent / "missing-codex")))
         self.assertTrue(self.worker.send())
         self.assertEqual(self.item_state().state, "failed")
         self.assertIn("missing-codex", self.item_state().error)
@@ -334,9 +369,9 @@ class DispatchBehavior(unittest.TestCase):
     def test_ambiguous_quota_requires_selection_and_read_client_rejects_execution(self):
         raw = usage()
         raw["rateLimitsByLimitId"]["other"] = raw["rateLimitsByLimitId"]["codex"]
-        with self.assertRaisesRegex(UsageSelectionError, "Choose --limit-id"):
-            UsageSnapshot.parse(raw).select()
-        self.assertEqual(UsageSnapshot.parse(raw).select("other").limit_id, "other")
+        with self.assertRaisesRegex(UsageSelectionError, "Choose a quota bucket"):
+            parse_usage(raw).select()
+        self.assertEqual(parse_usage(raw).select("other").limit_id, "other")
         self.assertFalse(hasattr(AppServer, "request"))
 
     def test_programming_and_persistence_failures_escape_without_reclassification(self):
@@ -360,7 +395,7 @@ class DispatchBehavior(unittest.TestCase):
             raw_usage = usage(0, 200)
             raw_usage["rateLimitsByLimitId"]["codex"].update(changes)
             with self.subTest(changes=list(changes)), self.assertRaises(CodexProtocolError):
-                UsageSnapshot.parse(raw_usage)
+                parse_usage(raw_usage)
         self.codex.limits = raw_usage
         self.tick()
         self.assertEqual(self.item_state().state, "failed")

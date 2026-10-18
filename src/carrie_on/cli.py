@@ -47,6 +47,7 @@ class Client:
     timeout: float
     json_output: bool
     profile: BuildProfile = PROFILES["release"]
+    port_override: int | None = None
 
     def request(
         self,
@@ -106,7 +107,7 @@ class Client:
             if value.get("next_cursor"):
                 typer.echo("More results: use --cursor " + value["next_cursor"], err=True)
         elif isinstance(value, dict) and "instruction" in value:
-            typer.echo(f"{value['id']}  {value['state']}  {value['title']}")
+            typer.echo(f"{value['id']}  {value['state']}  {value['chat_id']}")
             typer.echo(value["instruction"])
             if value.get("error"):
                 typer.echo(value["error"])
@@ -160,7 +161,7 @@ def options(
         raise typer.BadParameter("Use http://127.0.0.1:PORT", param_hint="--server")
     if port is None or not 1024 <= port <= 65535:
         raise typer.BadParameter("Use a port between 1024 and 65535", param_hint="--server")
-    ctx.obj = Client(url, timeout, json_output, PROFILES[profile])
+    ctx.obj = Client(url, timeout, json_output, PROFILES[profile], port if server else None)
 
 
 def read_instruction(text: str | None, file: str | None, *, required: bool = False) -> str | None:
@@ -315,7 +316,16 @@ def start(ctx: typer.Context):
 @service.command()
 def stop(ctx: typer.Context):
     """Stop the backend while preserving queue and history."""
-    ctx.obj.show(control_service("stop", ctx.obj.profile))
+    try:
+        result = ctx.obj.request("POST", "service/shutdown", {})
+    except ClientError as error:
+        cause = error.__cause__
+        if not isinstance(cause, urllib.error.URLError) or not isinstance(
+            cause.reason, ConnectionRefusedError
+        ):
+            raise
+        result = {"stopping": False}
+    ctx.obj.show(result)
 
 
 @service.command()
@@ -333,12 +343,13 @@ def install(
     socket: Optional[Path] = None,
 ):
     """Install a backend for the selected profile; preserve queue data."""
-    from carrie_on.macos.installation import SettingsOverrides, install_service
+    from carrie_on.configuration import SettingsOverrides
+    from carrie_on.macos.installation import install_service
 
     runtime = Runtime.current(ctx.obj.profile, registered=True)
     overrides = SettingsOverrides(
         codex=codex,
-        port=port or urlparse(ctx.obj.url).port,
+        port=port if port is not None else ctx.obj.port_override,
         interval=interval,
         socket=socket,
     )

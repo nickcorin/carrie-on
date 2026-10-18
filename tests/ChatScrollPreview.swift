@@ -113,7 +113,7 @@ private func verifyScrolling(window: NSWindow, model: ChatPickerModel) async {
     model.queuedEntries = (1...75).map { index in
         PickerQueue.Entry(enrollmentID: String(format: "10000000-0000-4000-8000-%012d", index),
                           thread_id: String(format: "20000000-0000-4000-8000-%012d", index),
-                          title: "Queued fixture \(index)", prompt: "Synthetic instruction")
+                          prompt: "Synthetic instruction")
     }
     await settle()
     guard let queued = scrollViews(in: window.contentView!).first,

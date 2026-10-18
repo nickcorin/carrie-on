@@ -298,7 +298,7 @@ func selfTest() throws {
         picker.ready = true
         picker.chats = [.init(id: "chat-a", title: "First chat", cwd: nil),
                         .init(id: "chat-b", title: "Another chat", cwd: nil)]
-        picker.queuedEntries = [.init(enrollmentID: "enrollment-a", thread_id: "chat-a", title: "First chat", prompt: "Finish the tests.")]
+        picker.queuedEntries = [.init(enrollmentID: "enrollment-a", thread_id: "chat-a", prompt: "Finish the tests.")]
         guard picker.availableChats.map(\.id) == ["chat-b"],
               picker.queued == ["chat-a"], picker.canQueue("chat-b"), !picker.canQueue("chat-a")
         else { fatalError("Picker queue reconciliation failed") }

@@ -5,9 +5,7 @@ import threading
 from collections.abc import Callable
 
 from carrie_on.application import observe_eligibility
-from carrie_on.codex.client import CodexConnections
-from carrie_on.codex.models import CodexProtocolError, CodexUnavailable
-from carrie_on.ports import QueueStorage
+from carrie_on.ports import Codex, CodexUnavailable, QueueStorage
 from carrie_on.queue import EntryState, QueueError
 
 logger = logging.getLogger(__name__)
@@ -19,11 +17,11 @@ class DispatchWorker:
     def __init__(
         self,
         store: QueueStorage,
-        connections: CodexConnections,
+        codex: Codex,
         interval: float = 60,
         on_failure: Callable[[], None] = lambda: None,
     ):
-        self.store, self.connections = store, connections
+        self.store, self.codex = store, codex
         self.interval, self.on_failure = interval, on_failure
         self.stopping, self.wakeup = threading.Event(), threading.Event()
         self.error: str | None = None
@@ -44,18 +42,14 @@ class DispatchWorker:
         state: EntryState
         error = ""
         try:
-            with (
-                self.connections.app_server() as server,
-                self.connections.desktop(open_if_needed=True) as desktop,
-            ):
-                decision = observe_eligibility(entry, server, desktop)
-                if decision.outcome == "ready":
-                    desktop.continue_chat(str(entry.chat_id), entry.instructions, str(entry.id))
-                    state = "sent"
-                else:
-                    state = decision.outcome
-                    error = decision.reason if state == "failed" else ""
-        except (CodexUnavailable, CodexProtocolError, QueueError) as failure:
+            decision = observe_eligibility(entry, self.codex, open_if_needed=True)
+            if decision.outcome == "ready":
+                self.codex.send(entry.chat_id, entry.instructions, entry.id)
+                state = "sent"
+            else:
+                state = decision.outcome
+                error = decision.reason if state == "failed" else ""
+        except (CodexUnavailable, QueueError) as failure:
             state, error = "failed", str(failure) or type(failure).__name__
         self.store.update_entry_state(entry.id, state, error=error)
         return True

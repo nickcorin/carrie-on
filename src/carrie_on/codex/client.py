@@ -19,28 +19,24 @@ from pathlib import Path
 from types import TracebackType
 from typing import Callable, ParamSpec, TypeVar
 
-from carrie_on.codex.models import (
-    CodexProtocolError,
-    CodexUnavailable,
-    object_value,
-    text_value,
-)
+from carrie_on.codex.parsing import object_value, text_value
 from carrie_on.codex.sdk import AppServer
+from carrie_on.ports import CodexProtocolError, CodexUnavailable
 
 P = ParamSpec("P")
 T = TypeVar("T")
 
 
 def transport_errors(operation: Callable[P, T]) -> Callable[P, T]:
-    """Translate only transport failures; programming exceptions retain their traceback."""
+    """Report external operation failures with their original exception as the cause."""
 
     @wraps(operation)
     def perform(*args: P.args, **kwargs: P.kwargs) -> T:
         try:
             return operation(*args, **kwargs)
-        except json.JSONDecodeError as error:
-            raise CodexProtocolError("Codex returned invalid JSON") from error
-        except (OSError, subprocess.SubprocessError) as error:
+        except CodexUnavailable:
+            raise
+        except Exception as error:
             raise CodexUnavailable(str(error) or type(error).__name__) from error
 
     return perform
@@ -54,23 +50,14 @@ class CodexConnections:
     socket_path: Path | None = None
     codex_home: str | None = None
 
-    def app_server(self, *, deadline: float | None = None) -> "AppServer":
-        return AppServer(self.executable, deadline=deadline, codex_home=self.codex_home)
+    def app_server(self) -> "AppServer":
+        return AppServer(self.executable, codex_home=self.codex_home)
 
-    def desktop(
-        self, *, open_if_needed: bool = False, deadline: float | None = None, timeout: float = 15
-    ) -> "Desktop":
+    def desktop(self, *, open_if_needed: bool = False, timeout: float = 15) -> "Desktop":
         path = self.socket_path
         if path is None and self.codex_home:
             path = Path(self.codex_home) / "ipc" / "ipc.sock"
-        return Desktop(path, open_if_needed=open_if_needed, deadline=deadline, timeout=timeout)
-
-
-def remaining_time(timeout, deadline):
-    remaining = min(timeout, deadline - time.monotonic()) if deadline is not None else timeout
-    if remaining <= 0:
-        raise CodexUnavailable("Codex operation deadline expired")
-    return remaining
+        return Desktop(path, open_if_needed=open_if_needed, timeout=timeout)
 
 
 class Desktop:
@@ -85,12 +72,10 @@ class Desktop:
         path: Path | None = None,
         timeout: float = 15,
         open_if_needed: bool = False,
-        deadline: float | None = None,
     ) -> None:
         home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
         self.path = Path(path) if path else home / "ipc" / "ipc.sock"
         self.timeout = timeout
-        self.deadline = deadline
         self.open_if_needed = open_if_needed
         self.client_id = "carrie_on"
         self.socket: socket.socket | None = None
@@ -108,7 +93,7 @@ class Desktop:
             raise CodexUnavailable("Codex IPC socket must be in a private, user-owned directory")
         self.socket = socket.socket(socket.AF_UNIX)
         try:
-            self.socket.settimeout(remaining_time(self.timeout, self.deadline))
+            self.socket.settimeout(self.timeout)
             self.socket.connect(str(self.path))
             reply = self.request("initialize", {"clientType": "carrie_on"}, version=0)
             self.client_id = text_value(reply.get("clientId"), "desktop client ID")
@@ -129,7 +114,7 @@ class Desktop:
     def _send(self, message):
         assert self.socket is not None
         payload = json.dumps(message).encode()
-        self.socket.settimeout(remaining_time(self.timeout, self.deadline))
+        self.socket.settimeout(self.timeout)
         self.socket.sendall(struct.pack("<I", len(payload)) + payload)
 
     def _read_bytes(self, count, deadline):
@@ -155,7 +140,7 @@ class Desktop:
             self._send(
                 {
                     "type": "client-discovery-response",
-                    "requestId": message["requestId"],
+                    "requestId": text_value(message.get("requestId"), "discovery request ID"),
                     "response": {"canHandle": False},
                 }
             )
@@ -176,7 +161,7 @@ class Desktop:
         if method != "initialize":
             message["hostId"] = host
         self._send(message)
-        deadline = min(time.monotonic() + self.timeout, self.deadline or float("inf"))
+        deadline = time.monotonic() + self.timeout
         while True:
             reply = self._receive(deadline)
             if reply.get("type") != "response" or reply.get("requestId") != request_id:
@@ -188,14 +173,11 @@ class Desktop:
             return object_value(reply.get("result"), "desktop result")
 
     @transport_errors
-    def read_settings(
-        self, thread_id: str, *, before_open: Callable[[], None] | None = None
-    ) -> dict:
+    def read_settings(self, thread_id: str) -> dict:
         """Read compact settings, optionally opening a dormant chat.
 
         With open_if_needed, validate membership in the unarchived local catalog
-        before calling, or supply before_open to validate immediately before the
-        deep link opens. Opening can change the visible chat in Codex. Without
+        before calling. Opening can change the visible chat in Codex. Without
         open_if_needed, an unavailable owner raises CodexUnavailable.
         """
         try:
@@ -206,16 +188,14 @@ class Desktop:
             if not self.open_if_needed or "no-client-found" not in str(error):
                 raise
             uuid.UUID(thread_id)
-            if before_open is not None:
-                before_open()
             subprocess.run(
                 ["/usr/bin/open", "-g", f"codex://threads/{thread_id}"],
                 check=True,
-                timeout=remaining_time(10, self.deadline),
+                timeout=10,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            deadline = min(time.monotonic() + 20, self.deadline or float("inf"))
+            deadline = time.monotonic() + 20
             while True:
                 try:
                     result = self.request(

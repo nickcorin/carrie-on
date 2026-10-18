@@ -29,7 +29,7 @@ def launch_at_login(profile: BuildProfile) -> bool:
 
 
 def agent_path(label: str, profile: BuildProfile) -> Path:
-    if label not in (*profile.labels, profile.service_prefix):
+    if label not in profile.labels:
         raise ValueError("Unknown Carrie On service")
     root = (
         Path.home() / "Library/LaunchAgents"
@@ -65,7 +65,7 @@ def write_agent(configuration: dict, profile: BuildProfile) -> Path:
 
 def remove_agent(label: str, profile: BuildProfile) -> None:
     """Remove both login and manual-launch definitions, preserving the preference."""
-    if label not in (*profile.labels, profile.service_prefix):
+    if label not in profile.labels:
         raise ValueError("Unknown Carrie On service")
     root = directory(profile)
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -75,38 +75,49 @@ def remove_agent(label: str, profile: BuildProfile) -> None:
         (root / "Agents" / f"{label}.plist").unlink(missing_ok=True)
 
 
-def retire_worker(*, profile: BuildProfile, remove_definition: bool = True) -> None:
-    """Stop the retired JSON writer and remove both of its startup definitions."""
-    label = profile.service_prefix
-    target = f"gui/{os.getuid()}/{label}"
-    if subprocess.run(["/bin/launchctl", "print", target], capture_output=True).returncode:
-        if remove_definition:
-            remove_agent(label, profile)
-        return
-    subprocess.run(["/bin/launchctl", "bootout", target], capture_output=True)
-    for _ in range(100):
-        if subprocess.run(["/bin/launchctl", "print", target], capture_output=True).returncode:
-            if remove_definition:
-                remove_agent(label, profile)
-            return
-        time.sleep(0.1)
-    raise ValueError("The previous worker has not stopped; retry setup before importing its queue")
+def service_loaded(label: str) -> bool:
+    return (
+        subprocess.run(
+            ["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True
+        ).returncode
+        == 0
+    )
 
 
-def control_service(
-    action: Literal["status", "start", "stop", "uninstall"], profile: BuildProfile
-) -> dict:
+def unregister_services(labels: tuple[str, ...]) -> None:
+    """Unload launchd registrations before replacing or removing their definitions.
+
+    This is an installation operation. Normal service shutdown uses HTTP.
+    Absent registrations are harmless; a service that remains loaded is an error.
+    """
+    for label in reversed(labels):
+        if not service_loaded(label):
+            continue
+        subprocess.run(
+            ["/bin/launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
+            check=True,
+            capture_output=True,
+        )
+        for _ in range(100):
+            if not service_loaded(label):
+                break
+            time.sleep(0.1)
+        else:
+            raise ValueError(f"The service {label} has not unloaded. Retry setup.")
+
+
+def control_service(action: Literal["status", "start", "uninstall"], profile: BuildProfile) -> dict:
     """Control only the selected backend, preserving queue data and login policy.
 
-    Repeated starts, stops, and removal are safe. Stop waits for launchd to release
-    the service; failure leaves its definition intact so the caller can retry.
+    kickstart starts a stopped, loaded service without restarting a running one.
+    Uninstall waits for launchd to release it before removing its definition.
     """
     label = profile.labels[0]
     target = f"gui/{os.getuid()}/{label}"
     loaded = subprocess.run(["/bin/launchctl", "print", target], capture_output=True, text=True)
     if action == "status":
         return {
-            "running": loaded.returncode == 0,
+            "running": loaded.returncode == 0 and "state = running" in loaded.stdout,
             "detail": loaded.stdout or loaded.stderr,
         }
     if action == "start" and loaded.returncode:
@@ -119,18 +130,9 @@ def control_service(
             ],
             check=True,
         )
-    elif action in {"stop", "uninstall"}:
-        if loaded.returncode == 0:
-            subprocess.run(["/bin/launchctl", "bootout", target], check=True)
-            for _ in range(100):
-                if subprocess.run(
-                    ["/bin/launchctl", "print", target], capture_output=True
-                ).returncode:
-                    break
-                time.sleep(0.1)
-            else:
-                raise ValueError("Backend has not stopped; retry after its active request finishes")
-        if action == "uninstall":
-            retire_worker(profile=profile)
-            remove_agent(label, profile)
+    elif action == "start":
+        subprocess.run(["/bin/launchctl", "kickstart", target], check=True)
+    elif action == "uninstall":
+        unregister_services((label,))
+        remove_agent(label, profile)
     return {"service": action, "data_preserved": True}

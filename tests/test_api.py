@@ -13,16 +13,13 @@ from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
+from carrie_on.codex.adapter import CodexAdapter
 from carrie_on.codex.client import CodexConnections
-from carrie_on.codex.models import (
-    ChatPage,
-    ChatSummary,
-    CodexProtocolError,
-    CodexUnavailable,
-    UsageSnapshot,
-)
+from carrie_on.codex.parsing import parse_usage
 from carrie_on.codex.sdk import AppServer
+from carrie_on.conversation import ChatPage, ChatSummary
 from carrie_on.dispatch import DispatchWorker
+from carrie_on.ports import CodexProtocolError, CodexUnavailable
 from carrie_on.server import create_application
 from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
 from tests.fixtures import CHAT_ID, LocalCodex, usage
@@ -37,11 +34,11 @@ class ApiBehavior(unittest.TestCase):
         self.connections = CodexConnections("fixture")
         self.app = create_application(
             self.store,
-            self.connections,
+            CodexAdapter(self.connections),
             maintenance=SqliteStorageMaintenance(self.path),
             run_worker=False,
         )
-        self.service = self.app.state.service
+        self.codex = self.app.state.codex
         for name in ("AppServer", "Desktop"):
             mock = patch("carrie_on.codex.client." + name, LocalCodex)
             mock.start()
@@ -70,7 +67,7 @@ class ApiBehavior(unittest.TestCase):
 
     def test_health_openapi_and_absent_pause_or_legacy_api(self):
         with patch.object(
-            self.service, "read_usage", side_effect=AssertionError("Health contacted Codex")
+            CodexAdapter, "read_usage", side_effect=AssertionError("Health contacted Codex")
         ):
             result = self.get("health")
         self.assertEqual(result.status_code, 200)
@@ -85,9 +82,53 @@ class ApiBehavior(unittest.TestCase):
             self.assertEqual(self.client.post("/api/v1/" + path, json={}).status_code, 404)
         self.assertEqual(self.client.get("/api/status").status_code, 404)
 
+    def test_dependencies_can_be_overridden_without_constructing_transports(self):
+        from carrie_on.api import get_codex, get_storage
+
+        self.app.dependency_overrides[get_storage] = lambda: self.store
+        self.app.dependency_overrides[get_codex] = lambda: self.codex
+        with patch(
+            "carrie_on.codex.client.AppServer", side_effect=AssertionError("Unexpected Codex read")
+        ):
+            self.assertEqual(self.get("queue").json()["items"], [])
+
+    def test_readiness_failure_keeps_other_results_and_pagination(self):
+        from tests.fixtures import chat, instant, queue_entry
+
+        bad = queue_entry(limit_id="removed", queued_at=instant(1))
+        good = queue_entry(chat_id=uuid4(), queued_at=instant(2))
+        self.store.create_entry(bad)
+        self.store.create_entry(good)
+        with patch.object(CodexAdapter, "get_chat", return_value=chat(thread_id=str(good.chat_id))):
+            first = self.get("queue/check", params={"limit": 1})
+            self.assertEqual(first.status_code, 200, first.text)
+            self.assertEqual(first.json()["items"][0]["outcome"], "failed")
+            self.assertIn("removed", first.json()["items"][0]["reason"])
+            cursor = first.json()["next_cursor"]
+            self.assertIsNotNone(cursor)
+            second = self.get("queue/check", params={"limit": 1, "cursor": cursor})
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(second.json()["items"][0]["id"], str(good.id))
+        self.assertEqual(second.json()["items"][0]["outcome"], "ready")
+        self.assertEqual(self.store.get_entry(bad.id).state, "queued")
+
+    def test_openapi_describes_cursor_reuse(self):
+        schema = self.client.get("/openapi.json").json()
+        for path, words in (
+            ("chats", ("search", "limit")),
+            ("queue", ("filters",)),
+            ("queue/check", ("filters",)),
+        ):
+            parameters = schema["paths"][f"/api/v1/{path}"]["get"]["parameters"]
+            cursor = next(parameter for parameter in parameters if parameter["name"] == "cursor")
+            for word in words:
+                self.assertIn(word, cursor["description"])
+
     def test_missing_codex_executable_keeps_partial_status_and_queue_available(self):
         item = self.add().json()
-        self.service.connections = CodexConnections(str(self.path.parent / "missing-codex"))
+        self.app.state.codex = CodexAdapter(
+            CodexConnections(str(self.path.parent / "missing-codex"))
+        )
         with patch("carrie_on.codex.client.AppServer", AppServer):
             response = self.get("status")
         self.assertEqual(response.status_code, 200, response.text)
@@ -138,7 +179,7 @@ class ApiBehavior(unittest.TestCase):
         self.cancel(item_id)
         restarted = create_application(
             SqliteQueueStorage(self.path),
-            self.connections,
+            CodexAdapter(self.connections),
             maintenance=SqliteStorageMaintenance(self.path),
             run_worker=False,
         )
@@ -313,7 +354,7 @@ class ApiBehavior(unittest.TestCase):
         self.assertEqual(self.get("chats?search=absent").json()["items"], [])
         with patch.object(LocalCodex, "get_chat_summary", side_effect=CodexUnavailable("Absent")):
             fallback = self.get("queue/metadata").json()["items"][0]
-        self.assertEqual(fallback["title"], catalog[0]["title"])
+        self.assertIsNone(fallback["title"])
         self.assertIsNone(fallback["last_activity"])
 
     def test_chat_pagination_beyond_100_search_and_cursor_scope(self):
@@ -352,18 +393,14 @@ class ApiBehavior(unittest.TestCase):
 
     def test_reset_before_enrollment_does_not_authorize_a_new_entry(self):
         reset = int(time.time()) + 3600
-        with patch.object(
-            LocalCodex, "usage", return_value=UsageSnapshot.parse(usage(100, reset - 3600))
-        ):
+        with patch.object(LocalCodex, "usage", return_value=parse_usage(usage(100, reset - 3600))):
             self.get("status")
-        with patch.object(LocalCodex, "usage", return_value=UsageSnapshot.parse(usage(0, reset))):
+        with patch.object(LocalCodex, "usage", return_value=parse_usage(usage(0, reset))):
             response = self.add()
             self.assertEqual(response.status_code, 201)
             self.assertEqual(response.json()["reset_windows"], {"primary": reset})
             self.assertEqual(self.get("queue/check").json()["items"][0]["outcome"], "failed")
-        with patch.object(
-            LocalCodex, "usage", return_value=UsageSnapshot.parse(usage(0, reset + 3600))
-        ):
+        with patch.object(LocalCodex, "usage", return_value=parse_usage(usage(0, reset + 3600))):
             self.assertEqual(self.get("queue/check").json()["items"][0]["outcome"], "ready")
 
     def test_enrollment_requires_fresh_usage_and_ambiguous_buckets_require_selection(self):
@@ -373,7 +410,7 @@ class ApiBehavior(unittest.TestCase):
             self.assertEqual(self.add().status_code, 503)
         raw = usage(25, int(time.time()) + 3600)
         raw["rateLimitsByLimitId"]["other"] = raw["rateLimitsByLimitId"]["codex"]
-        with patch.object(LocalCodex, "usage", return_value=UsageSnapshot.parse(raw)):
+        with patch.object(LocalCodex, "usage", return_value=parse_usage(raw)):
             self.get("status")
             self.assertEqual(self.add().status_code, 422)
             response = self.add(limit_id="other")
@@ -386,18 +423,18 @@ class ApiBehavior(unittest.TestCase):
         def slow_usage(_):
             entered.set()
             self.assertTrue(release.wait(5))
-            return UsageSnapshot.parse(usage(25, int(time.time()) + 3600, account="old"))
+            return parse_usage(usage(25, int(time.time()) + 3600, account="old"))
 
         with ThreadPoolExecutor(1) as pool, patch.object(LocalCodex, "usage", slow_usage):
-            future = pool.submit(self.service.read_usage)
+            future = pool.submit(self.codex.read_usage)
             try:
                 self.assertTrue(entered.wait(3))
                 with patch.object(
                     LocalCodex,
                     "usage",
-                    return_value=UsageSnapshot.parse(usage(25, int(time.time()) + 3600)),
+                    return_value=parse_usage(usage(25, int(time.time()) + 3600)),
                 ):
-                    self.service.read_usage()
+                    self.codex.read_usage()
             finally:
                 release.set()
             future.result()
@@ -413,8 +450,21 @@ class ApiBehavior(unittest.TestCase):
             self.assertTrue(release.wait(5))
             return original(client, *args, **kwargs)
 
-        with ThreadPoolExecutor(1) as pool, patch.object(LocalCodex, "get_chat", slow_snapshot):
-            future = pool.submit(self.add, chat_id=str(uuid4()))
+        other_id = str(uuid4())
+        catalog = LocalCodex().list_all_chats()
+        with (
+            ThreadPoolExecutor(1) as pool,
+            patch.object(LocalCodex, "get_chat", slow_snapshot),
+            patch.object(
+                LocalCodex,
+                "list_all_chats",
+                return_value=(
+                    *catalog,
+                    ChatSummary(id=other_id, title=None, cwd=None, last_activity=None),
+                ),
+            ),
+        ):
+            future = pool.submit(self.add, chat_id=other_id)
             try:
                 self.assertTrue(entered.wait(3))
                 self.assertEqual(self.cancel(existing["id"]).status_code, 200)
@@ -458,7 +508,7 @@ class ApiBehavior(unittest.TestCase):
 
     def test_worker_failure_requests_restart_and_is_visible(self):
         restart = threading.Event()
-        worker = DispatchWorker(self.store, self.connections, on_failure=restart.set)
+        worker = DispatchWorker(self.store, self.codex, on_failure=restart.set)
         with patch(
             "carrie_on.dispatch.DispatchWorker.send", side_effect=AssertionError("Worker crashed")
         ):

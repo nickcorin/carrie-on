@@ -5,13 +5,15 @@ import socket
 import struct
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from uuid import UUID
 
-from carrie_on.codex.client import Desktop
-from carrie_on.codex.models import CodexUnavailable
+from carrie_on.codex.adapter import CodexAdapter
+from carrie_on.codex.client import CodexConnections, Desktop
+from carrie_on.ports import CodexUnavailable
+from tests.fixtures import CHAT_ID, LocalCodex
 
 
 class DesktopProtocol(unittest.TestCase):
@@ -27,6 +29,9 @@ class DesktopProtocol(unittest.TestCase):
         self.requests = []
         self.errors = []
         self.dormant = False
+        self.owner_after = None
+        self.settings_reads = 0
+        self.malformed = None
         self.receipt = {"result": {"turn": {"id": "accepted-turn"}}}
         self.worker = threading.Thread(target=self.serve, daemon=True)
 
@@ -55,9 +60,16 @@ class DesktopProtocol(unittest.TestCase):
                 while True:
                     message = json.loads(read(struct.unpack("<I", read(4))[0]))
                     method = message["method"]
+                    if method == "initialize" and self.malformed is not None:
+                        payload = self.malformed
+                        connection.sendall(struct.pack("<I", len(payload)) + payload)
+                        return
                     if method == "initialize":
                         result = {"clientId": "fixture-client"}
                     elif method == "thread-follower-read-model-settings":
+                        self.settings_reads += 1
+                        if self.owner_after and self.settings_reads >= self.owner_after:
+                            self.dormant = False
                         if self.dormant:
                             send(
                                 {
@@ -119,16 +131,6 @@ class DesktopProtocol(unittest.TestCase):
         )
         self.assertEqual(self.requests[0]["version"], 3)
 
-    def test_elapsed_transport_deadline_prevents_request(self):
-        self.worker.start()
-        with Desktop(self.path, timeout=2) as desktop:
-            desktop.read_settings("thread-a")
-            desktop.deadline = time.monotonic() - 1
-            with self.assertRaisesRegex(CodexUnavailable, "deadline expired"):
-                desktop.continue_chat("thread-a", "Do not send", "expired-attempt")
-        self.finish()
-        self.assertEqual(self.requests, [])
-
     def test_missing_turn_receipt_is_uncertain_not_success(self):
         self.receipt = {"result": {}}
         self.worker.start()
@@ -137,22 +139,50 @@ class DesktopProtocol(unittest.TestCase):
                 desktop.continue_chat("thread-a", "Finish tests", "message-a")
         self.finish()
 
-    def test_dormant_chat_is_validated_before_opening(self):
+    def test_dormant_chat_opens_once_and_waits_for_its_owner(self):
         self.dormant = True
         self.worker.start()
 
-        def reject_archived():
-            raise ValueError("Chat is archived")
+        def opened(*args, **kwargs):
+            self.owner_after = 3
 
-        with patch(
-            "carrie_on.codex.client.subprocess.run",
-            side_effect=AssertionError("Must not open an archived chat"),
-        ):
+        with patch("carrie_on.codex.client.subprocess.run", side_effect=opened) as opener:
             with Desktop(self.path, timeout=2, open_if_needed=True) as desktop:
-                with self.assertRaisesRegex(ValueError, "Chat is archived"):
-                    desktop.read_settings(
-                        "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", before_open=reject_archived
-                    )
+                self.assertEqual(desktop.read_settings(CHAT_ID), {"model": "model-a"})
+        self.finish()
+        opener.assert_called_once()
+        self.assertEqual(
+            opener.call_args.args[0], ["/usr/bin/open", "-g", f"codex://threads/{CHAT_ID}"]
+        )
+        self.assertEqual(self.settings_reads, 3)
+        self.assertEqual(self.requests, [])
+
+    def test_archived_chat_never_connects_to_desktop_or_opens_it(self):
+        adapter = CodexAdapter(CodexConnections("fixture", self.path))
+        with (
+            patch("carrie_on.codex.client.AppServer", LocalCodex),
+            patch.object(LocalCodex, "list_all_chats", return_value=[]),
+            patch(
+                "carrie_on.codex.client.Desktop", side_effect=AssertionError("Archived chat opened")
+            ),
+        ):
+            self.assertIsNone(adapter.get_chat(UUID(CHAT_ID), open_if_needed=True))
+
+    def test_invalid_encoding_retains_the_original_cause(self):
+        self.malformed = b"\xff"
+        self.worker.start()
+        with self.assertRaises(CodexUnavailable) as caught:
+            with Desktop(self.path, timeout=2):
+                self.fail("Invalid encoding was accepted")
+        self.assertIsInstance(caught.exception.__cause__, UnicodeDecodeError)
+        self.finish()
+
+    def test_discovery_without_request_id_is_a_recoverable_failure(self):
+        self.malformed = b'{"type":"client-discovery-request"}'
+        self.worker.start()
+        with self.assertRaisesRegex(CodexUnavailable, "discovery request ID"):
+            with Desktop(self.path, timeout=2):
+                self.fail("Invalid discovery was accepted")
         self.finish()
 
 

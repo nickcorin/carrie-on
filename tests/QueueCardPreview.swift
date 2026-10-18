@@ -21,7 +21,7 @@ MainActor.assumeIsolated {
     let entries = states.indices.map { index in
         let fixture = states[index]
         var entry = PickerQueue.Entry(enrollmentID: "entry-\(index)", thread_id: "chat-\(index)",
-                                      title: fixture.0, prompt: instructions[index])
+                                      prompt: instructions[index])
         entry.state = fixture.1
         entry.error = fixture.3 ?? ""
         entry.dispatching = fixture.2 != nil

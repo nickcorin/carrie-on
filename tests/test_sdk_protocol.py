@@ -6,11 +6,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID
 
 from carrie_on.application import observe_eligibility
-from carrie_on.codex.models import CodexProtocolError, CodexUnavailable
+from carrie_on.codex.adapter import CodexAdapter
+from carrie_on.codex.client import CodexConnections
 from carrie_on.codex.sdk import AppServer
+from carrie_on.ports import CodexProtocolError, CodexUnavailable
 from tests.fixtures import CHAT_ID, queue_entry
 
 
@@ -142,31 +145,27 @@ for line in sys.stdin:
                 with self.subTest(status=status, completed_at=completed_at):
                     self.fixture(turn={"status": status, "completedAt": completed_at})
                     with AppServer(str(self.executable)) as server:
-                        chat = server.get_chat("thread-a", Settings())
+                        chat = server.get_chat("thread-a", Settings().read_settings("unused"))
                     self.assertEqual(chat.busy, status == "inProgress" or not completed_at)
                     self.assertEqual((chat.message_id, chat.model), ("original", "model-a"))
 
     def test_compact_reads_capture_ended_work_without_loading_history(self):
         self.fixture("quota")
         with AppServer(str(self.executable)) as server:
-            chat = server.get_chat("thread-a", Settings())
+            chat = server.get_chat("thread-a", Settings().read_settings("unused"))
         self.assertEqual(
-            (chat.title, chat.busy, chat.blocked, chat.status),
-            ("Finish feature", False, False, "failed"),
+            (chat.busy, chat.blocked, chat.status),
+            (False, False, "failed"),
         )
         reads = [json.loads(line) for line in self.request_log.read_text().splitlines()]
         self.assertEqual(
             [r["method"] for r in reads],
             [
                 "initialize",
-                "thread/read",
                 "thread/turns/list",
                 "thread/items/list",
                 "thread/goal/get",
             ],
-        )
-        self.assertEqual(
-            next(r for r in reads if r["method"] == "thread/read")["params"]["includeTurns"], False
         )
         self.assertEqual(
             next(r for r in reads if r["method"] == "thread/turns/list")["params"]["itemsView"],
@@ -176,8 +175,12 @@ for line in sys.stdin:
     def test_goal_blocks_dispatch_without_changing_desktop_state(self):
         self.fixture("paused")
         with AppServer(str(self.executable)) as server:
-            self.assertTrue(server.get_chat("thread-a", Settings()).blocked)
-            self.assertFalse(server.get_chat("thread-a", Settings(), include_goal=False).blocked)
+            self.assertTrue(server.get_chat("thread-a", Settings().read_settings("unused")).blocked)
+            self.assertFalse(
+                server.get_chat(
+                    "thread-a", Settings().read_settings("unused"), include_goal=False
+                ).blocked
+            )
 
     def test_catalog_membership_reaches_later_pages(self):
         self.fixture("pages")
@@ -194,18 +197,23 @@ for line in sys.stdin:
 
     def test_receipt_can_be_found_on_an_older_turn(self):
         self.fixture("legacy_recovery", chat_id=CHAT_ID)
-        with AppServer(str(self.executable)) as server:
-            entry = queue_entry(
-                id=UUID("aaaaaaaa-2222-4222-8222-aaaaaaaaaaaa"),
-                title="Finish feature",
+        entry = queue_entry(id=UUID("aaaaaaaa-2222-4222-8222-aaaaaaaaaaaa"))
+        with patch("carrie_on.codex.client.Desktop") as desktop:
+            desktop.return_value.__enter__.return_value.read_settings.return_value = (
+                Settings().read_settings(CHAT_ID)
             )
-            decision = observe_eligibility(entry, server, Settings())
+            decision = observe_eligibility(
+                entry, CodexAdapter(CodexConnections(str(self.executable)))
+            )
         self.assertEqual(decision.outcome, "sent")
 
     def test_compaction_marker_does_not_hide_opening_message(self):
         self.fixture("legacy_compaction")
         with AppServer(str(self.executable)) as server:
-            self.assertEqual(server.get_chat("thread-a", Settings()).message_id, "original")
+            self.assertEqual(
+                server.get_chat("thread-a", Settings().read_settings("unused")).message_id,
+                "original",
+            )
 
     def test_unproven_opening_identity_fails_closed(self):
         for mode in ("legacy_wrong_turn", "legacy_cursor"):
@@ -213,17 +221,20 @@ for line in sys.stdin:
                 self.fixture(mode)
                 with AppServer(str(self.executable)) as server:
                     with self.assertRaises(CodexProtocolError):
-                        server.get_chat("thread-a", Settings())
+                        server.get_chat("thread-a", Settings().read_settings("unused"))
         self.fixture("quota")
         with AppServer(str(self.executable)) as server:
-            self.assertEqual(server.get_chat("thread-a", Settings()).message_id, "original")
+            self.assertEqual(
+                server.get_chat("thread-a", Settings().read_settings("unused")).message_id,
+                "original",
+            )
 
     def test_turn_identity_is_available_when_opening_message_has_no_client_id(self):
         for mode in ("legacy_missing", "legacy_non_user", "legacy_empty"):
             with self.subTest(mode=mode):
                 self.fixture(mode)
                 with AppServer(str(self.executable)) as server:
-                    chat = server.get_chat("thread-a", Settings())
+                    chat = server.get_chat("thread-a", Settings().read_settings("unused"))
                 self.assertEqual(chat.turn_id, "turn-a")
                 self.assertIsNone(chat.message_id)
 
@@ -231,7 +242,7 @@ for line in sys.stdin:
         self.fixture(turn={"id": ""})
         with AppServer(str(self.executable)) as server:
             with self.assertRaisesRegex(CodexProtocolError, "identifiable latest turn"):
-                server.get_chat("thread-a", Settings())
+                server.get_chat("thread-a", Settings().read_settings("unused"))
 
     def test_initialization_failure_closes_sdk_process(self):
         self.fixture("initialize_error")

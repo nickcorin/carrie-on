@@ -7,7 +7,7 @@ struct PickerChat: Decodable, Identifiable {
     let cwd: String?
     var last_activity: Double? = nil
 
-    var displayTitle: String { title ?? "Untitled chat" }
+    var displayTitle: String { title.flatMap { $0.isEmpty ? nil : $0 } ?? id }
     func matches(_ query: String) -> Bool {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return term.isEmpty || displayTitle.localizedStandardContains(term)
@@ -47,7 +47,6 @@ struct PickerQueue: Decodable {
     struct Entry: Decodable, Identifiable {
         let enrollmentID: String
         let thread_id: String
-        let title: String
         let prompt: String
         var state = "queued"
         var revision = 1
@@ -78,19 +77,17 @@ struct PickerQueue: Decodable {
         enum CodingKeys: String, CodingKey {
             case enrollmentID = "id"
             case thread_id = "chat_id", prompt = "instruction"
-            case title, state, revision, error, dispatching
+            case state, revision, error, dispatching
         }
-        init(enrollmentID: String, thread_id: String, title: String, prompt: String) {
+        init(enrollmentID: String, thread_id: String, prompt: String) {
             self.enrollmentID = enrollmentID
             self.thread_id = thread_id
-            self.title = title
             self.prompt = prompt
         }
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
             enrollmentID = try values.decode(String.self, forKey: .enrollmentID)
             thread_id = try values.decode(String.self, forKey: .thread_id)
-            title = try values.decode(String.self, forKey: .title)
             prompt = try values.decode(String.self, forKey: .prompt)
             state = try values.decode(String.self, forKey: .state)
             revision = try values.decode(Int.self, forKey: .revision)
@@ -272,6 +269,7 @@ final class ChatPickerModel: ObservableObject {
     private var searchRevision = 0
     private var catalogQuery: String?
     private var queueRevision = 0
+    private var checkingCreations = Set<String>()
     private var snapshotRefresh: Task<Void, Never>?
     @Published private var pendingCreations: [String: PendingCreation] = [:]
     private let recoveryDefaults: UserDefaults?
@@ -321,7 +319,8 @@ final class ChatPickerModel: ObservableObject {
         connection == .connected && (refreshingSummary || searching || checkingMetadata)
     }
     func queuedChat(_ entry: PickerQueue.Entry) -> PickerChat {
-        knownChats[entry.thread_id] ?? PickerChat(id: entry.thread_id, title: entry.title, cwd: nil)
+        knownChats[entry.thread_id] ?? chats.first(where: { $0.id == entry.thread_id })
+            ?? PickerChat(id: entry.thread_id, title: nil, cwd: nil)
     }
     func prompt(for id: String) -> String {
         let text = (instructions[id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -501,54 +500,61 @@ final class ChatPickerModel: ObservableObject {
                 entries += page.entries.filter { seen.insert($0.enrollmentID).inserted }
                 cursor = page.next_cursor
             } while cursor != nil
-            var resolutions: [String: CreationResolution] = [:]
-            for (chatID, pending) in pendingCreations {
-                if case .submitting = pending.outcome { continue }
-                let itemID = pending.request.id
-                if let item = entries.first(where: { $0.enrollmentID == itemID && $0.thread_id == chatID }) {
-                    resolutions[chatID] = .confirmed(item)
-                    continue
-                }
-                do {
-                    let data = try await request("api/v1/queue/\(itemID)")
-                    let item = try JSONDecoder().decode(PickerQueue.Entry.self, from: data)
-                    guard item.enrollmentID == itemID, item.thread_id == chatID else {
-                        resolutions[chatID] = .unavailable("The saved request conflicts with another queue item. Its outcome is still unknown.")
-                        continue
-                    }
-                    resolutions[chatID] = .confirmed(item)
-                } catch let problem as ServiceProblem where problem.status == 404 && problem.code == "not_found" {
-                    resolutions[chatID] = .missing
-                } catch {
-                    resolutions[chatID] = .unavailable(error.localizedDescription)
-                }
-            }
             // A read started before a mutation must not undo the mutation's result.
             guard mutationRevision == queueRevision, !working else { return }
-            let previousPendingCount = pendingCreations.count
-            for (chatID, resolution) in resolutions {
-                switch resolution {
-                case .confirmed(let item):
-                    pendingCreations.removeValue(forKey: chatID)
-                    activities[chatID] = .complete(item.state == "queued" ? "Queued" : "Previous request: \(item.state).")
-                    if ["queued", "stale", "failed"].contains(item.state), seen.insert(item.enrollmentID).inserted {
-                        entries.append(item)
-                    }
-                case .missing:
-                    pendingCreations[chatID]?.outcome = .retryable("The request was not found. Retry will use its saved instruction and usage bucket.")
-                case .unavailable(let reason):
-                    pendingCreations[chatID]?.outcome = .uncertain(reason + " Checking the previous request before allowing another send.")
-                }
-            }
-            if pendingCreations.count != previousPendingCount { try savePendingCreations() }
             queuedEntries = entries
             if refreshMetadata { Task { await loadQueuedMetadata() } }
+            for (chatID, pending) in pendingCreations {
+                if case .submitting = pending.outcome { continue }
+                guard checkingCreations.insert(pending.request.id).inserted else { continue }
+                Task { await recoverCreation(chatID: chatID, request: pending.request) }
+            }
             for (id, activity) in activities where pendingCreations[id] == nil {
                 if case .uncertain(let reason) = activity {
                     activities[id] = .failed(reason + " Queue status has been refreshed.")
                 }
             }
         } catch { /* Existing cards stay usable; unknown writes remain blocked on their own card. */ }
+    }
+
+    private func recoverCreation(chatID: String, request creation: QueueCreation) async {
+        let itemID = creation.id
+        defer { checkingCreations.remove(itemID) }
+        let resolution: CreationResolution
+        if let item = queuedEntries.first(where: { $0.enrollmentID == itemID && $0.thread_id == chatID }) {
+            resolution = .confirmed(item)
+        } else {
+            do {
+                let data = try await request("api/v1/queue/\(itemID)")
+                let item = try JSONDecoder().decode(PickerQueue.Entry.self, from: data)
+                if item.enrollmentID == itemID && item.thread_id == chatID {
+                    resolution = .confirmed(item)
+                } else {
+                    resolution = .unavailable("The saved request conflicts with another queue item. Its outcome is still unknown.")
+                }
+            } catch let problem as ServiceProblem where problem.status == 404 && problem.code == "not_found" {
+                resolution = .missing
+            } catch {
+                resolution = .unavailable(error.localizedDescription)
+            }
+        }
+        guard pendingCreations[chatID]?.request.id == itemID else { return }
+        switch resolution {
+        case .confirmed(let item):
+            pendingCreations.removeValue(forKey: chatID)
+            queueRevision += 1
+            activities[chatID] = .complete(item.state == "queued" ? "Queued" : "Previous request: \(item.state).")
+            if ["queued", "stale", "failed"].contains(item.state),
+               !queuedEntries.contains(where: { $0.enrollmentID == itemID }) {
+                queuedEntries.append(item)
+            }
+            do { try savePendingCreations() }
+            catch { queueRecoveryError = error.localizedDescription }
+        case .missing:
+            pendingCreations[chatID]?.outcome = .retryable("The request was not found. Retry will use its saved instruction and usage bucket.")
+        case .unavailable(let reason):
+            pendingCreations[chatID]?.outcome = .uncertain(reason + " Checking the previous request before allowing another send.")
+        }
     }
 
     private func savePendingCreations() throws {

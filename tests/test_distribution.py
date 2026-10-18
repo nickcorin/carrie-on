@@ -279,51 +279,6 @@ class FirstLaunchTests(unittest.TestCase):
             bundle_install.setup(self.runtime, **self.args(port=9000, no_start=True))
         self.assertEqual((self.data / "settings.json").read_bytes(), before)
 
-    def test_legacy_connection_settings_are_migrated(self):
-        agents = self.home / "Library/LaunchAgents"
-        agents.mkdir(parents=True)
-        (agents / "com.nickcorin.carrieon.plist").write_bytes(
-            plistlib.dumps(
-                {
-                    "ProgramArguments": [
-                        "old-runtime",
-                        "--codex",
-                        str(self.codex),
-                        "--socket",
-                        "/custom/ipc.sock",
-                        "tick",
-                    ],
-                    "StartInterval": 90,
-                    "EnvironmentVariables": {"CODEX_HOME": "/custom/codex"},
-                }
-            )
-        )
-        (agents / f"{self.runtime.profile.labels[0]}.plist").write_bytes(
-            plistlib.dumps(
-                {
-                    "ProgramArguments": [
-                        "old-runtime",
-                        "--codex",
-                        str(self.codex),
-                        "--port",
-                        "8877",
-                        "serve",
-                    ]
-                }
-            )
-        )
-        bundle_install.setup(self.runtime, **self.args())
-        settings = json.loads((self.data / "settings.json").read_text())
-        self.assertEqual(
-            (
-                settings["port"],
-                settings["interval"],
-                settings["socket"],
-                settings["codex_home"],
-            ),
-            (8877, 90, "/custom/ipc.sock", "/custom/codex"),
-        )
-
     def test_wrong_bundle_and_translocated_app_are_rejected_before_install(self):
         (self.app / "Contents/Info.plist").write_bytes(
             plistlib.dumps({"CFBundleIdentifier": "other.app"})

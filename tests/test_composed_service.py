@@ -15,6 +15,7 @@ from uuid import uuid4
 import httpx
 import uvicorn
 
+from carrie_on.codex.adapter import CodexAdapter
 from carrie_on.codex.client import CodexConnections
 from carrie_on.server import create_application
 from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
@@ -71,11 +72,10 @@ class ComposedService(unittest.TestCase):
         port = listener.getsockname()[1]
         self.app = create_application(
             self.store,
-            self.connections,
+            CodexAdapter(self.connections),
             maintenance=SqliteStorageMaintenance(self.root / "queue.sqlite3"),
             port=port,
             interval=1,
-            legacy_path=self.root / "resume-queue.json",
         )
         self.server = uvicorn.Server(uvicorn.Config(self.app, log_level="critical"))
         self.server_thread = threading.Thread(
@@ -227,7 +227,6 @@ class ComposedService(unittest.TestCase):
         ]
         reads = [request for request in requests if request["method"] == "thread/read"]
         headers = [request for request in requests if request["method"] == "thread/turns/list"]
-        self.assertTrue(reads)
         self.assertTrue(headers)
         self.assertTrue(all(request["params"]["includeTurns"] is False for request in reads))
         self.assertTrue(
@@ -243,17 +242,12 @@ class ComposedService(unittest.TestCase):
         item_id, instruction = self.enroll_and_reset()
         self.assert_compact_delivery(item_id, instruction)
 
-    def test_interrupted_json_import_uses_compact_reads_and_preserves_delivery_after_restart(self):
-        self.stop_server()
-        source = Path(__file__).with_name("fixtures") / "v0.5.7-queue.json"
-        raw = json.loads(source.read_text())
-        entry = raw["entries"][0]
-        entry.update(anchor_message_id="original", state="sending", attempted_at=50)
-        (self.root / "resume-queue.json").write_text(json.dumps(raw))
-        self.state["usage"] = usage(0, 200)
+    def test_untitled_chat_enrolls_and_dispatches_by_identity(self):
+        self.state["summary"]["name"] = None
         self.save_state()
-        self.start_server()
-        self.assert_compact_delivery(entry["id"], entry["prompt"])
+        item_id, instruction = self.enroll_and_reset()
+        self.assertNotIn("title", self.http.get(f"queue/{item_id}").json())
+        self.assert_compact_delivery(item_id, instruction)
 
     def test_lost_receipt_reconciles_after_service_restart_without_another_send(self):
         self.lose_receipt = True
@@ -281,40 +275,44 @@ class ComposedService(unittest.TestCase):
         self.assertEqual(status["usage"]["windows"][0]["window_minutes"], 300)
         self.assertIsNone(status["usage_error"])
 
-    def import_saved_queue(self, *, message_anchor=None, turn_id="original-turn", accepted=False):
+    def enroll_then_change(self, *, message_anchor=None, turn_id="original-turn", accepted=False):
+        self.state["message_id"] = message_anchor
+        self.save_state()
+        item_id = str(uuid4())
+        instruction = "Resume the saved turn"
+        response = self.http.post(
+            "queue", json={"id": item_id, "chat_id": CHAT_ID, "instruction": instruction}
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "failed")
         self.stop_server()
-        source = Path(__file__).with_name("fixtures") / "v0.5.7-queue.json"
-        raw = json.loads(source.read_text())
-        entry = raw["entries"][0]
-        entry["anchor_message_id"] = message_anchor
-        (self.root / "resume-queue.json").write_text(json.dumps(raw))
         self.state["usage"] = usage(0, 200)
         self.state["turn_id"] = turn_id
         if accepted:
-            self.state["accepted_id"] = entry["id"]
+            self.state["accepted_id"] = item_id
         self.save_state()
         self.start_server()
-        return entry["id"], entry["prompt"]
+        return item_id, instruction
 
-    def test_imported_turn_anchor_sends_exact_instruction_after_reset(self):
-        item_id, instruction = self.import_saved_queue()
+    def test_turn_anchor_sends_exact_instruction_after_reset(self):
+        item_id, instruction = self.enroll_then_change()
         self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "sent")
         self.assertEqual(len(self.sends), 1)
         request = self.sends[0]["turnStart"]["request"]
         self.assertEqual(request["clientUserMessageId"], item_id)
         self.assertEqual(request["input"][0]["text"], instruction)
 
-    def test_changed_imported_turn_is_stale_without_a_message_anchor(self):
-        item_id, _ = self.import_saved_queue(turn_id="later-turn")
+    def test_changed_turn_is_stale_without_a_message_anchor(self):
+        item_id, _ = self.enroll_then_change(turn_id="later-turn")
         self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "stale")
         self.assertEqual(self.sends, [])
 
     def test_changed_turn_is_stale_even_when_message_anchor_matches(self):
-        item_id, _ = self.import_saved_queue(message_anchor="original", turn_id="later-turn")
+        item_id, _ = self.enroll_then_change(message_anchor="original", turn_id="later-turn")
         self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "stale")
         self.assertEqual(self.sends, [])
 
-    def test_imported_accepted_message_is_not_sent_again(self):
-        item_id, _ = self.import_saved_queue(accepted=True)
+    def test_accepted_message_is_not_sent_again(self):
+        item_id, _ = self.enroll_then_change(accepted=True)
         self.wait_for(lambda: self.http.get(f"queue/{item_id}").json()["state"] == "sent")
         self.assertEqual(self.sends, [])

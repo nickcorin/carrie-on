@@ -50,7 +50,6 @@ class SqliteQueueStorage:
         return QueueEntry(
             id=UUID(row["id"]),
             chat_id=UUID(row["chat_id"]),
-            title=row["title"],
             account_id=row["account_id"],
             limit_id=row["limit_id"],
             anchor_message_id=row["anchor_message_id"],
@@ -143,14 +142,13 @@ class SqliteQueueStorage:
             try:
                 connection.execute(
                     """INSERT INTO queue_entries (
-                id,chat_id,title,account_id,limit_id,anchor_message_id,model,instructions,
+                id,chat_id,account_id,limit_id,anchor_message_id,model,instructions,
                 reset_windows,enrolled_while_busy,queued_at,updated_at,
                 state,error,revision,finished_at,anchor_turn_id
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         str(entry.id),
                         str(entry.chat_id),
-                        entry.title,
                         entry.account_id,
                         entry.limit_id,
                         entry.anchor_message_id,
@@ -231,7 +229,8 @@ class SqliteQueueStorage:
                 + """ WHERE q.state IN ('queued','failed')
                 AND NOT EXISTS (SELECT 1 FROM delivery_attempts d
                     WHERE d.entry_id=q.id AND d.expires_at>?)
-                ORDER BY q.queued_at,q.id LIMIT 1""",
+                ORDER BY (SELECT MAX(d.created_at) FROM delivery_attempts d WHERE d.entry_id=q.id),
+                    q.queued_at,q.id LIMIT 1""",
                 (now.timestamp(), now.timestamp()),
             ).fetchone()
             if row is None:

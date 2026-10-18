@@ -65,7 +65,9 @@ def serve(state_path: str) -> None:
                         "item": {
                             "type": "userMessage",
                             "id": "item-a",
-                            "clientId": state.get("accepted_id", "original"),
+                            "clientId": state.get(
+                                "accepted_id", state.get("message_id", "original")
+                            ),
                             "content": [{"type": "text", "text": "Task", "text_elements": []}],
                         },
                     }

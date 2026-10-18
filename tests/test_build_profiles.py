@@ -36,7 +36,7 @@ from carrie_on.storage import SqliteStorageMaintenance
 runtime = app_runtime.Runtime.current()
 runtime.data.mkdir(parents=True)
 SqliteStorageMaintenance(runtime.state).initialize()
-settings = bundle_install.Settings.load(runtime, bundle_install.SettingsOverrides(codex="/bin/echo"))
+settings = bundle_install.Settings.load(runtime.data, bundle_install.SettingsOverrides(codex="/bin/echo"), default_port=runtime.profile.port)
 (runtime.data / "settings.json").write_text(json.dumps({"port": settings.port}))
 bundle_install.install_service(runtime, bundle_install.SettingsOverrides(codex="/bin/echo"), start=False)
 if runtime.profile.name == "dev":

@@ -5,7 +5,9 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from carrie_on.codex.models import Chat, ChatPage, ChatSummary, CodexUnavailable, UsageSnapshot
+from carrie_on.codex.parsing import parse_usage
+from carrie_on.conversation import Chat, ChatPage, ChatSummary
+from carrie_on.ports import CodexUnavailable
 from carrie_on.queue import QueueEntry
 
 
@@ -26,7 +28,6 @@ def chat(**changes):
     return replace(
         Chat(
             thread_id=CHAT_ID,
-            title="Finish feature",
             message_id="original",
             turn_id="turn-a",
             model="model-a",
@@ -55,7 +56,10 @@ class CodexFixture:
     def usage(self):
         if self.usage_error:
             raise CodexUnavailable("Usage unavailable")
-        return UsageSnapshot.parse(self.limits)
+        return parse_usage(self.limits)
+
+    def read_settings(self, _thread):
+        return {"model": "model-a", "resumeState": "resumed"}
 
     def get_chat(self, _thread, _desktop=None, **_options):
         return self.chat
@@ -63,7 +67,7 @@ class CodexFixture:
     def has_message(self, _thread, message_id):
         return message_id == self.chat.message_id
 
-    def list_all_chats(self, _search):
+    def list_all_chats(self, _search=None):
         return (ChatSummary(id=CHAT_ID, title="Finish feature", cwd=None, last_activity=None),)
 
     def continue_chat(self, thread_id, prompt, message_id):
@@ -88,7 +92,10 @@ class LocalCodex:
         pass
 
     def usage(self):
-        return UsageSnapshot.parse(usage(25, int(time.time()) + 3600))
+        return parse_usage(usage(25, int(time.time()) + 3600))
+
+    def read_settings(self, _thread):
+        return {"model": "model-a", "resumeState": "resumed"}
 
     def list_all_chats(self, search=None):
         title = 'A chat with <script> & "quotes"'
@@ -110,7 +117,6 @@ class LocalCodex:
         return chat(
             status="completed",
             thread_id=thread_id,
-            title=self.list_all_chats()[0].title,
         )
 
 
@@ -122,7 +128,6 @@ def queue_entry(**changes):
     fields = dict(
         id=uuid4(),
         chat_id=UUID(CHAT_ID),
-        title="Task A",
         account_id="account-a",
         limit_id="codex",
         anchor_message_id="original",

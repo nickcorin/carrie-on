@@ -30,8 +30,9 @@ select = ["E4", "E7", "E9", "F", "I"]
 [tool.mypy]
 python_version = "3.10"
 files = [
-    "src/carrie_on/queue.py", "src/carrie_on/storage", "src/carrie_on/ports.py", "src/carrie_on/pagination.py", "src/carrie_on/legacy.py",
-    "src/carrie_on/codex/sdk.py", "src/carrie_on/codex/models.py", "src/carrie_on/codex/client.py",
+    "src/carrie_on/queue.py", "src/carrie_on/storage", "src/carrie_on/ports.py", "src/carrie_on/pagination.py",
+    "src/carrie_on/conversation.py", "src/carrie_on/usage.py", "src/carrie_on/configuration.py", "src/carrie_on/codex/adapter.py",
+    "src/carrie_on/codex/sdk.py", "src/carrie_on/codex/parsing.py", "src/carrie_on/codex/client.py",
     "src/carrie_on/application.py", "src/carrie_on/dispatch.py",
     "src/carrie_on/api.py", "src/carrie_on/server.py",
     "src/carrie_on/cli.py", "src/carrie_on/macos/runtime.py",

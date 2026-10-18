@@ -1,10 +1,48 @@
-"""Define the storage operations the application uses without exposing database types."""
+"""Define external operations without exposing database or transport types."""
 
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from carrie_on.conversation import Chat, ChatPage, ChatSummary
 from carrie_on.queue import DeliveryAttempt, EntryState, QueueEntry, QueueSummary
+from carrie_on.usage import UsageSnapshot
+
+
+class CodexUnavailable(Exception):
+    """Codex could not complete an operation; a failed send may have been accepted."""
+
+
+class CodexProtocolError(CodexUnavailable):
+    """Codex returned a response that cannot be used."""
+
+
+class Codex(Protocol):
+    def read_usage(self) -> UsageSnapshot: ...
+
+    def list_chats(
+        self, search: str = "", *, cursor: str | None = None, limit: int = 25
+    ) -> ChatPage: ...
+
+    def list_chat_summaries(self, chat_ids: tuple[UUID, ...]) -> tuple[ChatSummary, ...]:
+        """Read metadata for these chats, omitting any whose metadata is unavailable."""
+        ...
+
+    def get_chat(
+        self, chat_id: UUID, *, open_if_needed: bool = False, include_goal: bool = True
+    ) -> Chat | None:
+        """Read an unarchived chat, or return None if it is absent from the catalog.
+
+        Opening is allowed only after checking catalog membership. Inspection
+        and diagnostics leave open_if_needed False.
+        """
+        ...
+
+    def has_message(self, chat_id: UUID, message_id: UUID) -> bool: ...
+
+    def send(self, chat_id: UUID, instructions: str, message_id: UUID) -> None: ...
+
+    def connected(self) -> bool: ...
 
 
 class StorageUnavailable(Exception):
@@ -63,9 +101,10 @@ class QueueStorage(Protocol):
         ...
 
     def create_delivery_attempt(self) -> DeliveryAttempt | None:
-        """Claim the earliest pending entry without an unexpired attempt.
+        """Claim pending work without an unexpired attempt.
 
-        Order entries by queued_at, then id. Concurrent calls cannot create
+        Try unattempted entries first, then the least recently attempted, with
+        queued_at and id as tie breakers. Concurrent calls cannot create
         overlapping attempts for the same entry. Return None if none is available.
         """
         ...

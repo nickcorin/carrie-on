@@ -12,19 +12,20 @@ import sys
 import time
 import urllib.request
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Iterator
 
+from carrie_on.configuration import Settings, SettingsOverrides
 from carrie_on.macos.compatibility import version_tuple
 from carrie_on.macos.lifecycle import (
     agent_path,
     remove_agent,
-    retire_worker,
+    service_loaded,
+    unregister_services,
     write_agent,
 )
-from carrie_on.macos.runtime import BuildProfile, Runtime
-from carrie_on.ports import StorageUnavailable
+from carrie_on.macos.runtime import Runtime
 
 
 class SetupError(ValueError):
@@ -33,121 +34,6 @@ class SetupError(ValueError):
     def __init__(self, code: str, message: str):
         self.code = code
         super().__init__(message)
-
-
-@dataclass(frozen=True, kw_only=True)
-class SettingsOverrides:
-    """Supply settings for this invocation. None leaves each saved value unchanged."""
-
-    codex: str | None = None
-    port: int | None = None
-    interval: int | None = None
-    socket: Path | None = None
-    codex_home: Path | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class Settings:
-    """Hold the Codex connection and polling settings for an installation."""
-
-    codex: str
-    port: int
-    interval: int = 60
-    socket: str | None = None
-    codex_home: str | None = None
-    schema_version: int = 1
-
-    @classmethod
-    def load(
-        cls,
-        runtime: Runtime,
-        overrides: SettingsOverrides = SettingsOverrides(),
-        *,
-        legacy: bool = False,
-    ) -> "Settings":
-        """Read saved settings, apply supplied values, and validate the result.
-
-        Installers call this while holding install.lock. Resolve relative paths
-        against the current working directory. Saving those absolute paths keeps
-        later launches pointed at the same files. Invalid settings raise ValueError
-        before the installer changes any service definitions.
-
-        Only installers enable discovery of old launchd settings. Servers read
-        settings from their own data directory.
-        """
-        path = runtime.data / "settings.json"
-        if path.exists():
-            saved = json.loads(path.read_text())
-        elif legacy:
-            saved = legacy_settings(runtime.profile)
-        else:
-            saved = {}
-        if not isinstance(saved, dict):
-            raise ValueError("settings.json must contain a JSON object")
-        if type(saved.get("schema_version", 1)) is not int or saved.get("schema_version", 1) != 1:
-            raise ValueError("Settings were created by a newer version of Carrie On")
-        codex = overrides.codex if overrides.codex is not None else saved.get("codex")
-        port = overrides.port if overrides.port is not None else saved.get("port")
-        interval = overrides.interval if overrides.interval is not None else saved.get("interval")
-        socket = overrides.socket if overrides.socket is not None else saved.get("socket")
-        codex_home = (
-            overrides.codex_home if overrides.codex_home is not None else saved.get("codex_home")
-        )
-        if codex_home is None and "codex_home" not in saved:
-            codex_home = os.environ.get("CODEX_HOME")
-        if port is None:
-            port = runtime.profile.port
-        if interval is None:
-            interval = 60
-        if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
-            raise ValueError("Port must be between 1024 and 65535")
-        if isinstance(interval, bool) or not isinstance(interval, int) or interval < 30:
-            raise ValueError("Interval must be at least 30 seconds")
-        return cls(
-            codex=resolve_codex(codex),
-            port=port,
-            interval=interval,
-            socket=absolute_setting_path("socket", socket),
-            codex_home=absolute_setting_path("codex_home", codex_home),
-        )
-
-    def environment(self) -> dict[str, str]:
-        """Build environment variables for child processes without changing os.environ."""
-        environment = {
-            "PATH": f"{Path(self.codex).parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        }
-        if self.codex_home:
-            environment["CODEX_HOME"] = self.codex_home
-        return environment
-
-
-def absolute_setting_path(name: str, value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, (str, Path)) or not str(value):
-        raise ValueError(f"{name} must be a nonempty path")
-    return str(Path(value).expanduser().resolve())
-
-
-def legacy_settings(profile: BuildProfile) -> dict:
-    """Read connection settings from this profile's existing launchd definitions."""
-    saved = {}
-    for label in (profile.service_prefix, profile.labels[0]):
-        path = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
-        if not path.exists():
-            continue
-        config = plistlib.loads(path.read_bytes())
-        arguments = config.get("ProgramArguments", [])
-        for name in ("codex", "port", "socket"):
-            flag = "--" + name
-            if flag in arguments:
-                value = arguments[arguments.index(flag) + 1]
-                saved[name] = int(value) if name == "port" else value
-        if "StartInterval" in config:
-            saved["interval"] = config["StartInterval"]
-        if config.get("EnvironmentVariables", {}).get("CODEX_HOME"):
-            saved["codex_home"] = config["EnvironmentVariables"]["CODEX_HOME"]
-    return saved
 
 
 def resolve_codex(requested: object) -> str:
@@ -217,70 +103,11 @@ def write_private(path: Path, contents: bytes) -> None:
 
 @contextmanager
 def installation_lock(runtime: Runtime) -> Iterator[None]:
-    """Hold install.lock and convert StorageUnavailable failures to SetupError."""
+    """Serialize settings and launchd registration changes for this installation."""
     runtime.data.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (runtime.data / "install.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:
-            yield
-        except StorageUnavailable as error:
-            raise SetupError(
-                "storage_unavailable",
-                f"Could not access the queue database at {runtime.state}: {error}. "
-                "Keep the data and recovery copies, resolve the storage problem, and retry setup.",
-            ) from error
-
-
-def service_loaded(label: str) -> bool:
-    return (
-        subprocess.run(
-            ["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"],
-            capture_output=True,
-        ).returncode
-        == 0
-    )
-
-
-def stop_services(labels: tuple[str, ...]) -> None:
-    """Stop the named services and wait until launchd reports that they are unloaded."""
-    for label in reversed(labels):
-        subprocess.run(
-            ["/bin/launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
-            capture_output=True,
-        )
-        for _ in range(100):
-            if not service_loaded(label):
-                break
-            time.sleep(0.1)
-        else:
-            raise ValueError(f"The service {label} has not stopped. Retry setup.")
-
-
-def import_source_queue(runtime: Runtime) -> None:
-    """Import the saved JSON queue from a release installation run from source.
-
-    The caller holds install.lock and has stopped the old worker and backend.
-    Dev installations do not import the release queue. Keep the original JSON and
-    a private copy for recovery. Skip existing entry UUIDs so setup retries cannot
-    reactivate completed entries.
-    """
-    if runtime.bundled or runtime.profile.name != "release":
-        return
-    source = runtime.resources / "resume-queue.json"
-    snapshot = runtime.data / "Migration/source-checkout/resume-queue.json"
-    if not source.exists() and not snapshot.exists():
-        return
-    if not snapshot.exists():
-        with source.with_suffix(".lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            write_private(snapshot, source.read_bytes())
-    from carrie_on.legacy import LegacyImporter
-    from carrie_on.storage import SqliteQueueStorage, SqliteStorageMaintenance
-
-    SqliteStorageMaintenance(runtime.state).initialize()
-    importer = LegacyImporter(SqliteQueueStorage(runtime.state))
-    importer.import_file(runtime.data / "resume-queue.json")
-    importer.import_file(snapshot)
+        yield
 
 
 def register_backend(runtime: Runtime, settings: Settings) -> Path:
@@ -314,7 +141,7 @@ def register_backend(runtime: Runtime, settings: Settings) -> Path:
             "ProgramArguments": command,
             "WorkingDirectory": str(runtime.data),
             "RunAtLoad": True,
-            "KeepAlive": True,
+            "KeepAlive": {"SuccessfulExit": False},
             "ThrottleInterval": 10,
             "EnvironmentVariables": settings.environment(),
             "StandardOutPath": str(runtime.logs / "server.log"),
@@ -345,18 +172,18 @@ def install_service(
 ) -> dict:
     """Install the backend while preserving the queue and existing login settings.
 
-    Validate settings before changing services. With start=True, stop the old
-    worker and backend, import saved JSON, and register and launch the backend.
-    With start=False, write settings and service definitions without changing
-    running services or importing data.
+    Validate settings before changing services. With start=True, replace the
+    backend registration and launch it. With start=False, write settings and
+    service definitions without changing running services.
     """
     with installation_lock(runtime):
-        settings = Settings.load(runtime, overrides, legacy=True)
+        settings = Settings.load(runtime.data, overrides, default_port=runtime.profile.port)
+        settings = replace(
+            settings, codex=resolve_codex(None if settings.codex == "codex" else settings.codex)
+        )
         verify_codex(settings)
         if start:
-            retire_worker(profile=runtime.profile)
-            stop_services((runtime.profile.labels[0],))
-            import_source_queue(runtime)
+            unregister_services((runtime.profile.labels[0],))
         path = register_backend(runtime, settings)
         if start:
             subprocess.run(
@@ -375,14 +202,17 @@ def setup(
 ) -> dict:
     """Set up the packaged app's services without changing its signed bundle.
 
-    Hold install.lock while migrating data, validating settings, and writing service
+    Hold install.lock while validating settings and writing service
     definitions. --no-start prepares a fresh installation without loading services.
     A failure may leave services stopped or only some files updated. After resolving
     the error, setup can be retried using the saved data.
     """
     metadata = check_bundle(runtime)
     with installation_lock(runtime):
-        settings = Settings.load(runtime, overrides, legacy=True)
+        settings = Settings.load(runtime.data, overrides, default_port=runtime.profile.port)
+        settings = replace(
+            settings, codex=resolve_codex(None if settings.codex == "codex" else settings.codex)
+        )
         verify_codex(settings)
         return configure(runtime, settings, metadata, no_start=no_start, repair=repair)
 
@@ -411,8 +241,6 @@ def configure(
         "build_id": metadata["build_id"],
         "settings": asdict(settings),
     }
-    if not no_start:
-        retire_worker(profile=profile)
     register_backend(runtime, settings)
     write_agent(
         {
@@ -439,7 +267,7 @@ def configure(
         }
         if marker != identity or repair:
             changed.add(backend_label)
-        stop_services(tuple(label for label in profile.labels if label in changed))
+        unregister_services(tuple(label for label in profile.labels if label in changed))
         if menu_label in changed:
             subprocess.run(
                 [
@@ -546,8 +374,7 @@ def main(argv: list[str] | None = None) -> int:
             result = setup(runtime, overrides, no_start=args.no_start, repair=args.repair)
         else:
             with installation_lock(runtime):
-                stop_services(runtime.profile.labels)
-                retire_worker(profile=runtime.profile)
+                unregister_services(runtime.profile.labels)
                 for label in runtime.profile.labels:
                     remove_agent(label, runtime.profile)
                 (runtime.data / "installation.json").unlink(missing_ok=True)
@@ -556,14 +383,7 @@ def main(argv: list[str] | None = None) -> int:
             }
         print(json.dumps(result, indent=2))
         return 0
-    except (
-        OSError,
-        ValueError,
-        KeyError,
-        TypeError,
-        IndexError,
-        subprocess.SubprocessError,
-    ) as error:
+    except Exception as error:
         result = {"code": getattr(error, "code", "setup_failed"), "message": str(error)}
         print(
             json.dumps(result) if getattr(args, "json", False) else f"Carrie On setup: {error}",

@@ -1,20 +1,20 @@
 """Expose the local queue service through HTTP."""
 
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, Query, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 from starlette.exceptions import HTTPException
 
-from carrie_on.application import QueueService
-from carrie_on.codex.models import CodexProtocolError, CodexUnavailable, UsageSnapshot
+from carrie_on import application
 from carrie_on.dispatch import DispatchWorker
-from carrie_on.ports import StorageUnavailable
+from carrie_on.ports import Codex, CodexUnavailable, QueueStorage, StorageUnavailable
 from carrie_on.queue import (
     DEFAULT_INSTRUCTION,
     PENDING_STATES,
@@ -22,6 +22,7 @@ from carrie_on.queue import (
     QueueEntry,
     QueueError,
 )
+from carrie_on.usage import UsageSnapshot
 
 
 class Input(BaseModel):
@@ -53,7 +54,6 @@ class EditInstruction(Instruction):
 class QueueEntryResponse(BaseModel):
     id: UUID
     chat_id: UUID
-    title: str
     account_id: str
     limit_id: str
     anchor_message_id: str | None
@@ -152,7 +152,6 @@ class StatusResponse(BaseModel):
 
 class Readiness(BaseModel):
     id: UUID
-    title: str
     outcome: Literal["ready", "sent", "stale", "failed"]
     reason: str
 
@@ -163,7 +162,7 @@ class ReadinessPage(BaseModel):
 
 
 class ChatDiagnostic(BaseModel):
-    title: str
+    id: UUID
     status: str
     model: str
 
@@ -178,17 +177,34 @@ class DiagnosticResponse(BaseModel):
 
 class PageQuery(Input):
     limit: int = Field(default=50, ge=1, le=100)
-    cursor: str | None = Field(default=None, max_length=16384)
+    cursor: str | None = Field(
+        default=None,
+        max_length=16384,
+        description="Opaque next_cursor from the previous page. Keep the same filters. "
+        "Pages read current data, so records can change between requests.",
+    )
 
 
 class QueueQuery(PageQuery):
     state: Literal["open", "all", "queued", "sent", "stale", "cancelled", "failed"] = "open"
     chat_id: UUID | None = None
 
+    @property
+    def states(self) -> tuple[EntryState, ...] | None:
+        if self.state == "all":
+            return None
+        return PENDING_STATES + ("stale",) if self.state == "open" else (self.state,)
+
 
 class ChatQuery(PageQuery):
     search: str = Field(default="", max_length=500)
     limit: int = Field(default=25, ge=1, le=100)
+    cursor: str | None = Field(
+        default=None,
+        max_length=16384,
+        description="Opaque next_cursor from the previous chat page. Reuse the same search "
+        "and limit. Catalog changes between requests can affect page contents.",
+    )
 
 
 class Problem(BaseModel):
@@ -255,13 +271,55 @@ CREATION_HEADERS = {
 }
 
 
+def get_storage(request: Request) -> QueueStorage:
+    return request.app.state.storage
+
+
+def get_codex(request: Request) -> Codex:
+    return request.app.state.codex
+
+
+StorageDependency = Annotated[QueueStorage, Depends(get_storage)]
+CodexDependency = Annotated[Codex, Depends(get_codex)]
+
+
+def create_or_get_entry(
+    body: Enqueue, store: QueueStorage, codex: Codex
+) -> tuple[QueueEntry, bool]:
+    """Replay creation requests by UUID without repeating enrollment or modifying instructions."""
+    entry = store.get_entry(body.id)
+    created = False
+    if entry is None:
+        try:
+            entry = application.enqueue(
+                body.id,
+                body.chat_id,
+                body.instruction,
+                limit_id=body.limit_id,
+                store=store,
+                codex=codex,
+            )
+            created = True
+        except QueueError as error:
+            if error.code not in {"entry_exists", "chat_already_queued"}:
+                raise
+            entry = store.get_entry(body.id)
+            if entry is None:
+                raise
+    if entry.chat_id != body.chat_id:
+        raise QueueError("id_reused", "This UUID belongs to another chat")
+    return entry, created
+
+
 def create_app(
-    service: QueueService,
+    store: QueueStorage,
+    codex: Codex,
     *,
     port: int,
     version: str,
     build_id: str | None = None,
     worker: DispatchWorker | None = None,
+    shutdown: Callable[[], None] = lambda: None,
     lifespan=None,
 ) -> FastAPI:
     """Create HTTP routes for the supplied queue service.
@@ -289,6 +347,8 @@ def create_app(
         "When editing, include the entry's current revision in the JSON body.",
     )
     app.state.worker = worker
+    app.state.storage = store
+    app.state.codex = codex
     origin = f"http://127.0.0.1:{port}"
 
     @app.middleware("http")
@@ -364,7 +424,7 @@ def create_app(
     async def unavailable(_, error):
         return problem("unavailable", str(error) or type(error).__name__, 503)
 
-    for error_type in (CodexUnavailable, CodexProtocolError, StorageUnavailable):
+    for error_type in (CodexUnavailable, StorageUnavailable):
         app.add_exception_handler(error_type, unavailable)
 
     @app.get(
@@ -372,8 +432,8 @@ def create_app(
         response_model=HealthResponse,
         responses={503: {"model": HealthResponse, **errors[503]}},
     )
-    def health(response: Response):
-        service.store.get_queue_summary()
+    def health(response: Response, store: StorageDependency):
+        store.get_queue_summary()
         worker = app.state.worker
         healthy = worker is None or worker.healthy
         response.status_code = 200 if healthy else 503
@@ -385,8 +445,8 @@ def create_app(
         }
 
     @app.get("/api/v1/status", response_model=StatusResponse)
-    def status():
-        result = service.status()
+    def status(store: StorageDependency, codex: CodexDependency):
+        result = application.status(store=store, codex=codex)
         windows = (
             [
                 {
@@ -418,59 +478,59 @@ def create_app(
         }
 
     @app.get("/api/v1/connection", response_model=ConnectionResponse)
-    def connection():
-        return {"connected": service.connected()}
+    def connection(codex: CodexDependency):
+        return {"connected": codex.connected()}
 
     @app.get("/api/v1/usage", response_model=UsageResponse)
-    def usage():
-        return usage_response(service.read_usage())
+    def usage(codex: CodexDependency):
+        return usage_response(codex.read_usage())
 
     @app.get("/api/v1/chats/resolve", response_model=ResolvedChat)
-    def resolve(query: Annotated[str, Query(min_length=1, max_length=500)]):
-        return {"id": service.resolve_chat(query)}
+    def resolve(query: Annotated[str, Query(min_length=1, max_length=500)], codex: CodexDependency):
+        return {"id": application.resolve_chat(query, codex=codex)}
 
     @app.get("/api/v1/chats", response_model=ChatPage)
-    def chats(query: Annotated[ChatQuery, Query()]):
-        return asdict(service.list_chats(**query.model_dump()))
+    def chats(query: Annotated[ChatQuery, Query()], codex: CodexDependency):
+        return asdict(application.list_chats(**query.model_dump(), codex=codex))
 
     @app.get("/api/v1/queue/metadata", response_model=ChatPage)
-    def metadata(query: Annotated[PageQuery, Query()]):
-        return asdict(service.list_queued_chats(**query.model_dump()))
+    def metadata(
+        query: Annotated[PageQuery, Query()], store: StorageDependency, codex: CodexDependency
+    ):
+        return asdict(application.list_queued_chats(**query.model_dump(), store=store, codex=codex))
 
     @app.get("/api/v1/queue/check", response_model=ReadinessPage)
-    def inspect(query: Annotated[PageQuery, Query()]):
-        values, cursor = service.inspect(**query.model_dump())
+    def inspect(
+        query: Annotated[PageQuery, Query()], store: StorageDependency, codex: CodexDependency
+    ):
+        values, cursor = application.inspect(**query.model_dump(), store=store, codex=codex)
         return {
-            "items": [
-                {"id": value.id, "title": value.title, **asdict(value.eligibility)}
-                for value in values
-            ],
+            "items": [{"id": value.id, **asdict(value.eligibility)} for value in values],
             "next_cursor": cursor,
         }
 
     @app.get("/api/v1/diagnostics", response_model=DiagnosticResponse)
-    def doctor(chat_id: UUID | None = None):
-        report = service.doctor(str(chat_id) if chat_id else None)
+    def doctor(codex: CodexDependency, chat_id: UUID | None = None):
+        report = application.doctor(chat_id, codex=codex)
         chat = report.chat
         return {
             "usage_read": "ok",
             "desktop_ipc": "ok",
             "model_turns_started": 0,
             "account_id": report.account_id,
-            "chat": {"title": chat.title, "status": chat.status, "model": chat.model}
+            "chat": {"id": chat.thread_id, "status": chat.status, "model": chat.model}
             if chat
             else None,
         }
 
     @app.get("/api/v1/queue", response_model=QueuePage)
-    def queue(query: Annotated[QueueQuery, Query()]):
-        states = (
-            None
-            if query.state == "all"
-            else (PENDING_STATES + ("stale",) if query.state == "open" else (query.state,))
-        )
-        items, cursor = service.store.list_entries(
-            states=states, chat_id=query.chat_id, limit=query.limit, cursor=query.cursor
+    def queue(query: Annotated[QueueQuery, Query()], store: StorageDependency):
+        items, cursor = application.list_entries(
+            states=query.states,
+            chat_id=query.chat_id,
+            limit=query.limit,
+            cursor=query.cursor,
+            store=store,
         )
         return {"items": [queue_response(item) for item in items], "next_cursor": cursor}
 
@@ -483,7 +543,9 @@ def create_app(
             201: {"headers": CREATION_HEADERS},
         },
     )
-    def enqueue(body: Enqueue, response: Response):
+    def enqueue(
+        body: Enqueue, response: Response, store: StorageDependency, codex: CodexDependency
+    ):
         """Create an entry or return the current entry saved with the supplied UUID.
 
         A valid request for the same UUID and chat returns the stored entry without
@@ -492,22 +554,7 @@ def create_app(
         chat returns 409. Use PATCH to edit pending instructions and a new UUID
         to enqueue work after an entry has finished.
         """
-        entry = service.store.get_entry(body.id)
-        created = False
-        if entry is None:
-            try:
-                entry = service.enqueue(
-                    body.id, body.chat_id, body.instruction, limit_id=body.limit_id
-                )
-                created = True
-            except QueueError as error:
-                if error.code not in {"entry_exists", "chat_already_queued"}:
-                    raise
-                entry = service.store.get_entry(body.id)
-                if entry is None:
-                    raise
-        if entry.chat_id != body.chat_id:
-            raise QueueError("id_reused", "This UUID belongs to another chat")
+        entry, created = create_or_get_entry(body, store, codex)
         response.status_code = 201 if created else 200
         response.headers["Location"] = f"/api/v1/queue/{entry.id}"
         if created and app.state.worker:
@@ -515,24 +562,29 @@ def create_app(
         return queue_response(entry)
 
     @app.get("/api/v1/queue/{item_id}", response_model=QueueEntryResponse)
-    def item(item_id: UUID):
-        value = service.store.get_entry(item_id)
-        if value is None:
-            raise QueueError("not_found", "Queue entry not found")
-        return queue_response(value)
+    def item(item_id: UUID, store: StorageDependency):
+        return queue_response(application.get_entry(item_id, store=store))
 
     @app.patch("/api/v1/queue/{item_id}", response_model=QueueEntryResponse)
-    def edit(item_id: UUID, body: EditInstruction):
+    def edit(item_id: UUID, body: EditInstruction, store: StorageDependency):
         """Replace instructions if the revision matches and no delivery is active.
 
         Send the revision from the last read in the JSON body. A stale revision
         or active delivery returns 409 without changing the entry.
         """
-        value = service.store.update_instructions(item_id, body.instruction, revision=body.revision)
+        value = application.update_instructions(
+            item_id, body.instruction, revision=body.revision, store=store
+        )
         return queue_response(value)
 
     @app.post("/api/v1/queue/{item_id}/cancel", response_model=QueueEntryResponse)
-    def cancel(item_id: UUID, body: Input):
-        return queue_response(service.store.update_entry_state(item_id, "cancelled"))
+    def cancel(item_id: UUID, body: Input, store: StorageDependency):
+        return queue_response(application.remove_entry(item_id, store=store))
+
+    @app.post("/api/v1/service/shutdown", status_code=202)
+    def stop(body: Input, background: BackgroundTasks):
+        """Stop the service after acknowledging the request. Queued work stays saved."""
+        background.add_task(shutdown)
+        return {"stopping": True}
 
     return app

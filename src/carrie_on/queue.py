@@ -5,7 +5,8 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from carrie_on.codex.models import Chat, Usage
+from carrie_on.conversation import Chat
+from carrie_on.usage import Usage
 
 DEFAULT_INSTRUCTION = "Please continue with your last task."
 EntryState = Literal["queued", "failed", "stale", "cancelled", "sent"]
@@ -32,7 +33,6 @@ class QueueEntry:
 
     id: UUID
     chat_id: UUID
-    title: str
     account_id: str
     limit_id: str
     anchor_message_id: str | None
@@ -64,7 +64,6 @@ class QueueEntry:
         return cls(
             id=entry_id,
             chat_id=UUID(chat.thread_id),
-            title=chat.title,
             account_id=usage.account_id,
             limit_id=usage.limit_id,
             anchor_message_id=chat.message_id,
@@ -142,9 +141,7 @@ class QueueEntry:
     def assess(self, usage: Usage, chat: Chat | None, *, accepted: bool) -> "Eligibility":
         """Check whether Codex accepted the message or the entry is ready to send."""
         if chat is None:
-            return Eligibility(
-                "failed", "Chat is archived, renamed, or absent from the local catalog"
-            )
+            return Eligibility("failed", "Chat is archived or absent from the local catalog")
         if chat.thread_id != str(self.chat_id):
             raise QueueError("chat_mismatch", "Desktop returned a different chat")
         if accepted:

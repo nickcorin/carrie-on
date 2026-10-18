@@ -1,6 +1,7 @@
 """Login preferences survive service installation, upgrades, and removal."""
 
 import plistlib
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,6 +34,49 @@ class LifecycleRegistration(unittest.TestCase):
         self.assertEqual(plistlib.loads(path.read_bytes()), config)
         saved = app_lifecycle.directory(PROFILE) / "Agents" / path.name
         self.assertEqual(plistlib.loads(saved.read_bytes()), config)
+
+    def test_unregistration_waits_for_unload_and_tolerates_absent_jobs(self):
+        loaded = subprocess.CompletedProcess([], 0)
+        absent = subprocess.CompletedProcess([], 1)
+        with (
+            patch.object(
+                app_lifecycle.subprocess, "run", side_effect=[loaded, loaded, loaded, absent]
+            ) as run,
+            patch.object(app_lifecycle.time, "sleep") as sleep,
+        ):
+            app_lifecycle.unregister_services((PROFILE.labels[0],))
+        self.assertEqual(
+            [call.args[0][1] for call in run.call_args_list], ["print", "bootout", "print", "print"]
+        )
+        sleep.assert_called_once_with(0.1)
+        with patch.object(app_lifecycle.subprocess, "run", return_value=absent) as run:
+            app_lifecycle.unregister_services((PROFILE.labels[0],))
+        self.assertEqual(run.call_count, 1)
+
+    def test_failed_or_unfinished_unregistration_is_reported(self):
+        loaded = subprocess.CompletedProcess([], 0)
+        with patch.object(
+            app_lifecycle.subprocess,
+            "run",
+            side_effect=[loaded, subprocess.CalledProcessError(1, "bootout")],
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                app_lifecycle.unregister_services((PROFILE.labels[0],))
+        with (
+            patch.object(app_lifecycle.subprocess, "run", return_value=loaded),
+            patch.object(app_lifecycle.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(ValueError, "has not unloaded"):
+                app_lifecycle.unregister_services((PROFILE.labels[0],))
+
+    def test_start_kickstarts_a_loaded_service_without_killing_it(self):
+        stopped = subprocess.CompletedProcess([], 0, "state = waiting", "")
+        with patch.object(app_lifecycle.subprocess, "run", return_value=stopped) as run:
+            app_lifecycle.control_service("start", PROFILE)
+        self.assertEqual(
+            run.call_args.args[0][1:],
+            ["kickstart", f"gui/{app_lifecycle.os.getuid()}/{PROFILE.labels[0]}"],
+        )
 
     def test_disabled_startup_survives_reinstall_and_updates_manual_definitions(self):
         for label in PROFILE.labels:
