@@ -5,7 +5,6 @@
 - Ship a single ad-hoc signed Carrie On.app containing Python, the local API, worker, native menu, and custom app icon.
 - Configure backend and menu login services on first launch without development tools.
 - Detect app replacements and update service registrations while preserving connection settings, queue, and history.
-- Import the v0.5.7 JSON queue into SQLite on first launch and retire its standalone worker.
 - Check for a newer stable GitHub release on startup and show **Update to &lt;version&gt;** when available. Download and install it after confirmation.
 - Rebuild the entire Carrie On Dev app from its saved checkout with live output, replacing and restarting only after tests, compatibility checks, and signing succeed. Source menu installations reuse their native menu builder.
 - Build versioned releases with tests, package integrity checks, checksums, and release manifests.
@@ -19,16 +18,6 @@ Follow [installation](../../README.md#install) for setup and [releasing](../../R
 
 First launch finds or asks for the CLI executable, saves settings in Application Support, registers services, and checks the local API before opening the menu. It never modifies the signed app. Fresh installations contain no enrolled chats, logs, or builder credentials. Replacing and reopening the app updates services based on its build identity. Reopening the same build preserves healthy running services.
 
-## Upgrade from v0.5.7
-
-Setup stops the retired writer before importing the v0.5.7 queue. Settings and launch-at-login preferences stay in place. The JSON source remains unchanged. Each entry commits separately; retry skips stored UUIDs without overwriting edits or reactivating completed work. Readable history imports into SQLite, and incomplete historical records remain available in the JSON source. Pause settings are ignored. Import does not send messages.
-
-Recorded acceptance imports as sent. An uncertain send without recorded acceptance becomes pending work and is checked against Codex before another send. Existing SQLite work takes precedence over conflicting JSON enrollment; conflicting pending records import as cancelled history.
-
-Upgrades from earlier app identities and merging multiple installations are unsupported. Carrie On Dev does not import the release installation.
-
-Direct source servers default to checkout-local SQLite; registered source services use the selected profile’s Application Support data. Registering the release source service stops the old writers and imports a private snapshot of checkout-local JSON. Dev source registration does not import the release queue.
-
 ## Update verification and recovery
 
 The updater checks the download's size, SHA-256 checksum, compatibility, bundle identity, and code signature before replacement. It trusts this project's GitHub release assets over HTTPS. Checksums detect damaged downloads. Ad-hoc signatures validate bundle integrity but do not authenticate the developer. The updater does not change Gatekeeper settings or request administrator privileges.
@@ -37,22 +26,22 @@ Installation exchanges complete bundles atomically and keeps the previous app in
 
 ## Verification
 
-Dev compares its built commit with the local checkout's `HEAD` on startup. It offers **Update to &lt;short hash&gt;** only when the built commit is an ancestor of `HEAD`. Otherwise it shows **Check for Updates**. `python -m unittest tests.test_source_build tests.test_app_update -v` tests both labels and checkouts with newer, equal, older, unrelated, or missing commits.
+Dev compares its built commit with the local checkout's `HEAD` on startup. It offers **Update to &lt;short hash&gt;** only when the built commit is an ancestor of `HEAD`. Otherwise it shows **Check for Updates**. `uv run --locked --with-requirements requirements-build.txt python -m unittest tests.test_source_build tests.test_app_update -v` tests both labels and checkouts with newer, equal, older, unrelated, or missing commits.
 
 `just dev` builds the development profile with the same build checks as release.
-`python -m unittest tests.test_build_profiles -v` exercises both
+`uv run --locked --with-requirements requirements-build.txt python -m unittest tests.test_build_profiles -v` exercises both
 profiles in the same isolated home, including independent queue state, worker
 definitions, ports, and startup preferences.
 
-`python -m unittest tests.test_source_build -v` checks streamed build diagnostics, failed builds, staging with saved build paths and a custom port, signing, and replacement after success. The checks use temporary apps without stopping or installing live services.
+`uv run --locked --with-requirements requirements-build.txt python -m unittest tests.test_source_build -v` checks streamed build diagnostics, failed builds, staging with saved build paths and a custom port, signing, and replacement after success. The checks use temporary apps without stopping or installing live services.
 
-`python -m tools.build_bundle` runs unit tests, native self-tests, linkage audits, code-signature checks, and DMG integrity checks before writing packages to `dist/`. Tests cover interrupted setup, updates, stable reopening, settings and queue preservation, legacy connection migration, and invalid install locations. Installing and running the packaged app requires the acceptance steps below.
+`just package` runs unit tests, native self-tests, linkage audits, code-signature checks, and DMG integrity checks before writing packages to `dist/`. Tests cover interrupted setup, updates, stable reopening, settings and queue preservation, invalid install locations. Installing and running the packaged app requires the acceptance steps below.
 
-`python -m unittest tests.test_app_update -v` tests startup checks, offline failures, release selection, and download verification. It also replaces temporary apps to test native installation, rollback after a failed launch, and retry. It never replaces the installed app.
+`uv run --locked --with-requirements requirements-build.txt python -m unittest tests.test_app_update -v` tests startup checks, offline failures, release selection, and download verification. It also replaces temporary apps to test native installation, rollback after a failed launch, and retry. It never replaces the installed app.
 
-`python -m unittest tests.test_service_installation tests.test_cli -v` checks source commands from outside the checkout, virtual-environment interpreter preservation, saved-setting validation, relative socket reuse, environment isolation, installation locking, publication failure recovery, source JSON import and retry, and interrupted CLI creation with its original UUID.
+`uv run --locked --with-requirements requirements-build.txt python -m unittest tests.test_service_installation tests.test_cli -v` checks source commands from outside the checkout, virtual-environment interpreter preservation, saved-setting validation, relative socket reuse, environment isolation, installation locking, publication failure recovery, and interrupted CLI creation with its original UUID.
 
-`python -m unittest tests.test_storage tests.test_composed_service -v` checks JSON import, incomplete history, interrupted imports, and dispatch from raw v0.5.7 entries through the real adapters with controlled peers. The scenarios include unchanged and changed turn anchors, accepted-message reconciliation, and restart persistence.
+`uv run --locked --with-requirements requirements-build.txt python -m unittest tests.test_storage tests.test_composed_service -v` checks schema migrations, persisted queue entries, and dispatch through the real adapters with controlled peers. The scenarios include unchanged and changed turn anchors, accepted-message reconciliation, and restart persistence.
 
 ## Package acceptance
 
